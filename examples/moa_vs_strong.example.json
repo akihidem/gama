@@ -1,0 +1,25 @@
+{
+  "_comment": "Config for `python3 -m experiments.moa_vs_strong examples/moa_vs_strong.example.json`. Compares a SOVEREIGN light stack (gama routing over tool / coder / heterogeneous-ensemble lanes, all small Mac models) against a single big model. Fill ssh_host with your Mac's SSH host (user@host). suite: easy|hard|big. This composes real tehai backends via build_backend.",
+  "suite": "big",
+  "systems": {
+    "gama-combined(light)": {
+      "backend": "gama",
+      "kwargs": {
+        "backends": {
+          "tool": {"backend": "tool", "kwargs": {"inner": {"backend": "ssh-openai", "kwargs": {"ssh_host": "user@mac-studio", "port": 8080, "model_by_tier": {"large": "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit"}, "max_tokens": 1024}}}},
+          "coder": {"backend": "ssh-openai", "kwargs": {"ssh_host": "user@mac-studio", "port": 8080, "model_by_tier": {"large": "mlx-community/Qwen2.5-Coder-32B-Instruct-4bit"}, "max_tokens": 2048}},
+          "hetero": {"backend": "ensemble", "kwargs": {
+            "members": [
+              {"backend": "ssh-openai", "kwargs": {"ssh_host": "user@mac-studio", "port": 8080, "model_by_tier": {"large": "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit"}}},
+              {"backend": "ssh-openai", "kwargs": {"ssh_host": "user@mac-studio", "port": 8080, "model_by_tier": {"large": "mlx-community/Devstral-Small-2-24B-Instruct-2512-4bit"}}},
+              {"backend": "ssh-openai", "kwargs": {"ssh_host": "user@mac-studio", "port": 8080, "model_by_tier": {"large": "mlx-community/Qwen2.5-Coder-32B-Instruct-4bit"}}}
+            ],
+            "aggregator": {"backend": "ssh-openai", "kwargs": {"ssh_host": "user@mac-studio", "port": 8080, "model_by_tier": {"large": "mlx-community/Qwen2.5-Coder-32B-Instruct-4bit"}}}}}
+        },
+        "routing_table": {"qa": "tool", "code_implementation": "coder", "research": "hetero"},
+        "default": "coder"
+      }
+    },
+    "122B(single)": {"backend": "ssh-openai", "kwargs": {"ssh_host": "user@mac-studio", "port": 8080, "model_by_tier": {"large": "mlx-community/Qwen3.5-122B-A10B-4bit"}, "max_tokens": 4096}}
+  }
+}

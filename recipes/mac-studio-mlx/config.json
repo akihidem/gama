@@ -1,0 +1,25 @@
+{
+  "_comment": "Recipe: a sovereign LIGHT stack (7B + 24B + 32B + a tool, routed by task class) vs a single 122B, on a Mac Studio running MLX (mlx_lm.server, OpenAI-compatible) reached over SSH. Replace ssh_host with your Mac's SSH host (user@host). Reproduce with: python3 -m experiments.moa_vs_strong recipes/mac-studio-mlx/config.json",
+  "suite": "big",
+  "systems": {
+    "gama-light(7B+24B+32B+tool)": {
+      "backend": "gama",
+      "kwargs": {
+        "backends": {
+          "tool": {"backend": "tool", "kwargs": {"inner": {"backend": "ssh-openai", "kwargs": {"ssh_host": "user@mac-studio", "port": 8080, "model_by_tier": {"large": "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit"}, "max_tokens": 1024}}}},
+          "coder": {"backend": "ssh-openai", "kwargs": {"ssh_host": "user@mac-studio", "port": 8080, "model_by_tier": {"large": "mlx-community/Qwen2.5-Coder-32B-Instruct-4bit"}, "max_tokens": 2048}},
+          "hetero": {"backend": "ensemble", "kwargs": {
+            "members": [
+              {"backend": "ssh-openai", "kwargs": {"ssh_host": "user@mac-studio", "port": 8080, "model_by_tier": {"large": "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit"}}},
+              {"backend": "ssh-openai", "kwargs": {"ssh_host": "user@mac-studio", "port": 8080, "model_by_tier": {"large": "mlx-community/Devstral-Small-2-24B-Instruct-2512-4bit"}}},
+              {"backend": "ssh-openai", "kwargs": {"ssh_host": "user@mac-studio", "port": 8080, "model_by_tier": {"large": "mlx-community/Qwen2.5-Coder-32B-Instruct-4bit"}}}
+            ],
+            "aggregator": {"backend": "ssh-openai", "kwargs": {"ssh_host": "user@mac-studio", "port": 8080, "model_by_tier": {"large": "mlx-community/Qwen2.5-Coder-32B-Instruct-4bit"}}}}}
+        },
+        "routing_table": {"qa": "tool", "code_implementation": "coder", "research": "hetero"},
+        "default": "coder"
+      }
+    },
+    "122B(single)": {"backend": "ssh-openai", "kwargs": {"ssh_host": "user@mac-studio", "port": 8080, "model_by_tier": {"large": "mlx-community/Qwen3.5-122B-A10B-4bit"}, "max_tokens": 4096}}
+  }
+}

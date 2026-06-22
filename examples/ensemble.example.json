@@ -1,0 +1,12 @@
+{
+  "_comment": "EnsembleBackend = the model-combination loop (N models -> 1 answer), as a tehai backend. Run THROUGH tehai: `tehai bench --backends ensemble,ssh-openai --config <this> --tier large` compares the combined model vs a single strong model. Fill ssh_host. This shows a HOMOGENEOUS self-ensemble (one 7B repeated n times, temperature for diversity). For a HETEROGENEOUS mix, replace member+n with members:[{backend,kwargs}, ...]. strategy: synthesize (aggregator writes final) | majority | first.",
+  "backends": {
+    "ssh-openai": {"ssh_host": "user@mac-studio", "port": 8080, "model_by_tier": {"large": "mlx-community/Qwen3.5-122B-A10B-4bit"}, "max_tokens": 2048}
+  },
+  "ensemble": {
+    "member": {"backend": "ssh-openai", "kwargs": {"ssh_host": "user@mac-studio", "port": 8080, "model_by_tier": {"large": "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit"}, "temperature": 0.7, "max_tokens": 1024}},
+    "n": 5,
+    "strategy": "synthesize",
+    "aggregator": {"backend": "ssh-openai", "kwargs": {"ssh_host": "user@mac-studio", "port": 8080, "model_by_tier": {"large": "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit"}, "max_tokens": 1024}}
+  }
+}

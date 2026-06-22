@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gama-llm"
+version = "0.1.0"
+description = "Combine local LLMs: route each task to the right small model, ensemble them, give them tools — and benchmark which combination matches a big model. Stdlib-only, fully local."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "akihidem" }]
+keywords = ["llm", "local-llm", "ollama", "mlx", "mixture-of-agents", "ensemble", "routing", "orchestration", "tool-use"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/akihidem/gama"
+Issues = "https://github.com/akihidem/gama/issues"
+
+[project.scripts]
+gama = "gama.cli:main"
+
+[tool.setuptools]
+packages = ["gama"]

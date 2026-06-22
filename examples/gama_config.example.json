@@ -1,0 +1,16 @@
+{
+  "_comment": "gama (蝦蟇) — multi-vendor routing config. routing_table was MEASURED by `tehai bench` (2026-06-22, tier=large, 1 case/class, local ollama=gemma4). Re-measure and re-ratify before trusting in production; point ollama.host at a Mac Studio for a stronger local floor.",
+  "default_backend": "ollama",
+  "routing_table": {
+    "code_implementation": "codex",
+    "qa": "codex",
+    "research": "ollama",
+    "content": "ollama",
+    "integration": "ollama"
+  },
+  "backends": {
+    "ollama": {"host": "http://localhost:11434"},
+    "codex": {}
+  },
+  "unit_cost": {}
+}

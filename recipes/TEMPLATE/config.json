@@ -1,0 +1,18 @@
+{
+  "_comment": "Copy this dir to recipes/<your-name>/ and edit. Use placeholder hosts (user@host) — never real IPs/keys. Reproduce with: python3 -m experiments.moa_vs_strong recipes/<your-name>/config.json . suite: easy|hard|big.",
+  "suite": "hard",
+  "systems": {
+    "my-light-combo": {
+      "backend": "gama",
+      "kwargs": {
+        "backends": {
+          "tool": {"backend": "tool", "kwargs": {"inner": {"backend": "ollama", "kwargs": {"host": "http://localhost:11434", "model_by_tier": {"large": "your-small-model"}}}}},
+          "coder": {"backend": "ollama", "kwargs": {"host": "http://localhost:11434", "model_by_tier": {"large": "your-coder-model"}}}
+        },
+        "routing_table": {"qa": "tool", "code_implementation": "coder"},
+        "default": "coder"
+      }
+    },
+    "my-big-baseline": {"backend": "ollama", "kwargs": {"host": "http://localhost:11434", "model_by_tier": {"large": "your-big-model"}}}
+  }
+}

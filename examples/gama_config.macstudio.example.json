@@ -1,0 +1,25 @@
+{
+  "_comment": "gama (蝦蟇) — strong local floor on a remote Mac Studio running MLX (mlx_lm.server, OpenAI-compatible) reached over SSH (no open port; request JSON on stdin). Set ssh_host to your Mac's SSH host (user@host, or a ~/.ssh/config Host; Tailscale name works). Models are mlx-community ids present on the Mac — list them with `ssh <host> curl -s localhost:8080/v1/models`. Local-only variant: gama_config.example.json. Re-measure with `tehai bench --backends claude-tui,codex,ssh-openai --config <this> --propose ...` then merge the routing_table.",
+  "default_backend": "ssh-openai",
+  "routing_table": {
+    "code_implementation": "codex",
+    "qa": "codex",
+    "research": "ssh-openai",
+    "content": "ssh-openai",
+    "integration": "ssh-openai"
+  },
+  "backends": {
+    "ssh-openai": {
+      "ssh_host": "user@mac-studio",
+      "port": 8080,
+      "model_by_tier": {
+        "small": "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit",
+        "medium": "mlx-community/Qwen2.5-Coder-32B-Instruct-4bit",
+        "large": "mlx-community/Qwen3.5-122B-A10B-4bit"
+      },
+      "max_tokens": 1024
+    },
+    "codex": {}
+  },
+  "unit_cost": {}
+}
