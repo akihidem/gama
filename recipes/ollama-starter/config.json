@@ -1,0 +1,25 @@
+{
+  "_comment": "STARTING POINT for ollama users (no SSH/MLX needed) — a light gama stack vs a bigger model, all via local ollama. NOT YET VERIFIED: swap in models you have (`ollama list`), run `python3 -m experiments.moa_vs_strong recipes/ollama-starter/config.json`, and PR your numbers into recipe.md.",
+  "suite": "hard",
+  "systems": {
+    "gama-light(ollama)": {
+      "backend": "gama",
+      "kwargs": {
+        "backends": {
+          "tool": {"backend": "tool", "kwargs": {"inner": {"backend": "ollama", "kwargs": {"host": "http://localhost:11434", "model_by_tier": {"large": "qwen2.5-coder:7b"}}}}},
+          "coder": {"backend": "ollama", "kwargs": {"host": "http://localhost:11434", "model_by_tier": {"large": "qwen2.5-coder:32b"}}},
+          "hetero": {"backend": "ensemble", "kwargs": {
+            "members": [
+              {"backend": "ollama", "kwargs": {"host": "http://localhost:11434", "model_by_tier": {"large": "qwen2.5-coder:7b"}}},
+              {"backend": "ollama", "kwargs": {"host": "http://localhost:11434", "model_by_tier": {"large": "llama3.1:8b"}}},
+              {"backend": "ollama", "kwargs": {"host": "http://localhost:11434", "model_by_tier": {"large": "qwen2.5:14b"}}}
+            ],
+            "aggregator": {"backend": "ollama", "kwargs": {"host": "http://localhost:11434", "model_by_tier": {"large": "qwen2.5-coder:32b"}}}}}
+        },
+        "routing_table": {"qa": "tool", "code_implementation": "coder", "research": "hetero"},
+        "default": "coder"
+      }
+    },
+    "baseline(ollama-big)": {"backend": "ollama", "kwargs": {"host": "http://localhost:11434", "model_by_tier": {"large": "qwen2.5:72b"}}}
+  }
+}

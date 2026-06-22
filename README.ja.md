@@ -19,6 +19,11 @@
 
 # gama 🐸 — ローカル LLM を組み合わせる
 
+[![CI](https://github.com/akihidem/gama/actions/workflows/ci.yml/badge.svg)](https://github.com/akihidem/gama/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
+[![deps: stdlib only](https://img.shields.io/badge/deps-stdlib%20only-brightgreen.svg)](pyproject.toml)
+
 **各タスクを得意な小型ローカルモデルへ振り分け、複数を束ね（mixture of agents）、道具を
 持たせ、どの組み合わせが大きいモデルに並ぶかをベンチで測る。stdlib only。全部ローカル。**
 

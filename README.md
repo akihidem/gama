@@ -19,6 +19,11 @@
 
 # gama 🐸 — combine local LLMs
 
+[![CI](https://github.com/akihidem/gama/actions/workflows/ci.yml/badge.svg)](https://github.com/akihidem/gama/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
+[![deps: stdlib only](https://img.shields.io/badge/deps-stdlib%20only-brightgreen.svg)](pyproject.toml)
+
 **Route each task to the right small local model, combine them into a mixture of agents,
 give them tools — and benchmark which combination matches a big model. Stdlib-only.
 Fully local.**
