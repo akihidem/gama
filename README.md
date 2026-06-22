@@ -70,12 +70,30 @@ gama bench --backends ollama --tier large --propose routing.json
 | **`GamaBackend`** | **route** 1 task → 1 model by task class (a measured `routing_table`) |
 | **`EnsembleBackend`** | **combine** N models on the same task (`synthesize` / `majority` / `first`) |
 | **`ToolBackend`** | **program-aided**: the model writes Python, we run it (exact math, etc.) |
+| **`MeshflowBackend`** | **escalate** cheap→strong gated by an *external check*, mesh at the edge, human-gate high stakes (the AI-native *organizational form*) |
 
 Compose them freely as JSON (`build_backend`): a `gama` router over `tool` / `ensemble` /
 coder lanes is a *sovereign stack* you can benchmark against a single big model.
 ```bash
 gama bench --backends gama,ssh-openai --config recipes/mac-studio-mlx/config.json --tier large
 ```
+
+### Meshflow — structure *as an organization*
+Routing and ensembling combine models *statically*. `MeshflowBackend` adds the missing
+shape: **verification-routed escalation**. Try the cheapest tier; accept its answer **only
+if an external `verify(artifact)→score` passes** (not the model's self-report); otherwise
+climb to a stronger tier. When no single tier passes, **mesh** the drafts (their errors are
+complementary); when it's *still* unresolved and the stakes are high, return `<<NEEDS_HUMAN>>`
+rather than silently shipping — a thin human governance membrane. So you can pay the cheap
+tier most of the time and reach the strong tier only when the check demands it:
+```bash
+gama run "<task>" --config examples/meshflow.example.json --task-type code_implementation
+gama bench --backends meshflow,ssh-openai --config examples/meshflow.example.json --tier large
+```
+This is "structure, not scale" as an *organizational* runtime — ported from the
+[`soshiki-genron`](https://github.com/akihidem/soshiki-genron) research repo
+(`experiments/meshflow.py`, PAPER §6.5 "the org chart to adopt"), where the same form is
+argued from first principles and shown to match a frontier model at lower cost.
 
 ## The result
 Hard 12-task suite, fully local on a Mac Studio (MLX). Measurement made fair (code

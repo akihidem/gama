@@ -1,0 +1,17 @@
+{
+  "_comment": "MeshflowBackend = 段階委譲 (verification-routed escalation), the AI-native organizational form from soshiki-genron (experiments/meshflow.py, PAPER §6.5), as a gama backend. Try the cheap LOCAL tier first; accept its answer ONLY if the external `verify` passes; otherwise escalate to a stronger tier; mesh the drafts at the edge; gate high-stakes-unresolved tasks to a human (<<NEEDS_HUMAN>>). Fill ssh_host. Works for BOTH `gama run \"<task>\" --config examples/meshflow.example.json --task-type code_implementation` AND `gama bench --backends meshflow,ssh-openai --config examples/meshflow.example.json --tier large` (bench threads each case's checker as the gate, so escalation is measured honestly). The win to look for: meshflow matches the single strong tier at LOWER cost — structure, not scale.",
+  "meshflow": {
+    "tiers": [
+      {"label": "local-small", "backend": "ollama", "kwargs": {"host": "http://localhost:11434", "model_by_tier": {"large": "gemma4:e2b"}}},
+      {"label": "local-strong", "backend": "ollama", "kwargs": {"host": "http://localhost:11434", "model_by_tier": {"large": "gemma4:latest"}}},
+      {"label": "frontier", "backend": "ssh-openai", "kwargs": {"ssh_host": "user@mac-studio", "port": 8080, "model_by_tier": {"large": "mlx-community/Qwen2.5-Coder-32B-Instruct-4bit"}, "max_tokens": 2048}}
+    ],
+    "verify": "code_runs",
+    "mesh": "synthesize",
+    "aggregator": {"backend": "ssh-openai", "kwargs": {"ssh_host": "user@mac-studio", "port": 8080, "model_by_tier": {"large": "mlx-community/Qwen2.5-Coder-32B-Instruct-4bit"}, "max_tokens": 2048}},
+    "stakes": 0.0,
+    "stakes_threshold": 0.7,
+    "pass_score": 1.0,
+    "costs": [0.2, 1.0, 5.0]
+  }
+}

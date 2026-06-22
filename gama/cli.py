@@ -13,7 +13,13 @@ from pathlib import Path
 
 from .backends import get_backend
 from .benchmark import propose_routing_table, run_bench
-from .config import build_backend, ensemble_from_config, gama_from_config, load_config
+from .config import (
+    build_backend,
+    ensemble_from_config,
+    gama_from_config,
+    load_config,
+    meshflow_from_config,
+)
 from .logger import ExecutionLogger
 from .models import ModelTier
 
@@ -32,6 +38,8 @@ def cmd_bench(args: argparse.Namespace) -> int:
                 be = ensemble_from_config(args.config)
             elif n == "gama":
                 be = gama_from_config(args.config)
+            elif n == "meshflow":
+                be = meshflow_from_config(args.config)
             else:
                 be = get_backend(n, **cfg["backends"].get(n, {}))
         except Exception as e:  # unknown name / bad kwargs — skip, don't abort the sweep
@@ -70,6 +78,8 @@ def cmd_run(args: argparse.Namespace) -> int:
         be = build_backend(raw["system"])      # {"system": <backend spec>}
     elif raw.get("ensemble"):
         be = ensemble_from_config(args.config)  # an ensemble config
+    elif raw.get("meshflow"):
+        be = meshflow_from_config(args.config)  # a meshflow (段階委譲) config
     else:
         be = gama_from_config(args.config)      # a gama routing config
     out = be.complete(args.prompt, ModelTier(args.tier), task_type=args.task_type)
@@ -104,7 +114,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     pb = sub.add_parser("bench", help="benchmark backends per task-class; propose a routing_table")
     pb.add_argument("--backends", default="echo",
-                    help="comma list, e.g. ollama,ssh-openai,gama,ensemble. 'echo' = free smoke")
+                    help="comma list, e.g. ollama,ssh-openai,gama,ensemble,meshflow. "
+                         "'echo' = free smoke")
     pb.add_argument("--tier", default="large", choices=["small", "medium", "large"])
     pb.add_argument("--repeats", type=int, default=1)
     pb.add_argument("--limit-per-class", type=int, default=None)

@@ -17,6 +17,7 @@ DEFAULTS: dict[str, Any] = {
     "backends": {},                # backend name -> constructor kwargs
     "unit_cost": {},               # backend name -> USD per 1k tokens (bench cost; default free)
     "ensemble": {},                # EnsembleBackend spec (members / member+n, strategy, aggregator)
+    "meshflow": {},                # MeshflowBackend spec (tiers, verify, mesh, stakes_threshold)
 }
 
 
@@ -29,6 +30,7 @@ def load_config(source: Optional[Any]) -> dict[str, Any]:
     cfg["backends"] = dict(DEFAULTS["backends"])
     cfg["unit_cost"] = dict(DEFAULTS["unit_cost"])
     cfg["ensemble"] = dict(DEFAULTS["ensemble"])
+    cfg["meshflow"] = dict(DEFAULTS["meshflow"])
     if source is None:
         return cfg
     raw = source if isinstance(source, dict) else json.loads(Path(source).read_text(encoding="utf-8"))
@@ -44,6 +46,8 @@ def load_config(source: Optional[Any]) -> dict[str, Any]:
                             if isinstance(v, (int, float))}
     if isinstance(raw.get("ensemble"), dict):
         cfg["ensemble"] = raw["ensemble"]
+    if isinstance(raw.get("meshflow"), dict):
+        cfg["meshflow"] = raw["meshflow"]
     return cfg
 
 
@@ -86,6 +90,22 @@ def ensemble_from_config(source: Optional[Any]):
                            aggregator=aggregator, aggregator_prompt=spec.get("aggregator_prompt"))
 
 
+def meshflow_from_config(source: Optional[Any]):
+    """Build a MeshflowBackend (段階委譲 = verification-routed escalation) from cfg['meshflow'].
+
+    cfg["meshflow"] needs ``tiers`` (a list of backend specs, cheap->expensive; each may
+    carry an optional ``label`` and may itself be a composite). Optional: ``verify`` (a
+    built-in name or omitted), ``mesh`` ("union" | "synthesize" | false), ``aggregator``
+    (a spec, for synthesize), ``stakes_threshold``, ``pass_score``, ``costs``. Tiers and
+    aggregator are built recursively via ``build_backend`` (so a tier can be a tool /
+    ensemble / gama lane), exactly like ``moa_vs_strong``'s nested systems.
+    """
+    spec = load_config(source)["meshflow"] or {}
+    if not spec.get("tiers"):
+        raise ValueError("meshflow config needs 'tiers' (a list of backend specs)")
+    return build_backend({"backend": "meshflow", "kwargs": spec})
+
+
 def build_backend(spec: Any):
     """Recursively build a backend from a spec ``{"backend": name, "kwargs": {...}}``.
 
@@ -99,6 +119,19 @@ def build_backend(spec: Any):
 
     name = spec["backend"]
     kw = dict(spec.get("kwargs") or {})
+    if name == "meshflow":
+        from .meshflow import MeshflowBackend
+
+        def _tier(t):                          # each tier is a backend spec, optional "label"
+            be = build_backend(t)
+            return (t["label"], be) if t.get("label") else be
+
+        tiers = [_tier(t) for t in (kw.get("tiers") or [])]
+        agg = build_backend(kw["aggregator"]) if kw.get("aggregator") else None
+        return MeshflowBackend(
+            tiers, verify=kw.get("verify"), mesh=kw.get("mesh", "union"), aggregator=agg,
+            stakes=kw.get("stakes", 0.0), stakes_threshold=kw.get("stakes_threshold", 0.7),
+            pass_score=kw.get("pass_score", 1.0), costs=kw.get("costs"))
     if name == "tool":
         inner = build_backend(kw.pop("inner"))
         return ToolBackend(inner, **kw)

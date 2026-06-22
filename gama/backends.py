@@ -437,6 +437,25 @@ class GamaBackend(ModelBackend):
         return out
 
 
+def synthesize(aggregator, prompt: str, tier: ModelTier, candidates: list,
+               instruction: str | None = None, **kwargs) -> str:
+    """Aggregate candidate answers into one final answer via an aggregator backend
+    (the classic Mixture-of-Agents synthesize step). Shared by ``EnsembleBackend`` and
+    ``MeshflowBackend``'s edge-mesh so the logic lives in one place. Falls back to the
+    first candidate if the aggregator errors. The caller reads ``aggregator.last_usage``."""
+    listing = "\n".join(f"--- candidate {i + 1} ---\n{c[:1500]}"
+                        for i, c in enumerate(candidates))
+    instruction = instruction or (
+        "Using the candidates, output the single best FINAL answer. Follow the "
+        "original task's format instruction EXACTLY. Output only the final answer."
+    )
+    agg_prompt = f"Original task:\n{prompt}\n\nCandidate answers:\n{listing}\n\n{instruction}"
+    try:
+        return aggregator.complete(agg_prompt, tier, **kwargs)
+    except Exception:
+        return candidates[0] if candidates else ""
+
+
 class EnsembleBackend(ModelBackend):
     """Mixture-of-Agents — run several sub-backends on the SAME prompt and combine.
 
@@ -496,17 +515,7 @@ class EnsembleBackend(ModelBackend):
 
     def _synthesize(self, prompt: str, tier: ModelTier, cands: list, **kwargs) -> str:
         agg = self.aggregator or self.members[0]
-        listing = "\n".join(f"--- candidate {i + 1} ---\n{c[:1500]}"
-                            for i, c in enumerate(cands))
-        instruction = self.aggregator_prompt or (
-            "Using the candidates, output the single best FINAL answer. Follow the "
-            "original task's format instruction EXACTLY. Output only the final answer."
-        )
-        agg_prompt = f"Original task:\n{prompt}\n\nCandidate answers:\n{listing}\n\n{instruction}"
-        try:
-            out = agg.complete(agg_prompt, tier, **kwargs)
-        except Exception:
-            out = cands[0]
+        out = synthesize(agg, prompt, tier, cands, instruction=self.aggregator_prompt, **kwargs)
         self.last_usage = getattr(agg, "last_usage", None)
         return out
 

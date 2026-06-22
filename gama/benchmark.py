@@ -236,7 +236,11 @@ def _run_one(name: str, backend, case: BenchCase, tier: ModelTier, rep: int,
     try:
         if hasattr(backend, "last_usage"):
             backend.last_usage = None
-        output = backend.complete(case.prompt, tier, task_type=case.task_type)
+        # Thread the case's external checker as `verify` so a MeshflowBackend gates its
+        # cheap->expensive escalation on the SAME check the bench scores with (honest
+        # measurement). Other backends accept **kwargs and ignore it.
+        output = backend.complete(case.prompt, tier, task_type=case.task_type,
+                                  verify=case.checker)
     except Exception as e:  # never let one backend abort the sweep
         error = f"{type(e).__name__}: {e}"[:200]
     latency = round(time.monotonic() - t0, 4)

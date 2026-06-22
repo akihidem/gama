@@ -22,15 +22,23 @@ from .benchmark import (
     score_output,
     summarize,
 )
-from .config import build_backend, ensemble_from_config, gama_from_config, load_config
+from .config import (
+    build_backend,
+    ensemble_from_config,
+    gama_from_config,
+    load_config,
+    meshflow_from_config,
+)
+from .meshflow import NEEDS_HUMAN, MeshflowBackend
 from .models import ModelTier, TaskType
 
 __version__ = "0.1.0"
 __all__ = [
     "ModelTier", "TaskType",
-    "ModelBackend", "GamaBackend", "EnsembleBackend", "ToolBackend",
-    "OllamaBackend", "SshOpenAIBackend", "get_backend",
-    "build_backend", "gama_from_config", "ensemble_from_config", "load_config",
+    "ModelBackend", "GamaBackend", "EnsembleBackend", "ToolBackend", "MeshflowBackend",
+    "OllamaBackend", "SshOpenAIBackend", "get_backend", "NEEDS_HUMAN",
+    "build_backend", "gama_from_config", "ensemble_from_config", "meshflow_from_config",
+    "load_config",
     "run_bench", "summarize", "propose_routing_table", "BenchCase", "DEFAULT_SUITE",
     "score_output", "__version__",
 ]

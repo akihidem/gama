@@ -66,12 +66,28 @@ gama bench --backends ollama --tier large --propose routing.json
 | **`GamaBackend`** | タスククラスで **振り分け** 1→1（実測の `routing_table`） |
 | **`EnsembleBackend`** | 同一タスクに N モデルを **合議**（`synthesize` / `majority` / `first`） |
 | **`ToolBackend`** | **道具(PAL)**：モデルに Python を書かせて実行（正確な計算など） |
+| **`MeshflowBackend`** | **段階委譲**：外部検証で gate した安→強エスカレーション＋縁で合議＋高stakesは人間膜（AIネイティブの*組織の形*） |
 
 JSON で自由に合成（`build_backend`）：`tool` / `ensemble` / コーダーの上に `gama` ルータを
 乗せた*主権的スタック*を、単体の大きいモデルとベンチで比べられる。
 ```bash
 gama bench --backends gama,ssh-openai --config recipes/mac-studio-mlx/config.json --tier large
 ```
+
+### meshflow ── *組織*としての構造
+振り分け・合議はモデルを*静的に*束ねる。`MeshflowBackend` は欠けていた「形」＝**検証エスカレーション**
+を足す。まず一番安いティアを試し、**外部の `verify(artifact)→score` が通ったときだけ**採用（モデルの
+自己申告でなく）。通らなければ強いティアへ昇格。どの単独ティアも通らない**縁**では試行を**合議**（誤りが
+相補的だから効く）。なお未解決で stakes が高ければ黙って ship せず `<<NEEDS_HUMAN>>` を返す＝薄い人間
+統治膜。こうして**普段は安いティアで済ませ、検証が要求したときだけ強いティアに届く**。
+```bash
+gama run "<task>" --config examples/meshflow.example.json --task-type code_implementation
+gama bench --backends meshflow,ssh-openai --config examples/meshflow.example.json --tier large
+```
+これは「規模でなく構造」を*組織*の実行系にしたもの ──
+[`soshiki-genron`](https://github.com/akihidem/soshiki-genron)（組織原論）研究repo
+（`experiments/meshflow.py`・PAPER §6.5「採用すべき組織図」）で第一原理から導かれ、frontier モデルに
+低コストで並ぶことが示された形を、gama に移植した。
 
 ## 結果
 hard 12 問・Mac Studio(MLX) で全部ローカル。測定を公平化済（コード抽出＋トークン予算）──
