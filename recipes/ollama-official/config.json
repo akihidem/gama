@@ -1,0 +1,29 @@
+{
+  "suite": "hard",
+  "systems": {
+    "qwen2.5:7b (single)": {"backend": "ollama", "kwargs": {"host": "http://localhost:11434", "model_by_tier": {"large": "qwen2.5:7b"}}},
+    "coder7b + tool": {"backend": "tool", "kwargs": {"inner": {"backend": "ollama", "kwargs": {"host": "http://localhost:11434", "model_by_tier": {"large": "qwen2.5-coder:7b"}}}}},
+    "ensemble(coder7b+qwen7b+llama3b)": {"backend": "ensemble", "kwargs": {
+      "members": [
+        {"backend": "ollama", "kwargs": {"host": "http://localhost:11434", "model_by_tier": {"large": "qwen2.5-coder:7b"}}},
+        {"backend": "ollama", "kwargs": {"host": "http://localhost:11434", "model_by_tier": {"large": "qwen2.5:7b"}}},
+        {"backend": "ollama", "kwargs": {"host": "http://localhost:11434", "model_by_tier": {"large": "llama3.2:3b"}}}
+      ],
+      "aggregator": {"backend": "ollama", "kwargs": {"host": "http://localhost:11434", "model_by_tier": {"large": "qwen2.5:7b"}}}}},
+    "gama-combined": {"backend": "gama", "kwargs": {
+      "backends": {
+        "tool": {"backend": "tool", "kwargs": {"inner": {"backend": "ollama", "kwargs": {"host": "http://localhost:11434", "model_by_tier": {"large": "qwen2.5-coder:7b"}}}}},
+        "coder": {"backend": "ollama", "kwargs": {"host": "http://localhost:11434", "model_by_tier": {"large": "qwen2.5-coder:7b"}}},
+        "hetero": {"backend": "ensemble", "kwargs": {
+          "members": [
+            {"backend": "ollama", "kwargs": {"host": "http://localhost:11434", "model_by_tier": {"large": "qwen2.5-coder:7b"}}},
+            {"backend": "ollama", "kwargs": {"host": "http://localhost:11434", "model_by_tier": {"large": "qwen2.5:7b"}}},
+            {"backend": "ollama", "kwargs": {"host": "http://localhost:11434", "model_by_tier": {"large": "llama3.2:3b"}}}
+          ],
+          "aggregator": {"backend": "ollama", "kwargs": {"host": "http://localhost:11434", "model_by_tier": {"large": "qwen2.5:7b"}}}}}
+      },
+      "routing_table": {"qa": "tool", "code_implementation": "coder", "research": "hetero"},
+      "default": "coder"
+    }}
+  }
+}
