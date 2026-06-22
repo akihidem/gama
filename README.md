@@ -1,3 +1,22 @@
+```text
+                                      ___
+              .-"""-.   .-"""-.      (   )  ~
+             /   o   \ /   o   \      )_(    puff
+            |     >   V   <     |    /|\     (kiseru)
+             \     '-...-'     /    / |
+          _.'-------------------'-._/
+         /         G A M A          \
+        |          '--www--'         |
+         \     croak ... croak      /
+          '._                    _.'
+             '-..____________..-'
+```
+
+> **Summon a toad.** Combine small local models — route, ensemble, tool — to match a
+> big one. (*gama* = 蝦蟇, the toad you summon, à la Gamabunta in NARUTO.)
+
+**English** | [日本語](README.ja.md)
+
 # gama 🐸 — combine local LLMs
 
 **Route each task to the right small local model, combine them into a mixture of agents,
