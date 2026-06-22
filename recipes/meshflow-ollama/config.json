@@ -1,0 +1,12 @@
+{
+  "_comment": "meshflow demo (verification-routed escalation): try llama3.2:3b, escalate to qwen2.5-coder:7b only if it doesn't pass. gama bench threads the case checker in as the verify gate. Compare vs always-7b. Reproduce: gama bench --backends meshflow,ollama --config recipes/meshflow-ollama/config.json --tier large",
+  "meshflow": {
+    "tiers": [
+      {"backend": "ollama", "kwargs": {"host": "http://localhost:11434", "model_by_tier": {"large": "llama3.2:3b"}}},
+      {"backend": "ollama", "kwargs": {"host": "http://localhost:11434", "model_by_tier": {"large": "qwen2.5-coder:7b"}}}
+    ]
+  },
+  "backends": {
+    "ollama": {"host": "http://localhost:11434", "model_by_tier": {"large": "qwen2.5-coder:7b"}}
+  }
+}
