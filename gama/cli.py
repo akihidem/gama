@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 
 from .backends import get_backend
-from .benchmark import propose_routing_table, run_bench
+from .benchmark import SUITES, propose_routing_table, run_bench
 from .config import (
     build_backend,
     ensemble_from_config,
@@ -21,25 +21,28 @@ from .config import (
     meshflow_from_config,
 )
 from .logger import ExecutionLogger
+from .market import analyze
 from .models import ModelTier
 
 BACKEND_CHOICES = ["null", "echo", "claude-cli", "claude-tui", "codex", "gemini",
                    "ollama", "ssh-openai"]
 
 
-def cmd_bench(args: argparse.Namespace) -> int:
-    cfg = load_config(args.config)
-    names = [n.strip() for n in args.backends.split(",") if n.strip()]
+def _build_backend_map(names: list, config) -> tuple:
+    """Build a ``{name: backend}`` map from a comma list, resolving the composite names
+    (ensemble/gama/meshflow) from ``config``. Unknown/bad backends are skipped (the sweep
+    goes on). Returns ``(backends, unavailable_names)``."""
+    cfg = load_config(config)
     backends: dict = {}
     unavailable: list = []
     for n in names:
         try:
             if n == "ensemble":
-                be = ensemble_from_config(args.config)
+                be = ensemble_from_config(config)
             elif n == "gama":
-                be = gama_from_config(args.config)
+                be = gama_from_config(config)
             elif n == "meshflow":
-                be = meshflow_from_config(args.config)
+                be = meshflow_from_config(config)
             else:
                 be = get_backend(n, **cfg["backends"].get(n, {}))
         except Exception as e:  # unknown name / bad kwargs — skip, don't abort the sweep
@@ -48,6 +51,13 @@ def cmd_bench(args: argparse.Namespace) -> int:
         backends[n] = be
         if not getattr(be, "available", False):
             unavailable.append(n)
+    return backends, unavailable
+
+
+def cmd_bench(args: argparse.Namespace) -> int:
+    cfg = load_config(args.config)
+    names = [n.strip() for n in args.backends.split(",") if n.strip()]
+    backends, unavailable = _build_backend_map(names, args.config)
     if not backends:
         sys.stderr.write("[gama] no usable backends to benchmark\n")
         return 2
@@ -56,8 +66,8 @@ def cmd_bench(args: argparse.Namespace) -> int:
     sys.stderr.write("[gama] NOTE: code cases EXECUTE model-generated Python (opt-in, "
                      "like a sandbox). Only run on trusted backends.\n")
     logger = ExecutionLogger(args.out) if args.out else None
-    records = run_bench(backends, tier=ModelTier(args.tier), repeats=args.repeats,
-                        limit_per_class=args.limit_per_class,
+    records = run_bench(backends, suite=SUITES[args.suite], tier=ModelTier(args.tier),
+                        repeats=args.repeats, limit_per_class=args.limit_per_class,
                         unit_cost=cfg.get("unit_cost") or None,
                         logger=logger, run_id=args.run_id or "bench")
     proposal = propose_routing_table(records)
@@ -106,6 +116,41 @@ def cmd_recipes(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_market(args: argparse.Namespace) -> int:
+    """Run a bench over the given tiers (cheap->expensive) and print the market verdict:
+    does verification-routed escalation Pareto-dominate the flat-strong model? (p > w/s)."""
+    names = [n.strip() for n in args.backends.split(",") if n.strip()]
+    if len(names) < 2:
+        sys.stderr.write("[gama] market needs >= 2 tiers cheap->expensive, "
+                         "e.g. --backends weak,strong\n")
+        return 2
+    backends, unavailable = _build_backend_map(names, args.config)
+    tier_order = [n for n in names if n in backends]    # keep cheap->expensive order
+    if len(tier_order) < 2:
+        sys.stderr.write("[gama] need >= 2 usable tiers for a market\n")
+        return 2
+    if unavailable:
+        sys.stderr.write(f"[gama] WARNING: unavailable backends score 0: {unavailable}\n")
+    sys.stderr.write("[gama] NOTE: code cases EXECUTE model-generated Python (opt-in, "
+                     "like a sandbox). Only run on trusted backends.\n")
+    costs = [c.strip() for c in args.costs.split(",") if c.strip()] if args.costs else None
+    records = run_bench(backends, suite=SUITES[args.suite], tier=ModelTier(args.tier),
+                        repeats=args.repeats, run_id="market")
+    try:
+        result = analyze(records, tier_order, costs=costs, pass_score=args.pass_score)
+    except ValueError as e:
+        sys.stderr.write(f"[gama] {e}\n")
+        return 2
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    m, strong, a = result["market"], result["flat_strong"], result["analytic"]
+    sys.stderr.write(
+        f"[gama] market cost={m['market_cost']} pass_rate={m['pass_rate']}  vs  "
+        f"flat-strong({strong['backend']}) cost={strong['cost']} pass_rate={strong['pass_rate']}  "
+        f"-> Pareto-dominates={result['market_dominates_flat_strong']} "
+        f"(analytic p_weak={a['p_weak']} {'>' if a['dominates_2tier'] else '<='} p*={a['p_star']})\n")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="gama", description="combine local LLMs: route, ensemble, tool, benchmark")
@@ -117,6 +162,9 @@ def build_parser() -> argparse.ArgumentParser:
                     help="comma list, e.g. ollama,ssh-openai,gama,ensemble,meshflow. "
                          "'echo' = free smoke")
     pb.add_argument("--tier", default="large", choices=["small", "medium", "large"])
+    pb.add_argument("--suite", default="default", choices=["default", "hard", "brutal"],
+                    help="case suite: default (5 classes, may hit a ceiling) | hard | "
+                         "brutal (discriminating suites that break the ceiling effect)")
     pb.add_argument("--repeats", type=int, default=1)
     pb.add_argument("--limit-per-class", type=int, default=None)
     pb.add_argument("--out", default=None, help="write a JSONL bench ledger")
@@ -139,6 +187,25 @@ def build_parser() -> argparse.ArgumentParser:
     prc.add_argument("name", nargs="?", help="recipe name to show")
     prc.add_argument("--dir", default="recipes", help="recipes directory (default: ./recipes)")
     prc.set_defaults(func=cmd_recipes)
+
+    pm = sub.add_parser(
+        "market", help="is combining cheaper than scaling? the p>w/s verdict from your bench")
+    pm.add_argument("--backends", default="echo,echo",
+                    help="comma list, CHEAP->EXPENSIVE tiers (e.g. ollama,ssh-openai); the "
+                         "last is the flat-strong baseline. 'echo,echo' = free smoke")
+    pm.add_argument("--suite", default="hard", choices=["default", "hard", "brutal"],
+                    help="case suite (default: hard — discriminating, so the market has gaps "
+                         "to exploit)")
+    pm.add_argument("--costs", default=None,
+                    help="comma per-tier cost weights cheap->expensive (e.g. 1,3,10); "
+                         "default 1,2,3,...")
+    pm.add_argument("--pass-score", type=float, default=1.0,
+                    help="a case score >= this counts as solved (its external verifier passed)")
+    pm.add_argument("--tier", default="large", choices=["small", "medium", "large"])
+    pm.add_argument("--repeats", type=int, default=1)
+    pm.add_argument("--config", default=None,
+                    help="per-backend kwargs + composites (ensemble/gama/meshflow)")
+    pm.set_defaults(func=cmd_market)
     return p
 
 

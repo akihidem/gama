@@ -9,11 +9,14 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from gama.backends import ModelBackend
 from gama.benchmark import (
-    BenchCase, _check_func, _extract_code, propose_routing_table, run_bench,
-    score_output, summarize,
+    BRUTAL_SUITE, DEFAULT_SUITE, HARD_SUITE, SUITES, BenchCase, _check_func,
+    _extract_code, propose_routing_table, run_bench, score_output, summarize,
 )
+from gama.cli import build_parser
 from gama.logger import ExecutionLogger
 from gama.models import ModelTier
+
+VALID_CLASSES = {"code_implementation", "qa", "research", "content", "integration"}
 
 
 class Canned(ModelBackend):
@@ -111,6 +114,128 @@ class TestCodeExtraction(unittest.TestCase):
     def test_check_func_picks_longest_block(self):
         reply = "```\nx = 1\n```\nthen the real one:\n```python\ndef g(a):\n    return a * 2\n```"
         self.assertEqual(_check_func(reply, "g", [((5,), 10)]), 1.0)
+
+
+class TestNamedSuites(unittest.TestCase):
+    def test_registry_keys(self):
+        self.assertEqual(set(SUITES), {"default", "hard", "brutal"})
+
+    def test_default_is_unchanged(self):
+        self.assertIs(SUITES["default"], DEFAULT_SUITE)
+
+    def test_task_types_are_real_classes(self):
+        for name, suite in SUITES.items():
+            for c in suite:
+                self.assertIn(c.task_type, VALID_CLASSES, f"{name}:{c.case_id}")
+
+    def test_case_ids_unique_within_suite(self):
+        for name, suite in SUITES.items():
+            ids = [c.case_id for c in suite]
+            self.assertEqual(len(ids), len(set(ids)), name)
+
+    def test_hard_and_brutal_have_cases(self):
+        self.assertGreaterEqual(len(HARD_SUITE), 8)
+        self.assertGreaterEqual(len(BRUTAL_SUITE), 4)
+
+    def test_run_bench_accepts_named_suite(self):
+        recs = run_bench({"x": Canned("9")}, suite=SUITES["hard"],
+                         tier=ModelTier.SMALL, limit_per_class=1)
+        self.assertTrue(recs)
+        self.assertTrue(all(r["task_type"] in VALID_CLASSES for r in recs))
+
+
+class TestHardBrutalCheckers(unittest.TestCase):
+    """Every discriminating case must score a correct answer 1.0 and a wrong answer
+    < 1.0. That property is exactly what lets the suite *separate* backends."""
+
+    _LONGPAL_OK = (
+        "def longest_palindrome(s):\n"
+        "    best = ''\n"
+        "    for i in range(len(s)):\n"
+        "        for j in range(i, len(s)):\n"
+        "            sub = s[i:j + 1]\n"
+        "            if sub == sub[::-1] and len(sub) > len(best):\n"
+        "                best = sub\n"
+        "    return best\n"
+    )
+    _MERGE_OK = (
+        "def merge_intervals(intervals):\n"
+        "    intervals = sorted(intervals)\n"
+        "    out = []\n"
+        "    for x in intervals:\n"
+        "        if out and x[0] <= out[-1][1]:\n"
+        "            out[-1][1] = max(out[-1][1], x[1])\n"
+        "        else:\n"
+        "            out.append(list(x))\n"
+        "    return out\n"
+    )
+
+    GOOD = {
+        "hard-code-longpal": _LONGPAL_OK,
+        "hard-code-merge": _MERGE_OK,
+        "hard-math-mult": "1059",
+        "hard-math-modexp": "9",
+        "hard-reason-weekday": "Friday",
+        "hard-reason-lookandsay": "312211",
+        "hard-write-acrostic": ("Curious machine hums\nObserve a machine learn\n"
+                                "Deep machine dreams\nEvery machine wakes"),
+        "hard-write-primelist": "53,59,61,67",
+        "hard-tool-json-nested": ('{"tool": "search", "args": {"query": "gama", '
+                                  '"limit": 5}, "tags": ["a", "b", "c"]}'),
+        "hard-tool-json-squares": "[1, 4, 9, 16, 25]",
+        "brutal-qa-trailzeros": "24",
+        "brutal-qa-powmod": "624",
+        "brutal-research-knights": "knight",
+        "brutal-research-distinct": "648",
+        "brutal-content-palindrome": "A man, a plan, a canal, Panama",
+        "brutal-content-alliteration": "Peter picked plump purple plums past peculiar ponds",
+    }
+    BAD = {
+        "hard-code-longpal": "def longest_palindrome(s):\n    return ''\n",
+        "hard-code-merge": "def merge_intervals(intervals):\n    return intervals\n",
+        "hard-math-mult": "1000",
+        "hard-math-modexp": "1",
+        "hard-reason-weekday": "Monday",
+        "hard-reason-lookandsay": "111221",
+        "hard-write-acrostic": "Apple pie\nBanana bread\nCherry cake\nDate loaf",
+        "hard-write-primelist": "53,59,61,67,71",
+        "hard-tool-json-nested": "{}",
+        "hard-tool-json-squares": "[1, 2, 3, 4, 5]",
+        "brutal-qa-trailzeros": "20",
+        "brutal-qa-powmod": "1000",
+        "brutal-research-knights": "knave",
+        "brutal-research-distinct": "1000",
+        "brutal-content-palindrome": "hello world this is not",
+        "brutal-content-alliteration": "Peter picked plums",
+    }
+
+    def _cases(self):
+        return HARD_SUITE + BRUTAL_SUITE
+
+    def test_fixtures_cover_every_case(self):
+        ids = {c.case_id for c in self._cases()}
+        self.assertEqual(ids, set(self.GOOD))
+        self.assertEqual(ids, set(self.BAD))
+
+    def test_correct_answers_score_one(self):
+        for c in self._cases():
+            self.assertEqual(score_output(c, self.GOOD[c.case_id]), 1.0, c.case_id)
+
+    def test_wrong_answers_score_below_one(self):
+        for c in self._cases():
+            self.assertLess(score_output(c, self.BAD[c.case_id]), 1.0, c.case_id)
+
+
+class TestBenchCli(unittest.TestCase):
+    def test_suite_flag_parses(self):
+        self.assertEqual(build_parser().parse_args(["bench", "--suite", "hard"]).suite, "hard")
+
+    def test_suite_defaults_to_default(self):
+        self.assertEqual(build_parser().parse_args(["bench"]).suite, "default")
+
+    def test_bad_suite_rejected(self):
+        with self.assertRaises(SystemExit):
+            build_parser().parse_args(["bench", "--suite", "nope"])
 
 
 if __name__ == "__main__":

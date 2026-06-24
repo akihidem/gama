@@ -15,7 +15,10 @@ from .backends import (
     get_backend,
 )
 from .benchmark import (
+    BRUTAL_SUITE,
     DEFAULT_SUITE,
+    HARD_SUITE,
+    SUITES,
     BenchCase,
     propose_routing_table,
     run_bench,
@@ -29,6 +32,14 @@ from .config import (
     load_config,
     meshflow_from_config,
 )
+from .market import (
+    analyze,
+    dominates,
+    escalation_cost,
+    ladder,
+    market_over_records,
+    p_star,
+)
 from .meshflow import NEEDS_HUMAN, MeshflowBackend
 from .models import ModelTier, TaskType
 
@@ -39,6 +50,8 @@ __all__ = [
     "OllamaBackend", "SshOpenAIBackend", "get_backend", "NEEDS_HUMAN",
     "build_backend", "gama_from_config", "ensemble_from_config", "meshflow_from_config",
     "load_config",
-    "run_bench", "summarize", "propose_routing_table", "BenchCase", "DEFAULT_SUITE",
-    "score_output", "__version__",
+    "run_bench", "summarize", "propose_routing_table", "BenchCase",
+    "DEFAULT_SUITE", "HARD_SUITE", "BRUTAL_SUITE", "SUITES", "score_output",
+    "escalation_cost", "p_star", "dominates", "ladder", "market_over_records", "analyze",
+    "__version__",
 ]

@@ -200,6 +200,198 @@ DEFAULT_SUITE: list[BenchCase] = [
 
 
 # --------------------------------------------------------------------------- #
+# Hard suite — break the ceiling effect of DEFAULT_SUITE (everyone hits 1.0, so
+# it can't tell backends apart). Ported from tehai's experiments/hard_bench.py:
+# executed algorithms, modular arithmetic, non-obvious sequences, acrostic/format
+# constraints, strict nested JSON — cases hard enough to *discriminate* backends,
+# so gama's thesis ("a structured combination of small models ties a big one")
+# becomes measurable rather than a ceiling. Same deterministic-checker discipline;
+# task_type values stay within the 5 real classes so the proposed routing_table
+# keys slot straight into a config.
+# --------------------------------------------------------------------------- #
+def _chk_longest_pal(out: str) -> float:
+    ns: dict = {}
+    try:
+        exec(compile(_extract_code(out), "<bench>", "exec"), ns)  # noqa: S102
+    except Exception:
+        return 0.0
+    fn = ns.get("longest_palindrome")
+    if not callable(fn):
+        return 0.0
+    tests = {"babad": 3, "cbbd": 2, "a": 1, "forgeeksskeegfor": 10, "racecarx": 7}
+    ok = 0
+    for s, length in tests.items():
+        try:
+            r = fn(s)
+            if isinstance(r, str) and r in s and r == r[::-1] and len(r) == length:
+                ok += 1
+        except Exception:
+            pass
+    return ok / len(tests)
+
+
+def _chk_merge(out: str) -> float:
+    return _check_func(out, "merge_intervals", [
+        (([[1, 3], [2, 6], [8, 10], [15, 18]],), [[1, 6], [8, 10], [15, 18]]),
+        (([[1, 4], [4, 5]],), [[1, 5]]),
+        (([[1, 4], [0, 4]],), [[0, 4]]),
+        (([[1, 4], [2, 3]],), [[1, 4]]),
+    ])
+
+
+def _chk_mult(out: str) -> float:
+    return 1.0 if _last_int(out) == 1059 else 0.0          # 37*43 - 28*19
+
+
+def _chk_modexp(out: str) -> float:
+    return 1.0 if _last_int(out) == 9 else 0.0             # 7^100 mod 13
+
+
+def _chk_weekday(out: str) -> float:
+    return 1.0 if re.search(r"\bfriday\b", (out or "").lower()) else 0.0
+
+
+def _chk_lookandsay(out: str) -> float:
+    return 1.0 if _last_int(out) == 312211 else 0.0
+
+
+def _chk_acrostic(out: str) -> float:
+    lines = [ln.strip() for ln in (out or "").splitlines() if ln.strip()]
+    if len(lines) != 4:
+        return 0.0
+    firsts = "".join(ln[0].upper() for ln in lines if ln)
+    return (int(firsts == "CODE") + int(all("machine" in ln.lower() for ln in lines))) / 2.0
+
+
+def _chk_primelist(out: str) -> float:
+    return 1.0 if _norm_ws(out).replace(" ", "") == "53,59,61,67" else 0.0
+
+
+def _chk_json_nested(out: str) -> float:
+    try:
+        d = _extract_json(out)
+    except Exception:
+        return 0.0
+    if isinstance(d, list) and d:
+        d = d[0]
+    if not isinstance(d, dict):
+        return 0.0
+    a = d.get("args") or {}
+    return 1.0 if (d.get("tool") == "search" and isinstance(a, dict)
+                   and a.get("query") == "gama" and a.get("limit") == 5
+                   and d.get("tags") == ["a", "b", "c"]) else 0.0
+
+
+def _chk_json_squares(out: str) -> float:
+    try:
+        d = _extract_json(out)
+    except Exception:
+        return 0.0
+    return 1.0 if d == [1, 4, 9, 16, 25] else 0.0
+
+
+HARD_SUITE: list[BenchCase] = [
+    BenchCase("hard-code-longpal", "code_implementation",
+              "Write a Python function `longest_palindrome(s)` returning the longest "
+              "contiguous palindromic substring of s (return any one if there is a tie). "
+              "Return ONLY the function definition, no prose.", _chk_longest_pal),
+    BenchCase("hard-code-merge", "code_implementation",
+              "Write a Python function `merge_intervals(intervals)` that merges all "
+              "overlapping intervals and returns them sorted ascending by start, as a list "
+              "of [start, end] lists. Return ONLY the function definition, no prose.", _chk_merge),
+    BenchCase("hard-math-mult", "qa",
+              "Compute 37 * 43 - 28 * 19. Reply with ONLY the integer.", _chk_mult),
+    BenchCase("hard-math-modexp", "qa",
+              "What is the remainder when 7^100 is divided by 13? Reply with ONLY the "
+              "integer.", _chk_modexp),
+    BenchCase("hard-reason-weekday", "research",
+              "The day before two days after the day before tomorrow is Saturday. What day "
+              "is it today? Answer with ONLY the weekday name.", _chk_weekday),
+    BenchCase("hard-reason-lookandsay", "research",
+              "Give the next term of this sequence: 1, 11, 21, 1211, 111221, ? Reply with "
+              "ONLY the integer.", _chk_lookandsay),
+    BenchCase("hard-write-acrostic", "content",
+              "Write exactly 4 lines. The first letters of the four lines must spell C, O, "
+              "D, E in that order. Every line must contain the word 'machine'. Output ONLY "
+              "the 4 lines.", _chk_acrostic),
+    BenchCase("hard-write-primelist", "content",
+              "Output every prime number strictly between 50 and 70 as a comma-separated, "
+              "ascending list with no spaces and no other text.", _chk_primelist),
+    BenchCase("hard-tool-json-nested", "integration",
+              'Output ONLY a JSON object with: "tool"="search"; "args" an object with '
+              '"query"="gama" and "limit"=5; "tags"=["a","b","c"]. No prose.', _chk_json_nested),
+    BenchCase("hard-tool-json-squares", "integration",
+              "Output ONLY a JSON array of the squares of the integers 1 through 5, as "
+              "integers.", _chk_json_squares),
+]
+
+
+# --------------------------------------------------------------------------- #
+# Brutal suite — a frontier-split probe: even strong models miss some of these.
+# Ported from tehai's hard_bench.py BRUTAL_SUITE. Use when `hard` no longer
+# discriminates your strongest backends.
+# --------------------------------------------------------------------------- #
+def _chk_trailzeros(out: str) -> float:
+    return 1.0 if _last_int(out) == 24 else 0.0           # trailing zeros in 100!
+
+
+def _chk_powmod(out: str) -> float:
+    return 1.0 if _last_int(out) == 624 else 0.0          # 2^50 mod 1000
+
+
+def _chk_distinct3(out: str) -> float:
+    return 1.0 if _last_int(out) == 648 else 0.0          # 3-digit all-distinct count
+
+
+def _chk_knights(out: str) -> float:
+    toks = re.findall(r"[a-z]+", (out or "").lower())
+    return 1.0 if toks and toks[-1] == "knight" else 0.0
+
+
+def _chk_palindrome_sentence(out: str) -> float:
+    t = re.sub(r"[^a-z0-9]", "", (out or "").lower())
+    return 1.0 if len(t) >= 11 and t == t[::-1] else 0.0
+
+
+def _chk_p_alliteration(out: str) -> float:
+    words = re.findall(r"[A-Za-z']+", out or "")
+    return 1.0 if len(words) == 8 and all(w[0].lower() == "p" for w in words) else 0.0
+
+
+BRUTAL_SUITE: list[BenchCase] = [
+    BenchCase("brutal-qa-trailzeros", "qa",
+              "How many trailing zeros does 100! (100 factorial) have? Reply with ONLY the "
+              "integer.", _chk_trailzeros),
+    BenchCase("brutal-qa-powmod", "qa",
+              "Compute 2^50 mod 1000. Reply with ONLY the integer.", _chk_powmod),
+    BenchCase("brutal-research-knights", "research",
+              "On an island each person is a knight (always tells the truth) or a knave "
+              "(always lies). A says 'B is a knave'. B says 'A and I are the same type'. Is "
+              "A a knight or a knave? Answer with ONLY the single word: knight or knave.",
+              _chk_knights),
+    BenchCase("brutal-research-distinct", "research",
+              "How many 3-digit numbers (100-999) have all three digits distinct? Reply "
+              "with ONLY the integer.", _chk_distinct3),
+    BenchCase("brutal-content-palindrome", "content",
+              "Write a sentence that is a palindrome (reads identically forwards and "
+              "backwards when ignoring case, spaces and punctuation) and is at least 11 "
+              "letters long. Output ONLY the sentence.", _chk_palindrome_sentence),
+    BenchCase("brutal-content-alliteration", "content",
+              "Write a sentence of exactly 8 words where every single word begins with the "
+              "letter 'p'. Output ONLY the sentence.", _chk_p_alliteration),
+]
+
+
+# Named suites — `gama bench --suite {default,hard,brutal}`. DEFAULT_SUITE stays
+# the default so public behavior is unchanged; hard/brutal break the ceiling.
+SUITES: dict[str, list[BenchCase]] = {
+    "default": DEFAULT_SUITE,
+    "hard": HARD_SUITE,
+    "brutal": BRUTAL_SUITE,
+}
+
+
+# --------------------------------------------------------------------------- #
 # Runner
 # --------------------------------------------------------------------------- #
 def score_output(case: BenchCase, output: str) -> float:
