@@ -1,0 +1,361 @@
+{
+  "records": [
+    {
+      "backend": "gemma-e2b",
+      "task_type": "code_implementation",
+      "case_id": "hard-code-longpal",
+      "rep": 0,
+      "score": 1.0,
+      "success": true,
+      "latency_s": 27.731,
+      "tokens": 1158,
+      "cost": null,
+      "error": null,
+      "output_preview": "```python\ndef longest_palindrome(s: str) -> str:\n    n = len(s)\n    if n < 2:\n        return s\n\n    start = 0\n    max_len = 1\n\n    def expand(left, right):\n        nonlocal start, max_len\n        whil"
+    },
+    {
+      "backend": "gemma-e2b",
+      "task_type": "code_implementation",
+      "case_id": "hard-code-merge",
+      "rep": 0,
+      "score": 1.0,
+      "success": true,
+      "latency_s": 33.4174,
+      "tokens": 1417,
+      "cost": null,
+      "error": null,
+      "output_preview": "```python\ndef merge_intervals(intervals):\n    if not intervals:\n        return []\n\n    # Sort the intervals based on their start times\n    intervals.sort(key=lambda x: x[0])\n\n    merged = []\n    \n    "
+    },
+    {
+      "backend": "gemma-e2b",
+      "task_type": "qa",
+      "case_id": "hard-math-mult",
+      "rep": 0,
+      "score": 1.0,
+      "success": true,
+      "latency_s": 10.7942,
+      "tokens": 482,
+      "cost": null,
+      "error": null,
+      "output_preview": "1059"
+    },
+    {
+      "backend": "gemma-e2b",
+      "task_type": "qa",
+      "case_id": "hard-math-modexp",
+      "rep": 0,
+      "score": 1.0,
+      "success": true,
+      "latency_s": 22.9871,
+      "tokens": 1000,
+      "cost": null,
+      "error": null,
+      "output_preview": "9"
+    },
+    {
+      "backend": "gemma-e2b",
+      "task_type": "research",
+      "case_id": "hard-reason-weekday",
+      "rep": 0,
+      "score": 1.0,
+      "success": true,
+      "latency_s": 12.309,
+      "tokens": 532,
+      "cost": null,
+      "error": null,
+      "output_preview": "Friday"
+    },
+    {
+      "backend": "gemma-e2b",
+      "task_type": "research",
+      "case_id": "hard-reason-lookandsay",
+      "rep": 0,
+      "score": 1.0,
+      "success": true,
+      "latency_s": 22.9089,
+      "tokens": 986,
+      "cost": null,
+      "error": null,
+      "output_preview": "312211"
+    },
+    {
+      "backend": "gemma-e2b",
+      "task_type": "content",
+      "case_id": "hard-write-acrostic",
+      "rep": 0,
+      "score": 1.0,
+      "success": true,
+      "latency_s": 8.6621,
+      "tokens": 390,
+      "cost": null,
+      "error": null,
+      "output_preview": "Cranes operate this complex machine.\nOver there sits an automated machine.\nDrones control the advanced machine.\nEvery piece is a working machine."
+    },
+    {
+      "backend": "gemma-e2b",
+      "task_type": "content",
+      "case_id": "hard-write-primelist",
+      "rep": 0,
+      "score": 1.0,
+      "success": true,
+      "latency_s": 0.7747,
+      "tokens": 57,
+      "cost": null,
+      "error": null,
+      "output_preview": "53,59,61,67"
+    },
+    {
+      "backend": "gemma-e2b",
+      "task_type": "integration",
+      "case_id": "hard-tool-json-nested",
+      "rep": 0,
+      "score": 1.0,
+      "success": true,
+      "latency_s": 9.5312,
+      "tokens": 423,
+      "cost": null,
+      "error": null,
+      "output_preview": "```json\n{\n  \"tool\": \"search\",\n  \"args\": {\n    \"query\": \"gama\",\n    \"limit\": 5\n  },\n  \"tags\": [\n    \"a\",\n    \"b\",\n    \"c\"\n  ]\n}\n```"
+    },
+    {
+      "backend": "gemma-e2b",
+      "task_type": "integration",
+      "case_id": "hard-tool-json-squares",
+      "rep": 0,
+      "score": 1.0,
+      "success": true,
+      "latency_s": 5.0219,
+      "tokens": 221,
+      "cost": null,
+      "error": null,
+      "output_preview": "[1, 4, 9, 16, 25]"
+    },
+    {
+      "backend": "qwen-7b",
+      "task_type": "code_implementation",
+      "case_id": "hard-code-longpal",
+      "rep": 0,
+      "score": 1.0,
+      "success": true,
+      "latency_s": 9.7999,
+      "tokens": 267,
+      "cost": null,
+      "error": null,
+      "output_preview": "```python\ndef longest_palindrome(s: str) -> str:\n    def expand_around_center(left: int, right: int) -> str:\n        while left >= 0 and right < len(s) and s[left] == s[right]:\n            left -= 1\n "
+    },
+    {
+      "backend": "qwen-7b",
+      "task_type": "code_implementation",
+      "case_id": "hard-code-merge",
+      "rep": 0,
+      "score": 1.0,
+      "success": true,
+      "latency_s": 2.7171,
+      "tokens": 204,
+      "cost": null,
+      "error": null,
+      "output_preview": "```python\ndef merge_intervals(intervals):\n    if not intervals:\n        return []\n    \n    # Sort intervals based on their start time\n    intervals.sort(key=lambda x: x[0])\n    \n    merged = [interval"
+    },
+    {
+      "backend": "qwen-7b",
+      "task_type": "qa",
+      "case_id": "hard-math-mult",
+      "rep": 0,
+      "score": 0.0,
+      "success": false,
+      "latency_s": 0.3018,
+      "tokens": 57,
+      "cost": null,
+      "error": null,
+      "output_preview": "1519"
+    },
+    {
+      "backend": "qwen-7b",
+      "task_type": "qa",
+      "case_id": "hard-math-modexp",
+      "rep": 0,
+      "score": 1.0,
+      "success": true,
+      "latency_s": 0.253,
+      "tokens": 55,
+      "cost": null,
+      "error": null,
+      "output_preview": "9"
+    },
+    {
+      "backend": "qwen-7b",
+      "task_type": "research",
+      "case_id": "hard-reason-weekday",
+      "rep": 0,
+      "score": 0.0,
+      "success": false,
+      "latency_s": 0.2626,
+      "tokens": 57,
+      "cost": null,
+      "error": null,
+      "output_preview": "Tuesday"
+    },
+    {
+      "backend": "qwen-7b",
+      "task_type": "research",
+      "case_id": "hard-reason-lookandsay",
+      "rep": 0,
+      "score": 1.0,
+      "success": true,
+      "latency_s": 0.341,
+      "tokens": 76,
+      "cost": null,
+      "error": null,
+      "output_preview": "312211"
+    },
+    {
+      "backend": "qwen-7b",
+      "task_type": "content",
+      "case_id": "hard-write-acrostic",
+      "rep": 0,
+      "score": 0.5,
+      "success": true,
+      "latency_s": 0.7705,
+      "tokens": 101,
+      "cost": null,
+      "error": null,
+      "output_preview": "Computing machine data with care,\nOptimizing code for betteriare,\nDefining functions to make tasks fare,\nEncoding algorithms in silver ware."
+    },
+    {
+      "backend": "qwen-7b",
+      "task_type": "content",
+      "case_id": "hard-write-primelist",
+      "rep": 0,
+      "score": 1.0,
+      "success": true,
+      "latency_s": 0.4316,
+      "tokens": 69,
+      "cost": null,
+      "error": null,
+      "output_preview": "53,59,61,67"
+    },
+    {
+      "backend": "qwen-7b",
+      "task_type": "integration",
+      "case_id": "hard-tool-json-nested",
+      "rep": 0,
+      "score": 1.0,
+      "success": true,
+      "latency_s": 0.817,
+      "tokens": 104,
+      "cost": null,
+      "error": null,
+      "output_preview": "```json\n{\"tool\":\"search\",\"args\":{\"query\":\"gama\",\"limit\":5},\"tags\":[\"a\",\"b\",\"c\"]}\n```"
+    },
+    {
+      "backend": "qwen-7b",
+      "task_type": "integration",
+      "case_id": "hard-tool-json-squares",
+      "rep": 0,
+      "score": 1.0,
+      "success": true,
+      "latency_s": 0.6915,
+      "tokens": 71,
+      "cost": null,
+      "error": null,
+      "output_preview": "```json\n[1, 4, 9, 16, 25]\n```"
+    }
+  ],
+  "analysis": {
+    "market": {
+      "n_cases": 10,
+      "tier_order": [
+        "gemma-e2b",
+        "qwen-7b"
+      ],
+      "costs": [
+        1.0,
+        3.0
+      ],
+      "pass_score": 1.0,
+      "market_cost": 10.0,
+      "cost_per_case": 1.0,
+      "pass_rate": 1.0,
+      "ladders": [
+        {
+          "case": "hard-code-longpal",
+          "routed_to": "gemma-e2b",
+          "cost": 1.0
+        },
+        {
+          "case": "hard-code-merge",
+          "routed_to": "gemma-e2b",
+          "cost": 1.0
+        },
+        {
+          "case": "hard-math-mult",
+          "routed_to": "gemma-e2b",
+          "cost": 1.0
+        },
+        {
+          "case": "hard-math-modexp",
+          "routed_to": "gemma-e2b",
+          "cost": 1.0
+        },
+        {
+          "case": "hard-reason-weekday",
+          "routed_to": "gemma-e2b",
+          "cost": 1.0
+        },
+        {
+          "case": "hard-reason-lookandsay",
+          "routed_to": "gemma-e2b",
+          "cost": 1.0
+        },
+        {
+          "case": "hard-write-acrostic",
+          "routed_to": "gemma-e2b",
+          "cost": 1.0
+        },
+        {
+          "case": "hard-write-primelist",
+          "routed_to": "gemma-e2b",
+          "cost": 1.0
+        },
+        {
+          "case": "hard-tool-json-nested",
+          "routed_to": "gemma-e2b",
+          "cost": 1.0
+        },
+        {
+          "case": "hard-tool-json-squares",
+          "routed_to": "gemma-e2b",
+          "cost": 1.0
+        }
+      ]
+    },
+    "flats": [
+      {
+        "backend": "gemma-e2b",
+        "cost": 10.0,
+        "pass_rate": 1.0
+      },
+      {
+        "backend": "qwen-7b",
+        "cost": 30.0,
+        "pass_rate": 0.7
+      }
+    ],
+    "flat_strong": {
+      "backend": "qwen-7b",
+      "cost": 30.0,
+      "pass_rate": 0.7
+    },
+    "market_dominates_flat_strong": true,
+    "analytic": {
+      "w_weak": 1.0,
+      "s_strong": 3.0,
+      "p_weak": 1.0,
+      "p_star": 0.3333,
+      "escalation_cost_2tier": 1.0,
+      "dominates_2tier": true,
+      "threshold": "market Pareto-dominates flat-strong  <=>  p_weak > w/s"
+    },
+    "thesis": "Structure beats scale only when agents differ in capability: the escalation market wins iff the cheap tier's solve-rate p exceeds the cost ratio w/s (soshiki-genron §5, p > w/s)."
+  }
+}
