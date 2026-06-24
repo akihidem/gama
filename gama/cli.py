@@ -20,8 +20,9 @@ from .config import (
     load_config,
     meshflow_from_config,
 )
+from .decorrelation import analyze as mesh_analyze
 from .logger import ExecutionLogger
-from .market import analyze
+from .market import analyze as market_analyze
 from .models import ModelTier
 
 BACKEND_CHOICES = ["null", "echo", "claude-cli", "claude-tui", "codex", "gemini",
@@ -137,7 +138,7 @@ def cmd_market(args: argparse.Namespace) -> int:
     records = run_bench(backends, suite=SUITES[args.suite], tier=ModelTier(args.tier),
                         repeats=args.repeats, run_id="market")
     try:
-        result = analyze(records, tier_order, costs=costs, pass_score=args.pass_score)
+        result = market_analyze(records, tier_order, costs=costs, pass_score=args.pass_score)
     except ValueError as e:
         sys.stderr.write(f"[gama] {e}\n")
         return 2
@@ -148,6 +149,37 @@ def cmd_market(args: argparse.Namespace) -> int:
         f"flat-strong({strong['backend']}) cost={strong['cost']} pass_rate={strong['pass_rate']}  "
         f"-> Pareto-dominates={result['market_dominates_flat_strong']} "
         f"(analytic p_weak={a['p_weak']} {'>' if a['dominates_2tier'] else '<='} p*={a['p_star']})\n")
+    return 0
+
+
+def cmd_mesh(args: argparse.Namespace) -> int:
+    """Run a bench over the given ensemble members and print the decorrelation verdict: does
+    combining them (union under external verification) beat the best single member? (rho < 1)."""
+    names = [n.strip() for n in args.backends.split(",") if n.strip()]
+    if len(names) < 2:
+        sys.stderr.write("[gama] mesh needs >= 2 members, e.g. --backends a,b,c\n")
+        return 2
+    backends, unavailable = _build_backend_map(names, args.config)
+    members = [n for n in names if n in backends]
+    if len(members) < 2:
+        sys.stderr.write("[gama] need >= 2 usable members for a mesh\n")
+        return 2
+    if unavailable:
+        sys.stderr.write(f"[gama] WARNING: unavailable backends score 0: {unavailable}\n")
+    sys.stderr.write("[gama] NOTE: code cases EXECUTE model-generated Python (opt-in, "
+                     "like a sandbox). Only run on trusted backends.\n")
+    records = run_bench(backends, suite=SUITES[args.suite], tier=ModelTier(args.tier),
+                        repeats=args.repeats, run_id="mesh")
+    try:
+        result = mesh_analyze(records, members, pass_score=args.pass_score)
+    except ValueError as e:
+        sys.stderr.write(f"[gama] {e}\n")
+        return 2
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    sys.stderr.write(
+        f"[gama] union={result['union']} vs best-single({result['best_member']})="
+        f"{result['best_single']}  gain={result['mesh_gain']}  failure_rho={result['failure_rho']}  "
+        f"-> ensembling ignites={result['ignites']}\n")
     return 0
 
 
@@ -206,6 +238,21 @@ def build_parser() -> argparse.ArgumentParser:
     pm.add_argument("--config", default=None,
                     help="per-backend kwargs + composites (ensemble/gama/meshflow)")
     pm.set_defaults(func=cmd_market)
+
+    pmesh = sub.add_parser(
+        "mesh", help="does ensembling help? the decorrelation (rho<1) verdict from your bench")
+    pmesh.add_argument("--backends", default="echo,null",
+                       help="comma list of ensemble members (>=2), e.g. gemma,qwen,llama. "
+                            "'echo,null' = free smoke")
+    pmesh.add_argument("--suite", default="hard", choices=["default", "hard", "brutal"],
+                       help="case suite (default: hard — discriminating, so members can differ)")
+    pmesh.add_argument("--pass-score", type=float, default=1.0,
+                       help="a case score >= this counts as solved (its external verifier passed)")
+    pmesh.add_argument("--tier", default="large", choices=["small", "medium", "large"])
+    pmesh.add_argument("--repeats", type=int, default=1)
+    pmesh.add_argument("--config", default=None,
+                       help="per-backend kwargs + composites (ensemble/gama/meshflow)")
+    pmesh.set_defaults(func=cmd_mesh)
     return p
 
 

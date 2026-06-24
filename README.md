@@ -95,6 +95,33 @@ This is "structure, not scale" as an *organizational* runtime — ported from th
 (`experiments/meshflow.py`, PAPER §6.5 "the org chart to adopt"), where the same form is
 argued from first principles and shown to match a frontier model at lower cost.
 
+### Measure *whether the structure pays* — `bench --suite hard`, `market`, `mesh`
+Combining only helps under specific conditions; gama lets you **measure them on your own
+models** instead of guessing. The default bench suite hits a ceiling (good models all score
+1.0 — it can't tell them apart), so first switch to a discriminating one:
+```bash
+gama bench --backends ollama,ssh-openai --suite hard        # or: --suite brutal
+```
+**`gama market` — when is escalation cheaper than scaling?** Verification-routed escalation
+(meshflow) Pareto-dominates the single strong model **iff the cheap tier's solve-rate `p`
+exceeds the cost ratio `w/s`** (`p > w/s`). `gama market` runs the bench over your tiers
+(cheap→expensive) and prints the verdict — cost, pass-rate, and whether the market dominates:
+```bash
+gama market --backends gemma,haiku --suite hard --costs 1,10
+```
+**`gama mesh` — does ensembling actually help?** An ensemble beats its best single member
+**only when members are decorrelated (`rho < 1`) and mutually complementary (not nested)** —
+`gain = (1−rho)·(1−p)·(1−(1−p)^(n−1))`. `gama mesh` measures the failure correlation `rho`
+and the union-vs-best gain from a bench, so you know *before* deploying whether combining
+ignites or just burns tokens:
+```bash
+gama mesh --backends gemma,qwen,llama --suite hard
+```
+These are the *economic / statistical verdict layer* for the composites above, ported from
+the [`soshiki-genron`](https://github.com/akihidem/soshiki-genron) research repo
+(`model/market.py`, p>w/s; `model/mesh.py`, decorrelation). They turn "structure, not scale"
+from a slogan into something you can **falsify on your own hardware**.
+
 ## The result
 Hard 12-task suite, fully local on a Mac Studio (MLX). Measurement made fair (code
 extraction + token budget) — read this as *competitive/tied*, not a clean win:
@@ -119,9 +146,10 @@ gama run "compute 47*53+89*17" --config recipes/mac-studio-mlx/config.json --tas
 
 ## Honest notes
 - Combining identical copies of one model does **nothing** — diversity (different blind
-  spots) is what helps.
-- A small ensemble can't fix a gap **all members share** — there you need a tool, or the
-  big model.
+  spots) is what helps. `gama mesh` quantifies this as the failure correlation `rho`:
+  identical/redundant members → `rho ≈ 1` → no ignition.
+- A small ensemble can't fix a gap **all members share** — a common hard core is high `rho`,
+  so `gama mesh` reports `gain 0`. There you need a tool, or the big model.
 - Cross-architecture benchmarking needs fair answer-extraction + enough tokens, or you
   measure the harness, not the model.
 - The `tool` and code benchmark cases **execute model-generated Python** — only run on

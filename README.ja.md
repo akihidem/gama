@@ -89,6 +89,27 @@ gama bench --backends meshflow,ssh-openai --config examples/meshflow.example.jso
 （`experiments/meshflow.py`・PAPER §6.5「採用すべき組織図」）で第一原理から導かれ、frontier モデルに
 低コストで並ぶことが示された形を、gama に移植した。
 
+### 構造が*割に合うか*を測る ── `bench --suite hard` / `market` / `mesh`
+合議や段階委譲が効くのは特定の条件下だけ。gama は推測でなく**自分のモデルで測れる**ようにする。
+既定の bench suite は天井効果（良いモデルは全部 1.0 で判別不能）なので、まず判別 suite に切り替える:
+```bash
+gama bench --backends ollama,ssh-openai --suite hard        # or: --suite brutal
+```
+**`gama market` ── いつ「束ねる」が「大きくする」より安いか？** 検証エスカレーション（meshflow）が
+単体最強を Pareto 支配するのは、**安いティアの完全解率 `p` がコスト比 `w/s` を超えるとき**（`p > w/s`）。
+`gama market` はあなたのティア（安→高）で bench を回し、コスト・正答率・支配の verdict を出す:
+```bash
+gama market --backends gemma,haiku --suite hard --costs 1,10
+```
+**`gama mesh` ── 「合議」は本当に効くか？** アンサンブルが単体最強を超えるのは、**メンバが脱相関
+（`rho < 1`）かつ相互相補（入れ子でない）なときだけ** ── `利得 = (1−rho)·(1−p)·(1−(1−p)^(n−1))`。
+`gama mesh` は失敗相関 `rho` と union−best 利得を bench から測り、デプロイ*前*に「点火するか・ただ
+トークンを燃やすだけか」を教える:
+```bash
+gama mesh --backends gemma,qwen,llama --suite hard
+```
+両者は上の合成 backend に対する*経済/統計の verdict 層*で、[`soshiki-genron`](https://github.com/akihidem/soshiki-genron)（組織原論）研究repo（`model/market.py` の p>w/s・`model/mesh.py` の脱相関）から移植。「規模でなく構造」を標語から**自分のハードで反証できる**ものに変える。
+
 ## 結果
 hard 12 問・Mac Studio(MLX) で全部ローカル。測定を公平化済（コード抽出＋トークン予算）──
 これは*互角*で、クリーンな勝ちではない:
@@ -112,8 +133,10 @@ gama run "47*53+89*17 を計算" --config recipes/mac-studio-mlx/config.json --t
 ```
 
 ## 正直な注意
-- 同一モデルのコピーを重ねても **無意味** ── 効くのは多様性（別々の blind spot）。
-- 全メンバーが共有する穴は小型アンサンブルでは塞げない ── そこは道具か、大きいモデルが要る。
+- 同一モデルのコピーを重ねても **無意味** ── 効くのは多様性（別々の blind spot）。`gama mesh` は
+  これを失敗相関 `rho` で定量化する: 同一/冗長メンバ → `rho ≈ 1` → 不点火。
+- 全メンバーが共有する穴は小型アンサンブルでは塞げない ── 共有する hard core は `rho` が高く、
+  `gama mesh` は `gain 0` を返す。そこは道具か、大きいモデルが要る。
 - 異種アーキの比較は公平な答え抽出＋十分なトークンが要る。さもないとモデルでなくハーネスを
   測ってしまう。
 - `tool` とコードのベンチケースは **モデル生成 Python を実行** する ── 信頼できる backend で

@@ -32,6 +32,13 @@ from .config import (
     load_config,
     meshflow_from_config,
 )
+from .decorrelation import analyze as mesh_analyze
+from .decorrelation import (
+    failure_correlation,
+    ignites,
+    mesh_correctness,
+    mesh_gain,
+)
 from .market import (
     analyze,
     dominates,
@@ -53,5 +60,6 @@ __all__ = [
     "run_bench", "summarize", "propose_routing_table", "BenchCase",
     "DEFAULT_SUITE", "HARD_SUITE", "BRUTAL_SUITE", "SUITES", "score_output",
     "escalation_cost", "p_star", "dominates", "ladder", "market_over_records", "analyze",
+    "mesh_gain", "mesh_correctness", "ignites", "failure_correlation", "mesh_analyze",
     "__version__",
 ]
