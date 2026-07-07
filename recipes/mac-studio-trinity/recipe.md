@@ -16,17 +16,20 @@ routing (the structural shape) competitive with gama's verified escalation on ga
 suite?* It is **not** a reproduction of openfugu's own claimed "+107% over best single model"
 number (different tasks, different models, a trained router).
 
-Also out of scope for this first pass: the 122B tier (on-demand). This recipe uses only
-the two smaller models, and only for the duration of the run: as of this measurement the
-Mac Studio's standing config keeps **122B solo** resident as the shared Claude-Code
-fallback (Devstral+122B+7B together were proven to OOM at 128GB), so 24B+7B were started
-just for this bench and 122B was restored afterward -- see Notes.
+The Mac Studio's standing config keeps **122B solo** resident as the shared Claude-Code
+fallback (Devstral+122B+7B together were proven to OOM at 128GB), so any pass using 24B
+and/or 7B here only runs them for the duration of the bench and restores 122B-solo
+afterward -- see Notes. Two passes are recorded below: 24B as the strong tier first, then
+(see "Second pass") 122B as the strong tier, to check whether a bigger capability gap
+changes the verdict.
 
 ## Hardware / runtime
 - Mac Studio, running **MLX** (`mlx_lm.server`, OpenAI-compatible), reached over **SSH**
   (no open port; prompt on stdin) -- `SshOpenAIBackend`.
 - weak = Qwen2.5-Coder-7B-Instruct-4bit (port 8082) / strong = Devstral-Small-2-24B-Instruct-2512-4bit
-  (port 8080). Set `ssh_host` in `config.json` to your Mac's SSH host (`user@host`).
+  (port 8080, `config.json`) or Qwen3.5-122B-A10B-4bit (port 8081, thinking model,
+  `config-122b.json` -- needs `max_tokens: 8192`+ or the truncation trap eats the answer
+  before it's reached). Set `ssh_host` in whichever config to your Mac's SSH host (`user@host`).
 
 ## The combination
 | | trinity | meshflow | flat-strong (24B alone) |
@@ -65,11 +68,36 @@ gama's verified escalation, and does not beat simply always using the strong mod
 keep. `reject-by-measure` for a fuller trinity build; the code stays in gama as a real,
 working measurement point (`ledger` id `openfugu-trinity-vs-gama-20260704`).
 
+## Second pass (real run, 2026-07-07, weak=7B / strong=122B, `config-122b.json`)
+
+Same question, a much bigger capability gap: does a stronger fallback change the verdict?
+
+| | trinity | meshflow | ssh-openai (flat-122B alone) |
+|---|---|---|---|
+| pass_rate (n=10) | **0.9** | **1.0** | **1.0** |
+| avg latency_s | 14.73 | 6.17 | 34.49 |
+
+Per class: everything ties at 1.0 **except `research`, where trinity is still 0.5** -- the
+exact same case (`hard-reason-weekday`) fails for the exact same reason as the 24B pass:
+the classifier correctly picks `weak` (7B) both times (`last_fallback=False`, verified via
+`last_trace`), and 7B gets that specific riddle wrong regardless of which model backs it up.
+meshflow, given the identical weak-tier miss, escalates to 122B and gets it right; flat-122B
+solves everything on its own.
+
+**This reproduces, not just resembles, the first pass's structural conclusion**: making the
+fallback option far more capable (122B vs 24B) does not rescue a one-shot router's wrong bet
+-- it only matters if that bet gets escalated past, which trinity's design never does. Trinity's
+*overall* score went up (0.9 vs 0.7) purely because 7B's other misses happened to not recur
+here, not because the routing decision improved. Latency also flips the earlier picture:
+meshflow (6.17s) beats flat-122B (34.49s) by staying on the fast 7B tier whenever it already
+passes, while trinity (14.73s) sits in between (it always pays for whichever single tier the
+classifier picked, cheap or not).
+
 ## Notes (be honest)
 
-- **Single run, small suite** (`hard`, n=10, 2 reps/class). Numbers will wobble -- re-run
-  and PR your own. A 122B-tier follow-up (weak=7B/strong=122B) is a natural next step if
-  someone wants to see whether a bigger capability gap changes the verdict.
+- **Single run, small suite** (`hard`, n=10, 2 reps/class) per pass. Numbers will wobble --
+  re-run and PR your own. The 122B-tier second pass reproduced the exact same single
+  failing case as the 24B pass, which is reassuring (not noise) but still n=1 per config.
 - **Two real bugs found and fixed mid-measurement** (both in `TrinityBackend._pick`,
   `gama/trinity.py`), worth knowing if you build on this:
   1. The scorer's classification prompt originally asked for a label *before* the query

@@ -1,0 +1,21 @@
+{
+  "_comment": "Second-pass variant of config.json: same question (does trinity's one-shot predictive routing beat meshflow's verified escalation?) with a much bigger capability gap -- weak=7B, strong=122B (thinking model; max_tokens=8192 to avoid the truncation trap documented in local-llm-lab -- default max_tokens=2048 lets thinking eat the whole budget before the answer). Reproduce: gama bench --suite hard --backends trinity,meshflow,ssh-openai --config recipes/mac-studio-trinity/config-122b.json",
+  "backends": {
+    "ssh-openai": {"ssh_host": "user@mac-studio", "port": 8081, "model_by_tier": {"large": "mlx-community/Qwen3.5-122B-A10B-4bit"}, "max_tokens": 8192, "timeout": 900}
+  },
+  "trinity": {
+    "workers": [
+      {"label": "weak", "backend": "ssh-openai", "kwargs": {"ssh_host": "user@mac-studio", "port": 8082, "model_by_tier": {"large": "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit"}, "max_tokens": 1536}},
+      {"label": "strong", "backend": "ssh-openai", "kwargs": {"ssh_host": "user@mac-studio", "port": 8081, "model_by_tier": {"large": "mlx-community/Qwen3.5-122B-A10B-4bit"}, "max_tokens": 8192, "timeout": 900}}
+    ],
+    "scorer": {"backend": "ssh-openai", "kwargs": {"ssh_host": "user@mac-studio", "port": 8082, "model_by_tier": {"large": "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit"}, "max_tokens": 16}},
+    "costs": [1.0, 3.0]
+  },
+  "meshflow": {
+    "tiers": [
+      {"label": "weak", "backend": "ssh-openai", "kwargs": {"ssh_host": "user@mac-studio", "port": 8082, "model_by_tier": {"large": "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit"}, "max_tokens": 1536}},
+      {"label": "strong", "backend": "ssh-openai", "kwargs": {"ssh_host": "user@mac-studio", "port": 8081, "model_by_tier": {"large": "mlx-community/Qwen3.5-122B-A10B-4bit"}, "max_tokens": 8192, "timeout": 900}}
+    ],
+    "costs": [1.0, 3.0]
+  }
+}
