@@ -171,6 +171,14 @@ class SshOpenAIBackend(ModelBackend):
     ``ssh <host> curl -s localhost:<port><path> --data-binary @-`` with the request
     JSON on **stdin** (the prompt never appears in the remote argv). A sovereign
     "strong floor" — e.g. a Mac Studio running MLX. Inert unless explicitly used.
+
+    Trust boundary: ``path`` is shell-quoted before reaching the remote command (it has
+    no legitimate reason to carry shell metacharacters). ``ssh_host``/``ssh_opts`` are
+    NOT sandboxed against a malicious config author -- ``ssh_opts`` exists specifically
+    to pass arbitrary OpenSSH flags (``-o ProxyJump=...`` and friends), so restricting it
+    would break its own purpose. This class (like ``ClaudeCliBackend``/``CodexBackend``
+    elsewhere in this module) assumes the config author IS the person running gama;
+    it is not a safe boundary for configs authored by an untrusted third party.
     """
 
     name = "ssh-openai"
