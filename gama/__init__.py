@@ -31,6 +31,7 @@ from .config import (
     gama_from_config,
     load_config,
     meshflow_from_config,
+    trinity_from_config,
 )
 from .decorrelation import analyze as mesh_analyze
 from .decorrelation import (
@@ -49,13 +50,16 @@ from .market import (
 )
 from .meshflow import NEEDS_HUMAN, MeshflowBackend
 from .models import ModelTier, TaskType
+from .trinity import TrinityBackend
 
 __version__ = "0.1.0"
 __all__ = [
     "ModelTier", "TaskType",
     "ModelBackend", "GamaBackend", "EnsembleBackend", "ToolBackend", "MeshflowBackend",
+    "TrinityBackend",
     "OllamaBackend", "SshOpenAIBackend", "get_backend", "NEEDS_HUMAN",
     "build_backend", "gama_from_config", "ensemble_from_config", "meshflow_from_config",
+    "trinity_from_config",
     "load_config",
     "run_bench", "summarize", "propose_routing_table", "BenchCase",
     "DEFAULT_SUITE", "HARD_SUITE", "BRUTAL_SUITE", "SUITES", "score_output",

@@ -94,6 +94,8 @@ def cmd_run(args: argparse.Namespace) -> int:
         be = ensemble_from_config(args.config)  # an ensemble config
     elif raw.get("meshflow"):
         be = meshflow_from_config(args.config)  # a meshflow (段階委譲) config
+    elif raw.get("trinity"):
+        be = trinity_from_config(args.config)   # a trinity (一撃予測ルーティング) config
     else:
         be = gama_from_config(args.config)      # a gama routing config
     out = be.complete(args.prompt, ModelTier(args.tier), task_type=args.task_type)

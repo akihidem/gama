@@ -64,6 +64,13 @@ class TrinityBackend(ModelBackend):
             else:
                 label, be = getattr(w, "name", f"worker{i}"), w
             self.workers.append((str(label), be))
+        labels = [label for label, _ in self.workers]
+        if len(set(labels)) != len(labels):
+            # complete() resolves a label to a worker via dict(self.workers) (last wins)
+            # but to a cost index via list.index() (first wins) -- a duplicate label would
+            # silently split those two lookups. Fail loud instead (mirrors gama's fail-closed
+            # style elsewhere, e.g. build-arbiter's _floor()).
+            raise ValueError(f"TrinityBackend worker labels must be unique, got {labels}")
         self.scorer = scorer if scorer is not None else self.workers[0][1]
         self.costs = list(costs) if costs else [float(i + 1) for i in range(len(self.workers))]
         self.scorer_cost = scorer_cost if scorer_cost is not None else self.costs[0]

@@ -99,6 +99,19 @@ class TestTrinityOneShot(unittest.TestCase):
         self.assertEqual(out, "")               # a failing dispatch -> empty artifact, not a retry
         self.assertEqual(t.last_resolved_by, "flaky")   # trinity does not escalate past it
 
+    def test_duplicate_labels_are_rejected(self):
+        # complete() resolves the picked label via dict(workers) (last wins) but the cost
+        # index via list.index() (first wins) -- a duplicate label would silently split
+        # those two lookups (misrouting vs. mis-costing). Fail loud at construction instead.
+        with self.assertRaises(ValueError):
+            TrinityBackend([("dup", Fixed("A")), ("dup", Fixed("B"))])
+
+    def test_default_labels_collide_when_unlabeled(self):
+        # Two bare ModelBackend instances both default to name="abstract" -- same failure
+        # mode as an explicit duplicate label.
+        with self.assertRaises(ValueError):
+            TrinityBackend([Fixed("A"), Fixed("B")])
+
 
 class TestTrinityFromConfig(unittest.TestCase):
     def test_build_backend_wires_workers_recursively(self):
@@ -116,6 +129,45 @@ class TestTrinityFromConfig(unittest.TestCase):
         self.assertEqual([label for label, _ in be.workers], ["weak", "strong"])
         out = be.complete("hello", ModelTier.LARGE)
         self.assertIsInstance(out, str)
+
+    def test_trinity_from_config_needs_workers(self):
+        from gama.config import trinity_from_config
+        with self.assertRaises(ValueError):
+            trinity_from_config({"trinity": {}})
+
+    def test_trinity_from_config_builds_backend(self):
+        from gama.config import trinity_from_config
+        cfg = {"trinity": {"workers": [
+            {"label": "weak", "backend": "echo"},
+            {"label": "strong", "backend": "echo"},
+        ]}}
+        be = trinity_from_config(cfg)
+        self.assertIsInstance(be, TrinityBackend)
+
+    def test_cmd_run_recognizes_a_trinity_only_config(self):
+        # Regression: cmd_run special-cased ensemble/meshflow but fell through to
+        # gama_from_config (silently building the default "ollama" lane) for a
+        # trinity-only config. gama/cli.py:cmd_run must check raw.get("trinity") too.
+        import argparse
+        import json
+        import tempfile
+        import os as _os
+
+        from gama.cli import cmd_run
+
+        cfg = {"trinity": {"workers": [
+            {"label": "weak", "backend": "echo"},
+            {"label": "strong", "backend": "echo"},
+        ]}}
+        fd, path = tempfile.mkstemp(suffix=".json")
+        try:
+            with _os.fdopen(fd, "w") as fh:
+                json.dump(cfg, fh)
+            args = argparse.Namespace(config=path, prompt="hi", tier="large", task_type=None)
+            rc = cmd_run(args)
+            self.assertEqual(rc, 0)
+        finally:
+            _os.unlink(path)
 
 
 if __name__ == "__main__":
