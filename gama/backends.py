@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 from abc import ABC, abstractmethod
@@ -190,8 +191,13 @@ class SshOpenAIBackend(ModelBackend):
         self.last_usage = None
 
     def _remote_cmd(self) -> str:
+        # `path` is config-controlled; the remote host runs this whole string through a
+        # shell, so a bare `'{url}'` interpolation lets a `path` containing a single quote
+        # break out of the quoting into arbitrary remote shell syntax. shlex.quote() closes
+        # that regardless of what `path` contains (port is already int()-coerced, so it
+        # can't carry shell metacharacters).
         url = f"http://localhost:{int(self.port)}{self.path}"
-        return (f"curl -s -X POST '{url}' "
+        return (f"curl -s -X POST {shlex.quote(url)} "
                 f"-H 'Content-Type: application/json' --data-binary @-")
 
     def _ssh_cmd(self) -> list:
