@@ -19,6 +19,7 @@ from .config import (
     gama_from_config,
     load_config,
     meshflow_from_config,
+    trinity_from_config,
 )
 from .decorrelation import analyze as mesh_analyze
 from .logger import ExecutionLogger
@@ -31,8 +32,8 @@ BACKEND_CHOICES = ["null", "echo", "claude-cli", "claude-tui", "codex", "gemini"
 
 def _build_backend_map(names: list, config) -> tuple:
     """Build a ``{name: backend}`` map from a comma list, resolving the composite names
-    (ensemble/gama/meshflow) from ``config``. Unknown/bad backends are skipped (the sweep
-    goes on). Returns ``(backends, unavailable_names)``."""
+    (ensemble/gama/meshflow/trinity) from ``config``. Unknown/bad backends are skipped
+    (the sweep goes on). Returns ``(backends, unavailable_names)``."""
     cfg = load_config(config)
     backends: dict = {}
     unavailable: list = []
@@ -44,6 +45,8 @@ def _build_backend_map(names: list, config) -> tuple:
                 be = gama_from_config(config)
             elif n == "meshflow":
                 be = meshflow_from_config(config)
+            elif n == "trinity":
+                be = trinity_from_config(config)
             else:
                 be = get_backend(n, **cfg["backends"].get(n, {}))
         except Exception as e:  # unknown name / bad kwargs — skip, don't abort the sweep

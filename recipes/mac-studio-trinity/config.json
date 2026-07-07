@@ -1,0 +1,21 @@
+{
+  "_comment": "Recipe: does openfugu's TRINITY structural idea (one-shot predictive routing -- a cheap classifier picks ONE worker, dispatch once, no retry) beat gama's own MeshflowBackend (sequential verification escalation) on the SAME two local Mac Studio models? See recipe.md for the honesty caveat: this is a structural proxy (prompted classification), not openfugu's hidden-state/CMA-ES-trained router. Replace ssh_host with your Mac's SSH host (user@host). Reproduce with: gama bench --suite hard --backends trinity,meshflow,ssh-openai --config recipes/mac-studio-trinity/config.json",
+  "backends": {
+    "ssh-openai": {"ssh_host": "user@mac-studio", "port": 8080, "model_by_tier": {"large": "mlx-community/Devstral-Small-2-24B-Instruct-2512-4bit"}, "max_tokens": 1536}
+  },
+  "trinity": {
+    "workers": [
+      {"label": "weak", "backend": "ssh-openai", "kwargs": {"ssh_host": "user@mac-studio", "port": 8082, "model_by_tier": {"large": "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit"}, "max_tokens": 1536}},
+      {"label": "strong", "backend": "ssh-openai", "kwargs": {"ssh_host": "user@mac-studio", "port": 8080, "model_by_tier": {"large": "mlx-community/Devstral-Small-2-24B-Instruct-2512-4bit"}, "max_tokens": 1536}}
+    ],
+    "scorer": {"backend": "ssh-openai", "kwargs": {"ssh_host": "user@mac-studio", "port": 8082, "model_by_tier": {"large": "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit"}, "max_tokens": 16}},
+    "costs": [1.0, 2.0]
+  },
+  "meshflow": {
+    "tiers": [
+      {"label": "weak", "backend": "ssh-openai", "kwargs": {"ssh_host": "user@mac-studio", "port": 8082, "model_by_tier": {"large": "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit"}, "max_tokens": 1536}},
+      {"label": "strong", "backend": "ssh-openai", "kwargs": {"ssh_host": "user@mac-studio", "port": 8080, "model_by_tier": {"large": "mlx-community/Devstral-Small-2-24B-Instruct-2512-4bit"}, "max_tokens": 1536}}
+    ],
+    "costs": [1.0, 2.0]
+  }
+}

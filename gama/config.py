@@ -3,7 +3,7 @@
 A config is a dict / JSON file with: ``default_backend``, ``routing_table``
 (task_type -> backend name), ``backends`` (name -> constructor kwargs), ``ensemble``
 (a spec), ``unit_cost`` (name -> USD/1k tokens). ``build_backend`` constructs any
-composite (gama / ensemble / tool) from a nested spec.
+composite (gama / ensemble / tool / meshflow / trinity) from a nested spec.
 """
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ DEFAULTS: dict[str, Any] = {
     "unit_cost": {},               # backend name -> USD per 1k tokens (bench cost; default free)
     "ensemble": {},                # EnsembleBackend spec (members / member+n, strategy, aggregator)
     "meshflow": {},                # MeshflowBackend spec (tiers, verify, mesh, stakes_threshold)
+    "trinity": {},                 # TrinityBackend spec (workers, scorer, costs, scorer_cost)
 }
 
 
@@ -31,6 +32,7 @@ def load_config(source: Optional[Any]) -> dict[str, Any]:
     cfg["unit_cost"] = dict(DEFAULTS["unit_cost"])
     cfg["ensemble"] = dict(DEFAULTS["ensemble"])
     cfg["meshflow"] = dict(DEFAULTS["meshflow"])
+    cfg["trinity"] = dict(DEFAULTS["trinity"])
     if source is None:
         return cfg
     raw = source if isinstance(source, dict) else json.loads(Path(source).read_text(encoding="utf-8"))
@@ -48,6 +50,8 @@ def load_config(source: Optional[Any]) -> dict[str, Any]:
         cfg["ensemble"] = raw["ensemble"]
     if isinstance(raw.get("meshflow"), dict):
         cfg["meshflow"] = raw["meshflow"]
+    if isinstance(raw.get("trinity"), dict):
+        cfg["trinity"] = raw["trinity"]
     return cfg
 
 
@@ -106,6 +110,21 @@ def meshflow_from_config(source: Optional[Any]):
     return build_backend({"backend": "meshflow", "kwargs": spec})
 
 
+def trinity_from_config(source: Optional[Any]):
+    """Build a TrinityBackend (一撃予測ルーティング) from cfg['trinity'].
+
+    cfg["trinity"] needs ``workers`` (a list of backend specs; each may carry an
+    optional ``label`` and may itself be a composite). Optional: ``scorer`` (a spec
+    for the one classification call; defaults to the first worker), ``costs``,
+    ``scorer_cost``. Workers/scorer are built recursively via ``build_backend``,
+    exactly like ``meshflow_from_config``'s tiers.
+    """
+    spec = load_config(source)["trinity"] or {}
+    if not spec.get("workers"):
+        raise ValueError("trinity config needs 'workers' (a list of backend specs)")
+    return build_backend({"backend": "trinity", "kwargs": spec})
+
+
 def build_backend(spec: Any):
     """Recursively build a backend from a spec ``{"backend": name, "kwargs": {...}}``.
 
@@ -132,6 +151,17 @@ def build_backend(spec: Any):
             tiers, verify=kw.get("verify"), mesh=kw.get("mesh", "union"), aggregator=agg,
             stakes=kw.get("stakes", 0.0), stakes_threshold=kw.get("stakes_threshold", 0.7),
             pass_score=kw.get("pass_score", 1.0), costs=kw.get("costs"))
+    if name == "trinity":
+        from .trinity import TrinityBackend
+
+        def _worker(t):                        # each worker is a backend spec, optional "label"
+            be = build_backend(t)
+            return (t["label"], be) if t.get("label") else be
+
+        workers = [_worker(t) for t in (kw.get("workers") or [])]
+        scorer = build_backend(kw["scorer"]) if kw.get("scorer") else None
+        return TrinityBackend(workers, scorer=scorer, costs=kw.get("costs"),
+                              scorer_cost=kw.get("scorer_cost"))
     if name == "tool":
         inner = build_backend(kw.pop("inner"))
         return ToolBackend(inner, **kw)
