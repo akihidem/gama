@@ -123,7 +123,10 @@ class TrinityBackend(ModelBackend):
             out = be.complete(prompt, tier, **sub)
         except Exception:
             out = ""
-        cost = self.scorer_cost + (self.costs[idx] if idx < len(self.costs) else 1.0)
+        # A single worker means _pick() skipped the scorer call entirely (nothing to
+        # classify) -- don't charge for a call that never happened.
+        scorer_cost = self.scorer_cost if len(self.workers) > 1 else 0.0
+        cost = scorer_cost + (self.costs[idx] if idx < len(self.costs) else 1.0)
         self.last_trace = [
             {"role": "scorer", "picked": label, "raw": (raw or "")[:80], "fell_back": fell_back},
             {"tier": label},

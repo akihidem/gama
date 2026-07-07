@@ -85,6 +85,14 @@ class TestTrinityOneShot(unittest.TestCase):
         out = t.complete("q", ModelTier.LARGE)
         self.assertEqual(out, "the-answer")
         self.assertEqual(scorer.calls, 0)      # no ambiguity to resolve -> no scorer call
+
+    def test_single_worker_is_not_charged_for_the_skipped_scorer_call(self):
+        # A call that never happened must not appear in last_cost.
+        scorer = Fixed("irrelevant")
+        only = Fixed("the-answer")
+        t = TrinityBackend([("only", only)], scorer=scorer, costs=[7.0], scorer_cost=3.0)
+        t.complete("q", ModelTier.LARGE)
+        self.assertEqual(t.last_cost, 7.0)
         self.assertEqual(only.calls, 1)
 
     def test_failing_worker_does_not_crash_the_run(self):
