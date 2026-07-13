@@ -134,6 +134,26 @@ extraction + token budget) — read this as *competitive/tied*, not a clean win:
 Complementary blind spots, same score — all local. Reproduce:
 `python3 -m experiments.moa_vs_strong <config.json>`.
 
+## A canvas for these combinations — [yoriai 🪢](https://github.com/akihidem/yoriai)
+
+gama's config is already a tree: `build_backend` composes `meshflow` / `ensemble` / `tool` /
+`gama` recursively. **[yoriai](https://github.com/akihidem/yoriai)** is the GUI for that tree —
+place small local models on a canvas as an *organisation*, and it **machine-checks whether the
+organisation is sound before you run it**:
+
+- will the weights actually fit in your VRAM? (a node with no `model_by_tier` still pulls
+  `OllamaBackend.DEFAULT_MODEL` — 9.6GB — so a budgeter that counts only explicit params lies)
+- is what ran the thing you placed? (trace ⇄ structure, so a silent tier fallback is caught)
+- **is the consensus grounded?** an `EnsembleBackend` with no external `verify` anywhere has
+  grounding *g* = 0 — and below the critical *g\* = 0.225* a unanimous vote can lock onto a
+  wrong answer (souteni H2). The frontier models herd *hardest* here.
+- does the mesh actually ignite? `ignites()` is `mesh_gain > 1e-9`, i.e. **True for any ρ < 1** —
+  so yoriai reports the *size* of the gain, and calls anything at or below the once-retracted
+  +0.042 `marginal` rather than "it fired".
+
+Same round-trip both ways: every config in `examples/` and `recipes/` loads into the canvas and
+writes back byte-identical (that's yoriai's L0-1).
+
 ## Recipes — grow it together 🌱
 `recipes/` is a community library: each recipe is a `config.json` (a combination) +
 `recipe.md` (the models, the hardware, the `gama bench` numbers). Found a small-model combo
