@@ -109,6 +109,12 @@ class OllamaBackend(ModelBackend):
     name = "ollama"
     available = True
 
+    # The model a tier falls back to when `model_by_tier` has no entry for it. Exposed as a
+    # class attribute (not an inline literal in complete()) so that tools which must predict
+    # what this backend will actually load — a VRAM budgeter, a trace verifier — can read it
+    # instead of duplicating the string and drifting silently when it changes here.
+    DEFAULT_MODEL = "gemma4:latest"
+
     # On this machine Ollama answers on localhost:11434. Under some WSL2 setups it
     # is only reachable via the Windows host route (e.g. http://172.24.224.1:11434);
     # override `host` if localhost fails.
@@ -126,8 +132,8 @@ class OllamaBackend(ModelBackend):
         self.last_usage = None
         self.model_by_tier = model_by_tier or {
             ModelTier.SMALL: "gemma4:e2b",
-            ModelTier.MEDIUM: "gemma4:latest",
-            ModelTier.LARGE: "gemma4:latest",
+            ModelTier.MEDIUM: self.DEFAULT_MODEL,
+            ModelTier.LARGE: self.DEFAULT_MODEL,
         }
 
     def _ssh_cmd(self, model: str) -> list:
@@ -135,7 +141,7 @@ class OllamaBackend(ModelBackend):
         return ["ssh", *self.ssh_opts, self.ssh_host, self.remote_ollama, "run", model]
 
     def complete(self, prompt: str, tier: ModelTier, **kwargs) -> str:  # pragma: no cover
-        model = self.model_by_tier.get(tier, "gemma4:latest")
+        model = self.model_by_tier.get(tier, self.DEFAULT_MODEL)
         if self.transport == "ssh":
             if not self.ssh_host:
                 raise RuntimeError("OllamaBackend(transport='ssh') requires ssh_host")
