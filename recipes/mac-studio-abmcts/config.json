@@ -1,0 +1,24 @@
+{
+  "_comment": "Recipe: AB-MCTS-A (adaptive branching MCTS, Sakana AI arXiv:2503.04412 / SakanaAI/treequest) as a gama backend over local Mac Studio MLX models. At each node the search Thompson-samples GO WIDER (fresh candidate) vs GO DEEPER (refine an existing one) with the case checker as the reward, and picks WHICH model per widen step (Multi-LLM AB-MCTS). Replace ssh_host with your Mac's SSH host (user@host). Reproduce with: gama bench --suite hard --backends abmcts,ensemble,ssh-openai --config recipes/mac-studio-abmcts/config.json --tier large. The `ensemble` here is the HONEST CONTROL = width-only best-of-N of the same two workers (strategy=first, no aggregator LLM), so you can see whether the ADAPTIVE search beats plain repeated sampling at equal-ish budget, not just whether search beats one model. `seed` is null so bench --repeats gets real variance; set an int for a reproducible single run.",
+  "backends": {
+    "ssh-openai": {"ssh_host": "user@mac-studio", "port": 8080, "model_by_tier": {"large": "mlx-community/Devstral-Small-2-24B-Instruct-2512-4bit"}, "max_tokens": 1536}
+  },
+  "abmcts": {
+    "workers": [
+      {"label": "weak", "backend": "ssh-openai", "kwargs": {"ssh_host": "user@mac-studio", "port": 8082, "model_by_tier": {"large": "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit"}, "max_tokens": 1536}},
+      {"label": "strong", "backend": "ssh-openai", "kwargs": {"ssh_host": "user@mac-studio", "port": 8080, "model_by_tier": {"large": "mlx-community/Devstral-Small-2-24B-Instruct-2512-4bit"}, "max_tokens": 1536}}
+    ],
+    "budget": 12,
+    "prior": [0.5, 0.5],
+    "pass_score": 1.0,
+    "costs": [1.0, 2.0],
+    "seed": null
+  },
+  "ensemble": {
+    "members": [
+      {"backend": "ssh-openai", "kwargs": {"ssh_host": "user@mac-studio", "port": 8082, "model_by_tier": {"large": "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit"}, "max_tokens": 1536}},
+      {"backend": "ssh-openai", "kwargs": {"ssh_host": "user@mac-studio", "port": 8080, "model_by_tier": {"large": "mlx-community/Devstral-Small-2-24B-Instruct-2512-4bit"}, "max_tokens": 1536}}
+    ],
+    "strategy": "first"
+  }
+}

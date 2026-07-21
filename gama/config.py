@@ -3,7 +3,7 @@
 A config is a dict / JSON file with: ``default_backend``, ``routing_table``
 (task_type -> backend name), ``backends`` (name -> constructor kwargs), ``ensemble``
 (a spec), ``unit_cost`` (name -> USD/1k tokens). ``build_backend`` constructs any
-composite (gama / ensemble / tool / meshflow / trinity) from a nested spec.
+composite (gama / ensemble / tool / meshflow / trinity / abmcts) from a nested spec.
 """
 from __future__ import annotations
 
@@ -19,6 +19,7 @@ DEFAULTS: dict[str, Any] = {
     "ensemble": {},                # EnsembleBackend spec (members / member+n, strategy, aggregator)
     "meshflow": {},                # MeshflowBackend spec (tiers, verify, mesh, stakes_threshold)
     "trinity": {},                 # TrinityBackend spec (workers, scorer, costs, scorer_cost)
+    "abmcts": {},                  # ABMCTSBackend spec (workers, verify, budget, prior, pass_score)
 }
 
 
@@ -33,6 +34,7 @@ def load_config(source: Optional[Any]) -> dict[str, Any]:
     cfg["ensemble"] = dict(DEFAULTS["ensemble"])
     cfg["meshflow"] = dict(DEFAULTS["meshflow"])
     cfg["trinity"] = dict(DEFAULTS["trinity"])
+    cfg["abmcts"] = dict(DEFAULTS["abmcts"])
     if source is None:
         return cfg
     raw = source if isinstance(source, dict) else json.loads(Path(source).read_text(encoding="utf-8"))
@@ -52,6 +54,8 @@ def load_config(source: Optional[Any]) -> dict[str, Any]:
         cfg["meshflow"] = raw["meshflow"]
     if isinstance(raw.get("trinity"), dict):
         cfg["trinity"] = raw["trinity"]
+    if isinstance(raw.get("abmcts"), dict):
+        cfg["abmcts"] = raw["abmcts"]
     return cfg
 
 
@@ -125,6 +129,22 @@ def trinity_from_config(source: Optional[Any]):
     return build_backend({"backend": "trinity", "kwargs": spec})
 
 
+def abmcts_from_config(source: Optional[Any]):
+    """Build an ABMCTSBackend (AB-MCTS-A adaptive branching search) from cfg['abmcts'].
+
+    cfg["abmcts"] needs ``workers`` (a list of backend specs; each may carry an optional
+    ``label`` and may itself be a composite = one bandit action / candidate generator).
+    Optional: ``verify`` (a built-in name or omitted — a bench threads the case checker in),
+    ``budget`` (model-call budget), ``prior`` ([a, b] Beta prior), ``pass_score``, ``costs``,
+    ``seed``. Workers are built recursively via ``build_backend``, exactly like
+    ``trinity_from_config``'s workers.
+    """
+    spec = load_config(source)["abmcts"] or {}
+    if not spec.get("workers"):
+        raise ValueError("abmcts config needs 'workers' (a list of backend specs)")
+    return build_backend({"backend": "abmcts", "kwargs": spec})
+
+
 def build_backend(spec: Any):
     """Recursively build a backend from a spec ``{"backend": name, "kwargs": {...}}``.
 
@@ -162,6 +182,18 @@ def build_backend(spec: Any):
         scorer = build_backend(kw["scorer"]) if kw.get("scorer") else None
         return TrinityBackend(workers, scorer=scorer, costs=kw.get("costs"),
                               scorer_cost=kw.get("scorer_cost"))
+    if name == "abmcts":
+        from .abmcts import ABMCTSBackend
+
+        def _worker(t):                        # each worker is a backend spec, optional "label"
+            be = build_backend(t)
+            return (t["label"], be) if t.get("label") else be
+
+        workers = [_worker(t) for t in (kw.get("workers") or [])]
+        prior = tuple(kw["prior"]) if kw.get("prior") else (0.5, 0.5)
+        return ABMCTSBackend(
+            workers, verify=kw.get("verify"), budget=kw.get("budget", 8), prior=prior,
+            pass_score=kw.get("pass_score", 1.0), costs=kw.get("costs"), seed=kw.get("seed"))
     if name == "tool":
         inner = build_backend(kw.pop("inner"))
         return ToolBackend(inner, **kw)
