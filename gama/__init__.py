@@ -25,7 +25,9 @@ from .benchmark import (
     score_output,
     summarize,
 )
+from .abmcts import ABMCTSBackend
 from .config import (
+    abmcts_from_config,
     build_backend,
     ensemble_from_config,
     gama_from_config,
@@ -56,10 +58,10 @@ __version__ = "0.1.0"
 __all__ = [
     "ModelTier", "TaskType",
     "ModelBackend", "GamaBackend", "EnsembleBackend", "ToolBackend", "MeshflowBackend",
-    "TrinityBackend",
+    "TrinityBackend", "ABMCTSBackend",
     "OllamaBackend", "SshOpenAIBackend", "get_backend", "NEEDS_HUMAN",
     "build_backend", "gama_from_config", "ensemble_from_config", "meshflow_from_config",
-    "trinity_from_config",
+    "trinity_from_config", "abmcts_from_config",
     "load_config",
     "run_bench", "summarize", "propose_routing_table", "BenchCase",
     "DEFAULT_SUITE", "HARD_SUITE", "BRUTAL_SUITE", "SUITES", "score_output",

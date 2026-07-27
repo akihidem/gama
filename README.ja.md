@@ -67,6 +67,7 @@ gama bench --backends ollama --tier large --propose routing.json
 | **`EnsembleBackend`** | 同一タスクに N モデルを **合議**（`synthesize` / `majority` / `first`） |
 | **`ToolBackend`** | **道具(PAL)**：モデルに Python を書かせて実行（正確な計算など） |
 | **`MeshflowBackend`** | **段階委譲**：外部検証で gate した安→強エスカレーション＋縁で合議＋高stakesは人間膜（AIネイティブの*組織の形*） |
+| **`ABMCTSBackend`** | **探索**：ノード毎に**幅を広げる**（新規候補）か**深く掘る**（既存を改良）かを Thompson サンプリングで決める。報酬＝外部検証。幅を広げる時にどのモデルを呼ぶかも bandit（Multi-LLM AB-MCTS） |
 
 JSON で自由に合成（`build_backend`）：`tool` / `ensemble` / コーダーの上に `gama` ルータを
 乗せた*主権的スタック*を、単体の大きいモデルとベンチで比べられる。
@@ -88,6 +89,28 @@ gama bench --backends meshflow,ssh-openai --config examples/meshflow.example.jso
 [`soshiki-genron`](https://github.com/akihidem/soshiki-genron)（組織原論）研究repo
 （`experiments/meshflow.py`・PAPER §6.5「採用すべき組織図」）で第一原理から導かれ、frontier モデルに
 低コストで並ぶことが示された形を、gama に移植した。
+
+### AB-MCTS ── *適応探索*としての構造
+振り分け・合議・meshflow は組み合わせの「形」を**事前に**決める。`ABMCTSBackend` はその形を推論時に
+適応させる。探索木を育てながら、**どのノードでも**次の 1 コールを**幅を広げる**（まったく新しい候補を
+生成）か**深く掘る**（既存の候補を改良）かを Thompson サンプリングで選ぶ ── 報酬は外部の
+`verify`→score。各 worker が 1 つの bandit *アクション*なので、幅を広げる手番では*どの*モデルを呼ぶかも
+オンライン学習される＝小型モデルの束がそのまま **Multi-LLM AB-MCTS** になる。実装は Sakana AI
+*"Wider or Deeper? Scaling LLM Inference-Time Compute with Adaptive Branching Tree Search"*
+([arXiv:2503.04412](https://arxiv.org/abs/2503.04412)・NeurIPS 2025、blog
+[sakana.ai/ab-mcts](https://sakana.ai/ab-mcts/)、OSS [SakanaAI/treequest](https://github.com/SakanaAI/treequest)）
+の閉形式版 **AB-MCTS-A** を stdlib のみで移植したもの。`verify` スコアが既に `[0,1]` なので Beta 共役の
+Thompson サンプリングは `random.betavariate` だけで済み、numpy/scipy/PyMC は要らない:
+```bash
+gama run "<task>" --config examples/abmcts.example.json --task-type code_implementation
+gama bench --backends abmcts,ensemble,ssh-openai --config recipes/mac-studio-abmcts/config.json --tier large
+```
+「深く掘る」は親の回答**とそのスコア**を改良プロンプトに戻す ── これが深さを幅（＝ただの best-of-N）に
+潰さない唯一の勘所。正直な検証は「探索が単体モデルに勝つか」ではなく「*適応的な*幅/深さ探索が、同じ
+モデル群の*幅だけ*の best-of-N に勝つか」なので、対照として `ensemble` を並べて回し
+（`recipes/mac-studio-abmcts` 参照）、`last_trace` で勝ったノードが本当に depth > 1 で `refine` されて
+いるか確認すること。移植の線引きは `trinity.py` と同じ正直さで、実装したのは AB-MCTS-A であり、MCMC
+ベースの AB-MCTS-M（PyMC が必要で stdlib-only を壊す）ではない。
 
 ### 構造が*割に合うか*を測る ── `bench --suite hard` / `market` / `mesh`
 合議や段階委譲が効くのは特定の条件下だけ。gama は推測でなく**自分のモデルで測れる**ようにする。

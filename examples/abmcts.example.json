@@ -1,0 +1,16 @@
+{
+  "_comment": "ABMCTSBackend = AB-MCTS-A (Adaptive Branching MCTS, node-aggregation variant), from Sakana AI's 'Wider or Deeper?' (arXiv:2503.04412 / sakana.ai/ab-mcts, OSS: SakanaAI/treequest), as a gama backend. gama's 5th composite mode: an inference-time SEARCH that, at every node, Thompson-samples whether to spend the next model call GOING WIDER (a fresh candidate) or GOING DEEPER (refining an existing one), driven by the external `verify` score as the reward. Each worker is one bandit action, so on a 'go wider' step it also learns online WHICH model to call = Multi-LLM AB-MCTS. Fill ssh_host. Works for BOTH `gama run \"<task>\" --config examples/abmcts.example.json --task-type code_implementation` AND `gama bench --backends abmcts,ssh-openai --config examples/abmcts.example.json --tier large` (bench threads each case's checker in as the reward, so the search is measured on the same check it scores with). The win to look for: matching a single strong model with a budget of small-model calls — structure, not scale. Honest control: compare against a width-only best-of-N (an `ensemble` of the same worker) to prove the adaptive search actually pays.",
+  "abmcts": {
+    "workers": [
+      {"label": "local-small", "backend": "ollama", "kwargs": {"host": "http://localhost:11434", "model_by_tier": {"large": "gemma4:e2b"}}},
+      {"label": "local-strong", "backend": "ollama", "kwargs": {"host": "http://localhost:11434", "model_by_tier": {"large": "gemma4:latest"}}},
+      {"label": "frontier", "backend": "ssh-openai", "kwargs": {"ssh_host": "user@mac-studio", "port": 8080, "model_by_tier": {"large": "mlx-community/Qwen2.5-Coder-32B-Instruct-4bit"}, "max_tokens": 2048}}
+    ],
+    "verify": "code_runs",
+    "budget": 12,
+    "prior": [0.5, 0.5],
+    "pass_score": 1.0,
+    "costs": [1.0, 2.0, 5.0],
+    "seed": null
+  }
+}

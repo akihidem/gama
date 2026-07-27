@@ -14,6 +14,7 @@ from pathlib import Path
 from .backends import get_backend
 from .benchmark import SUITES, propose_routing_table, run_bench
 from .config import (
+    abmcts_from_config,
     build_backend,
     ensemble_from_config,
     gama_from_config,
@@ -32,7 +33,7 @@ BACKEND_CHOICES = ["null", "echo", "claude-cli", "claude-tui", "codex", "gemini"
 
 def _build_backend_map(names: list, config) -> tuple:
     """Build a ``{name: backend}`` map from a comma list, resolving the composite names
-    (ensemble/gama/meshflow/trinity) from ``config``. Unknown/bad backends are skipped
+    (ensemble/gama/meshflow/trinity/abmcts) from ``config``. Unknown/bad backends are skipped
     (the sweep goes on). Returns ``(backends, unavailable_names)``."""
     cfg = load_config(config)
     backends: dict = {}
@@ -47,6 +48,8 @@ def _build_backend_map(names: list, config) -> tuple:
                 be = meshflow_from_config(config)
             elif n == "trinity":
                 be = trinity_from_config(config)
+            elif n == "abmcts":
+                be = abmcts_from_config(config)
             else:
                 be = get_backend(n, **cfg["backends"].get(n, {}))
         except Exception as e:  # unknown name / bad kwargs — skip, don't abort the sweep
@@ -96,6 +99,8 @@ def cmd_run(args: argparse.Namespace) -> int:
         be = meshflow_from_config(args.config)  # a meshflow (段階委譲) config
     elif raw.get("trinity"):
         be = trinity_from_config(args.config)   # a trinity (一撃予測ルーティング) config
+    elif raw.get("abmcts"):
+        be = abmcts_from_config(args.config)    # an abmcts (AB-MCTS 適応分岐探索) config
     else:
         be = gama_from_config(args.config)      # a gama routing config
     out = be.complete(args.prompt, ModelTier(args.tier), task_type=args.task_type)
@@ -196,7 +201,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     pb = sub.add_parser("bench", help="benchmark backends per task-class; propose a routing_table")
     pb.add_argument("--backends", default="echo",
-                    help="comma list, e.g. ollama,ssh-openai,gama,ensemble,meshflow. "
+                    help="comma list, e.g. ollama,ssh-openai,gama,ensemble,meshflow,abmcts. "
                          "'echo' = free smoke")
     pb.add_argument("--tier", default="large", choices=["small", "medium", "large"])
     pb.add_argument("--suite", default="default", choices=["default", "hard", "brutal"],
@@ -214,7 +219,8 @@ def build_parser() -> argparse.ArgumentParser:
     pr = sub.add_parser("run", help="run a combined system on a prompt")
     pr.add_argument("prompt")
     pr.add_argument("--config", required=True,
-                    help="a gama routing config, an 'ensemble' config, or {'system': <spec>}")
+                    help="a gama routing config; an 'ensemble' / 'meshflow' / 'trinity' / "
+                         "'abmcts' config; or {'system': <spec>}")
     pr.add_argument("--tier", default="large", choices=["small", "medium", "large"])
     pr.add_argument("--task-type", default="generic",
                     help="task_type for routing (e.g. qa, code_implementation, research)")

@@ -71,6 +71,7 @@ gama bench --backends ollama --tier large --propose routing.json
 | **`EnsembleBackend`** | **combine** N models on the same task (`synthesize` / `majority` / `first`) |
 | **`ToolBackend`** | **program-aided**: the model writes Python, we run it (exact math, etc.) |
 | **`MeshflowBackend`** | **escalate** cheap→strong gated by an *external check*, mesh at the edge, human-gate high stakes (the AI-native *organizational form*) |
+| **`ABMCTSBackend`** | **search** — adaptively *go wider* (new candidate) or *go deeper* (refine one) per node via Thompson sampling, reward = the external check; the model per widen step is a bandit (Multi-LLM AB-MCTS) |
 
 Compose them freely as JSON (`build_backend`): a `gama` router over `tool` / `ensemble` /
 coder lanes is a *sovereign stack* you can benchmark against a single big model.
@@ -94,6 +95,30 @@ This is "structure, not scale" as an *organizational* runtime — ported from th
 [`soshiki-genron`](https://github.com/akihidem/soshiki-genron) research repo
 (`experiments/meshflow.py`, PAPER §6.5 "the org chart to adopt"), where the same form is
 argued from first principles and shown to match a frontier model at lower cost.
+
+### AB-MCTS — structure *as an adaptive search*
+Routing, ensembling and meshflow all decide the *shape* of the combination up front. `ABMCTSBackend`
+makes the shape adaptive at inference time: it grows a search tree where, at **every node**, it
+Thompson-samples whether to spend the next model call **going wider** (generate a brand-new
+candidate) or **going deeper** (refine an existing one), driven by the external `verify`→score as
+the reward. Because each worker is one bandit *action*, a "go wider" step also learns online *which*
+model to call — so a set of small models becomes **Multi-LLM AB-MCTS** for free. This is a
+stdlib-only port of Sakana AI's *"Wider or Deeper? Scaling LLM Inference-Time Compute with Adaptive
+Branching Tree Search"* ([arXiv:2503.04412](https://arxiv.org/abs/2503.04412), NeurIPS 2025; blog
+[sakana.ai/ab-mcts](https://sakana.ai/ab-mcts/); OSS [SakanaAI/treequest](https://github.com/SakanaAI/treequest)) —
+the closed-form **AB-MCTS-A** variant, whose Beta-conjugate Thompson sampling (`verify` scores are
+already in `[0,1]`) needs only `random.betavariate`, no numpy/scipy/PyMC:
+```bash
+gama run "<task>" --config examples/abmcts.example.json --task-type code_implementation
+gama bench --backends abmcts,ensemble,ssh-openai --config recipes/mac-studio-abmcts/config.json --tier large
+```
+"Go deeper" feeds the parent answer **and its score** back into the refine prompt — the one detail
+that keeps depth from collapsing into width (i.e. into plain best-of-N). The honest test is not
+"does search beat one model" but "does the *adaptive* wider/deeper search beat a *width-only*
+best-of-N of the same models?" — so pair it with an `ensemble` control (see
+`recipes/mac-studio-abmcts`) and read `last_trace` to confirm the winning nodes are actually
+`refine`d at depth > 1. Same porting honesty as `trinity.py`: we implement AB-MCTS-A, not the
+MCMC-based AB-MCTS-M (which would need PyMC and break stdlib-only).
 
 ### Measure *whether the structure pays* — `bench --suite hard`, `market`, `mesh`
 Combining only helps under specific conditions; gama lets you **measure them on your own
