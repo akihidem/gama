@@ -211,22 +211,32 @@ It pools `wide,hard,brutal` (56 cases) by default and splits them three ways:
 | `confirm` | the only thing that can promote: the challenger must beat the champion here by more than the champion's **own re-measurement drift** (a win smaller than your setup's noise is not a win) |
 | `sealed` | nothing. Never touched until the run ends, then opened once — so the headline number is the one no decision was fitted to |
 
-First real run, on a WSL2 box with CPU-only ollama (26 cases split 13/8/5, 15 designs measured):
+Run on a WSL2 box with CPU-only ollama, over the 56-case `wide,hard,brutal` pool
+(split 28 / 15 / 13):
 
 | generation | challenger | search | confirm | verdict |
 |---|---|---|---|---|
-| 0 | `tool:integration(llama3.2:3b)` | 0.673 → 0.635 | — | rejected (didn't earn the challenge) |
-| 1 | `tool:qa(llama3.2:3b)` | 0.673 → 0.692 | 0.75 → **1.0** | **promoted** |
-| 2 | `meshflow:research(llama3.2:3b→qwen2.5-coder:7b)` | 0.692 → 0.846 | 0.875 → **1.0** | **promoted** |
-| 3 | `meshflow:research(llama3.2:3b→qwen2.5:7b)` | 0.846 → 0.942 | 1.0 → 1.0 | rejected (no confirm gain) |
+| 0 | `ensemble:qa(llama3.2:3b+qwen2.5-coder:7b)` | 0.607 → 0.571 | 0.733 → 0.733 | rejected (didn't earn the challenge) |
+| 1 | `meshflow:research(llama3.2:3b→qwen2.5-coder:7b)` | 0.607 → 0.548 | 0.667 → 0.800 | rejected (didn't earn the challenge) |
+| 2 | `tool:qa(llama3.2:3b)` | 0.607 → 0.714 | 0.733 → **0.867** | **promoted** |
 
-It rediscovered gama's own two theses without being told them: give the arithmetic class a
-**tool**, and let the research class **escalate under verification**. And then the honest part —
-on the sealed split the grown champion scored **0.6, exactly what the bare seed model scored**.
-Two confirmed wins that did not show up on cases no decision had touched. With 5 sealed cases
-(0.2 per case) that is "no transfer detected", not "no transfer": the loop's discipline is
-sound and the *case pool* is what is too small to certify growth. Grow the suite, then grow the
-config.
+**Sealed split (13 cases, never used for any decision): seed 0.577 → champion 0.846.** The one
+confirmed win transfers to cases no decision was fitted to, and the size of it is accounted for:
+3 of the 13 sealed cases are `qa`, which is exactly the class the promotion changed.
+
+Two things in that table are the loop working, not the loop being lucky:
+
+- **Generation 1 lost on `search` while scoring higher on `confirm` (0.800 vs 0.667).** A loop
+  that promoted on confirm alone would have taken it. It has to win the split it was selected
+  on *first*, or "it won" just means "we looked at confirm enough times".
+- **The champion's own confirm score moved 0.733 → 0.667 → 0.733 between generations** without
+  the champion changing. That is the measurement noise, and it is why the bar δ is read off that
+  drift (0.0666 here = one case) instead of being a constant someone picked.
+
+An earlier run of the same loop, on the 26-case pool before `wide` existed, promoted twice and
+then showed **0.6 → 0.6 on a 5-case sealed split** — no transfer detectable at 0.2 per case. Same
+loop, same box, same discipline: what changed is that there are now enough cases to see the
+answer. Grow the suite, then grow the config.
 
 ## Recipes — grow it together 🌱
 `recipes/` is a community library: each recipe is a `config.json` (a combination) +
