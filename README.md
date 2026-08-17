@@ -125,8 +125,21 @@ Combining only helps under specific conditions; gama lets you **measure them on 
 models** instead of guessing. The default bench suite hits a ceiling (good models all score
 1.0 — it can't tell them apart), so first switch to a discriminating one:
 ```bash
-gama bench --backends ollama,ssh-openai --suite hard        # or: --suite brutal
+gama bench --backends ollama,ssh-openai --suite hard        # or: --suite brutal, --suite wide
 ```
+`hard` and `brutal` are *harder*; **`wide`** is *broader* — 40 cases, 8 in each of the 5
+classes, in the same difficulty band as `hard`. Depth ranks two backends; breadth is what
+lets you **split** a suite into search / confirm / sealed without each case being worth a
+fifth of the score (see `gama grow` below). Every expected answer in every suite is
+re-derived from a reference solution in `tests/test_suite_integrity.py`, because a case with
+a wrong answer quietly penalises the models that got it right.
+
+Measured once on `wide` (2026-08-18, WSL2, CPU-only ollama — your box will differ, and
+nothing in CI guards these numbers): `llama3.2:3b` **0.550**, `qwen2.5:7b` **0.725**,
+`qwen2.5-coder:7b` **0.817** — monotone with capability and nowhere near the ceiling, which is
+what a suite has to do before you split it. 19 of the 40 cases separate those three; 17 are
+solved by all of them (they still earn their place — they are what catches a mutation that
+*breaks* an easy class) and 4 by none of them.
 **`gama market` — when is escalation cheaper than scaling?** Verification-routed escalation
 (meshflow) Pareto-dominates the single strong model **iff the cheap tier's solve-rate `p`
 exceeds the cost ratio `w/s`** (`p > w/s`). `gama market` runs the bench over your tiers
@@ -190,8 +203,7 @@ confirms the win**. No model judges anything, anywhere in the loop.
 gama grow --models llama3.2:3b,qwen2.5:7b,qwen2.5-coder:7b --generations 4 --width 5 \
           --out grow.jsonl --write-recipe recipes/my-box
 ```
-
-Three splits, because winning the split you searched on is not a result:
+It pools `wide,hard,brutal` (56 cases) by default and splits them three ways:
 
 | split | what it may decide |
 |---|---|

@@ -116,8 +116,20 @@ gama bench --backends abmcts,ensemble,ssh-openai --config recipes/mac-studio-abm
 合議や段階委譲が効くのは特定の条件下だけ。gama は推測でなく**自分のモデルで測れる**ようにする。
 既定の bench suite は天井効果（良いモデルは全部 1.0 で判別不能）なので、まず判別 suite に切り替える:
 ```bash
-gama bench --backends ollama,ssh-openai --suite hard        # or: --suite brutal
+gama bench --backends ollama,ssh-openai --suite hard        # or: --suite brutal, --suite wide
 ```
+`hard` / `brutal` は*難しく*する suite で、**`wide`** は*広く*する suite（40 問・5 クラス各 8 問・
+難易度は `hard` と同じ帯）。深さは 2 つの backend を順位づけるのに要り、広さは suite を
+search / confirm / sealed に**割る**のに要る（後述の `gama grow`。26 問しか無いと confirm が
+5 問になり、1 問が得点の 0.2 を動かしてしまう）。全 suite の正解は
+`tests/test_suite_integrity.py` が参照解から再導出している。答えが間違っている case は、
+正解したモデルを黙って減点するため。
+
+`wide` の実測（2026-08-18・WSL2・CPU のみの ollama。箱が違えば変わるし、CI は
+この数字を守っていない）: `llama3.2:3b` **0.550** / `qwen2.5:7b` **0.725** /
+`qwen2.5-coder:7b` **0.817**。能力の順に並び、天井にも当たっていない。割って使う前に suite が
+満たすべき条件はここ。40 問のうち 19 問がこの 3 つを判別し、17 問は 3 つとも解ける
+（無駄ではなく、易しいクラスを*壊す*変異を捕まえる役に立つ）、4 問はどれも解けない。
 **`gama market` ── いつ「束ねる」が「大きくする」より安いか？** 検証エスカレーション（meshflow）が
 単体最強を Pareto 支配するのは、**安いティアの完全解率 `p` がコスト比 `w/s` を超えるとき**（`p > w/s`）。
 `gama market` はあなたのティア（安→高）で bench を回し、コスト・正答率・支配の verdict を出す:
@@ -144,6 +156,31 @@ hard 12 問・Mac Studio(MLX) で全部ローカル。測定を公平化済（�
 
 穴は相補的で同点 ── しかも全部ローカル。再現:
 `python3 -m experiments.moa_vs_strong <config.json>`。
+
+### 自分で育つ ── `gama grow`
+`bench` は*あなたが書いた*組み合わせを測る。**`grow` は組み合わせの方を書く**。config を 1 手ずつ
+変異させ（クラスを別モデルへ振る、レーンを `tool` で包む、合議にする、検証 gate の段階委譲にする、
+そして**構造を剥がして素に戻す**）、同じ決定的チェッカで全候補を測り、**held-out split が確認した
+ときだけ**チャンピオンを差し替える。ループのどこにも判定役の LLM は居ない。
+
+```bash
+gama grow --models llama3.2:3b,qwen2.5:7b,qwen2.5-coder:7b --generations 4 --width 5 \
+          --out grow.jsonl --write-recipe recipes/my-box
+```
+既定で `wide,hard,brutal`（56 問）をプールし、3 つに割る:
+
+| split | そこで決めてよいこと |
+|---|---|
+| `search` | 候補を測り、世代ごとに**1 本だけ**挑戦者を選ぶ（K 個の最大値は上振れするので、これは挑戦権であって昇格の根拠ではない） |
+| `confirm` | 昇格を決める唯一の場。チャンピオン**自身の測り直しの揺れ**を超えて上回ることを要求する（自分の揺れより小さい改善は改善ではない） |
+| `sealed` | 何も決めない。走り終わるまで一度も触らず、最後に 1 回だけ開ける。だから看板の数字だけは、どの判定にも当てはめていない |
+
+WSL2（CPU のみ ollama）での実走: 4 世代で 2 回昇格し、qa には **tool**（コードを書かせて実行）、
+research には**検証 gate の段階委譲**が選ばれた。gama 自身の 2 つのテーゼを、教えずに機械が
+拾い直した形になる。正直な方の結果も書いておくと、封印した sealed split では
+**素の種モデルと同点**だった。confirm で確認した勝ちが、判定に一度も触れていない case には
+出ていない。当時 sealed は 5 問（1 問 = 0.2）しかなく、これは「転移しない」ではなく
+「転移を検出できる解像度が無い」。`wide` suite を足したのはこのため。
 
 ## レシピ ── みなで育てる 🌱
 `recipes/` はコミュニティ・ライブラリ。1 レシピ = `config.json`（組み合わせ）＋ `recipe.md`

@@ -382,12 +382,289 @@ BRUTAL_SUITE: list[BenchCase] = [
 ]
 
 
-# Named suites — `gama bench --suite {default,hard,brutal}`. DEFAULT_SUITE stays
-# the default so public behavior is unchanged; hard/brutal break the ceiling.
+# --------------------------------------------------------------------------- #
+# Wide suite — same difficulty band as `hard`, but *broad*: 8 cases in each of the
+# 5 classes. Difficulty was never the only thing missing. With 26 cases total the
+# discriminating suites could rank two backends, but they could not carry a
+# three-way split: `gama grow` ends up deciding promotions on 5 confirm cases,
+# where one case is 0.2 of the score and a real 3-point improvement is invisible.
+# Breadth is what buys *resolution*, so this suite exists to be split, not to be
+# harder. The existing three suites are deliberately left untouched: the numbers in
+# README / recipes were measured on them, and silently changing a suite would make
+# every published score incomparable to the next one.
+#
+# Answers here were computed (not recalled) before being written down, and
+# tests/test_suite_integrity.py re-derives every one of them from a reference
+# solution — a case with a wrong expected answer silently penalises correct models,
+# which is the one failure a benchmark must not have.
+# --------------------------------------------------------------------------- #
+def _eq_int(n: int) -> Callable[[str], float]:
+    """Last integer in the reply equals n (the convention every suite here uses)."""
+    return lambda out: 1.0 if _last_int(out) == n else 0.0
+
+
+def _eq_norm(expected: str) -> Callable[[str], float]:
+    """Reply equals expected after whitespace-normalising and lower-casing.
+
+    Case and surrounding whitespace are free; *internal* spacing is not, so a prompt
+    that demands "no spaces" is still scored on that.
+    """
+    want = _norm_ws(expected).lower()
+    return lambda out: 1.0 if _norm_ws(out).lower() == want else 0.0
+
+
+def _eq_nospace(expected: str) -> Callable[[str], float]:
+    """Reply equals expected once ALL whitespace is deleted.
+
+    For call-syntax answers, where `f(6,7)` and `f(6, 7)` are the same answer: the existing
+    `tool-call` case makes the same allowance, and scoring the space would measure
+    formatting pedantry rather than whether the model produced the call.
+    """
+    want = "".join(expected.split()).lower()
+    return lambda out: 1.0 if "".join((out or "").split()).lower() == want else 0.0
+
+
+def _eq_exact(expected: str) -> Callable[[str], float]:
+    """Reply equals expected after stripping the ends only (inner whitespace is scored).
+
+    For the machine-consumed formats: a prompt that says "one line, single space" is not
+    satisfied by two lines, and a checker looser than its own prompt measures nothing in
+    particular. Case is still free.
+    """
+    want = expected.strip().lower()
+    return lambda out: 1.0 if (out or "").strip().lower() == want else 0.0
+
+
+def _last_word(word: str) -> Callable[[str], float]:
+    """The last alphabetic token equals word (one-word answers wrapped in prose)."""
+    want = word.lower()
+
+    def chk(out: str) -> float:
+        toks = re.findall(r"[a-z]+", (out or "").lower())
+        return 1.0 if toks and toks[-1] == want else 0.0
+    return chk
+
+
+def _func(name: str, cases) -> Callable[[str], float]:
+    """Execute the reply as Python and check `name` against (args, expected) pairs."""
+    return lambda out: _check_func(out, name, cases)
+
+
+def _json_eq(expected) -> Callable[[str], float]:
+    """The reply's JSON payload equals expected exactly.
+
+    Deliberately no list-unwrapping (unlike ``_chk_tool_json``): some cases here ask for a
+    JSON *array*, so unwrapping a single-element list would make "[{...}]" and "{...}"
+    indistinguishable and silently pass the wrong shape.
+    """
+    def chk(out: str) -> float:
+        try:
+            d = _extract_json(out)
+        except Exception:
+            return 0.0
+        return 1.0 if d == expected else 0.0
+    return chk
+
+
+def _chk_seven_words(out: str) -> float:
+    o = (out or "").strip()
+    words = re.findall(r"[A-Za-z']+", o)
+    return 1.0 if (len(words) == 7 and o.endswith(".")) else 0.0
+
+
+def _chk_acrostic_gama(out: str) -> float:
+    lines = [ln.strip() for ln in (out or "").splitlines() if ln.strip()]
+    if len(lines) != 4:
+        return 0.0
+    firsts = "".join(ln[0].upper() for ln in lines)
+    return 1.0 if (firsts == "GAMA" and all("frog" in ln.lower() for ln in lines)) else 0.0
+
+
+def _chk_lipogram(out: str) -> float:
+    o = (out or "").strip()
+    letters = re.findall(r"[A-Za-z]", o)
+    return 1.0 if (len(letters) >= 25 and "e" not in o.lower()) else 0.0
+
+
+def _chk_three_bullets(out: str) -> float:
+    lines = [ln.rstrip() for ln in (out or "").splitlines() if ln.strip()]
+    if len(lines) != 3:
+        return 0.0
+    return 1.0 if all(ln.startswith("- ") and "local" in ln.lower() for ln in lines) else 0.0
+
+
+def _chk_s_alliteration(out: str) -> float:
+    words = re.findall(r"[A-Za-z']+", out or "")
+    return 1.0 if (len(words) == 6 and all(w[0].lower() == "s" for w in words)) else 0.0
+
+
+def _chk_toad_thrice(out: str) -> float:
+    return 1.0 if len(re.findall(r"\btoad\b", (out or "").lower())) == 3 else 0.0
+
+
+WIDE_SUITE: list[BenchCase] = [
+    # --- qa: one exact integer, no prose ---------------------------------- #
+    BenchCase("wide-qa-pow2", "qa",
+              "What is 2 to the power of 20? Reply with ONLY the integer.", _eq_int(1048576)),
+    BenchCase("wide-qa-gcd", "qa",
+              "What is the greatest common divisor of 1071 and 462? Reply with ONLY the "
+              "integer.", _eq_int(21)),
+    BenchCase("wide-qa-divisors", "qa",
+              "How many positive divisors does 360 have? Reply with ONLY the integer.",
+              _eq_int(24)),
+    BenchCase("wide-qa-sum50", "qa",
+              "What is the sum of all integers from 1 to 50 inclusive? Reply with ONLY the "
+              "integer.", _eq_int(1275)),
+    BenchCase("wide-qa-modpow", "qa",
+              "What is 3^7 mod 11? Reply with ONLY the integer.", _eq_int(9)),
+    BenchCase("wide-qa-binary", "qa",
+              "Convert the binary number 110101 to decimal. Reply with ONLY the integer.",
+              _eq_int(53)),
+    BenchCase("wide-qa-seconds", "qa",
+              "How many seconds are there in 3 hours and 45 minutes? Reply with ONLY the "
+              "integer.", _eq_int(13500)),
+    BenchCase("wide-qa-lcm", "qa",
+              "What is the least common multiple of 14 and 21? Reply with ONLY the integer.",
+              _eq_int(42)),
+
+    # --- research: multi-step reasoning, single token answer --------------- #
+    BenchCase("wide-research-choose", "research",
+              "In how many ways can you choose 3 items from 8 distinct items when order does "
+              "not matter? Reply with ONLY the integer.", _eq_int(56)),
+    BenchCase("wide-research-seq", "research",
+              "What number continues this sequence: 3, 8, 15, 24, 35, ? Reply with ONLY the "
+              "integer.", _eq_int(48)),
+    BenchCase("wide-research-digitsum", "research",
+              "What is the sum of the digits of 2^10? Reply with ONLY the integer.", _eq_int(7)),
+    BenchCase("wide-research-arrangements", "research",
+              "How many distinct arrangements are there of the letters in the word 'level'? "
+              "Reply with ONLY the integer.", _eq_int(30)),
+    BenchCase("wide-research-ages", "research",
+              "Mika is three times as old as her son. In 12 years she will be twice as old as "
+              "he is then. How old is Mika now? Reply with ONLY the integer.", _eq_int(36)),
+    BenchCase("wide-research-tallest", "research",
+              "Ann is taller than Ben. Ceci is shorter than Ben. Dan is taller than Ann. Who "
+              "is the shortest? Answer with ONLY the name.", _last_word("ceci")),
+    BenchCase("wide-research-knave", "research",
+              "On an island each person is a knight (always truthful) or a knave (always "
+              "lying). A says 'B is a knight'. B says 'A and I are of different types'. What "
+              "is B? Answer with ONLY the single word: knight or knave.", _last_word("knave")),
+    BenchCase("wide-research-dice", "research",
+              "Two fair six-sided dice are rolled. What is the probability that the sum is 7? "
+              "Answer with ONLY a reduced fraction like a/b.", _eq_norm("1/6")),
+
+    # --- code_implementation: the reply is executed ------------------------ #
+    BenchCase("wide-code-twosum", "code_implementation",
+              "Write a Python function `two_sum(nums, target)` returning the indices of the "
+              "two numbers that add up to target, as a list [i, j] with i < j. Exactly one "
+              "solution exists. Return ONLY the function definition.",
+              _func("two_sum", [(([2, 7, 11, 15], 9), [0, 1]), (([3, 2, 4], 6), [1, 2]),
+                                (([3, 3], 6), [0, 1])])),
+    BenchCase("wide-code-anagram", "code_implementation",
+              "Write a Python function `is_anagram(a, b)` returning True iff a and b are "
+              "anagrams, ignoring case and spaces. Return ONLY the function definition.",
+              _func("is_anagram", [(("Listen", "Silent"), True), (("hello", "world"), False),
+                                   (("Dormitory", "dirty room"), True)])),
+    BenchCase("wide-code-flatten", "code_implementation",
+              "Write a Python function `flatten(x)` that flattens an arbitrarily nested list "
+              "of integers into a flat list, preserving order. Return ONLY the function "
+              "definition.",
+              _func("flatten", [(([[1, [2, 3]], 4],), [1, 2, 3, 4]), (([],), []),
+                                (([1, [2, [3, [4]]]],), [1, 2, 3, 4])])),
+    BenchCase("wide-code-roman", "code_implementation",
+              "Write a Python function `roman_to_int(s)` converting a Roman numeral string to "
+              "an integer. Return ONLY the function definition.",
+              _func("roman_to_int", [(("MCMXCIV",), 1994), (("LVIII",), 58), (("IX",), 9),
+                                     (("MMXXVI",), 2026)])),
+    BenchCase("wide-code-bsearch", "code_implementation",
+              "Write a Python function `binary_search(arr, target)` returning the index of "
+              "target in the ascending list arr, or -1 if absent. Return ONLY the function "
+              "definition.",
+              _func("binary_search", [(([1, 3, 5, 7, 9, 11], 7), 3), (([1, 3, 5], 4), -1),
+                                      (([2], 2), 0), (([], 1), -1)])),
+    BenchCase("wide-code-rotate", "code_implementation",
+              "Write a Python function `rotate(lst, k)` returning lst rotated k positions to "
+              "the right (k may exceed len(lst)). Return ONLY the function definition.",
+              _func("rotate", [(([1, 2, 3, 4, 5], 2), [4, 5, 1, 2, 3]),
+                               (([1, 2, 3], 3), [1, 2, 3]), (([1, 2, 3], 4), [3, 1, 2])])),
+    BenchCase("wide-code-balanced", "code_implementation",
+              "Write a Python function `is_balanced(s)` returning True iff the brackets in s "
+              "(only ()[]{}) are correctly balanced and nested. Return ONLY the function "
+              "definition.",
+              _func("is_balanced", [(("([]{})",), True), (("(]",), False), (("(((",), False),
+                                    (("",), True)])),
+    BenchCase("wide-code-topword", "code_implementation",
+              "Write a Python function `most_common_word(text)` returning the most frequent "
+              "whitespace-separated word in text (lowercased). Return ONLY the function "
+              "definition.",
+              _func("most_common_word", [(("the cat the dog the bird",), "the"),
+                                         (("a b b",), "b")])),
+
+    # --- content: format constraints, checked structurally ----------------- #
+    BenchCase("wide-content-sevenwords", "content",
+              "Write one sentence of exactly 7 words ending with a period. Output ONLY the "
+              "sentence.", _chk_seven_words),
+    BenchCase("wide-content-acrostic", "content",
+              "Write exactly 4 lines whose first letters spell G, A, M, A in that order. "
+              "Every line must contain the word 'frog'. Output ONLY the 4 lines.",
+              _chk_acrostic_gama),
+    BenchCase("wide-content-lipogram", "content",
+              "Write a sentence of at least 25 letters that does not contain the letter 'e' "
+              "at all. Output ONLY the sentence.", _chk_lipogram),
+    BenchCase("wide-content-weekdays", "content",
+              "Output the five weekday names from Monday to Friday as a comma-separated list "
+              "with no spaces and no other text.",
+              _eq_norm("Monday,Tuesday,Wednesday,Thursday,Friday")),
+    BenchCase("wide-content-bullets", "content",
+              "Output exactly 3 lines. Every line must start with '- ' and contain the word "
+              "'local'. Output ONLY those lines.", _chk_three_bullets),
+    BenchCase("wide-content-alliteration", "content",
+              "Write a sentence of exactly 6 words where every word begins with the letter "
+              "'s'. Output ONLY the sentence.", _chk_s_alliteration),
+    BenchCase("wide-content-toad", "content",
+              "Write a short paragraph that contains the word 'toad' exactly three times. "
+              "Output ONLY the paragraph.", _chk_toad_thrice),
+    BenchCase("wide-content-reverse", "content",
+              "Write the word 'gamabunta' backwards. Output ONLY that reversed word.",
+              _eq_norm("atnubamag")),
+
+    # --- integration: structured output another program must consume ------- #
+    BenchCase("wide-tool-json-user", "integration",
+              'Output ONLY a JSON object with: "name"="gama"; "tags"=["a","b"]; "active"=true.',
+              _json_eq({"name": "gama", "tags": ["a", "b"], "active": True})),
+    BenchCase("wide-tool-json-list", "integration",
+              'Output ONLY a JSON array of two objects: the first {"id":1}, the second '
+              '{"id":2}.', _json_eq([{"id": 1}, {"id": 2}])),
+    BenchCase("wide-tool-call", "integration",
+              "You can call the function multiply(a, b). To multiply 6 and 7, output ONLY the "
+              "call exactly as: multiply(6, 7)", _eq_nospace("multiply(6, 7)")),
+    BenchCase("wide-tool-csv", "integration",
+              "Output ONLY one CSV line with three fields in this order: gama, toad, 3 — "
+              "comma-separated, no spaces, no header, no other text.", _eq_exact("gama,toad,3")),
+    BenchCase("wide-tool-json-nested", "integration",
+              'Output ONLY a JSON object with "model" an object of "name"="gemma" and '
+              '"tier"="large", plus "retries"=2.',
+              _json_eq({"model": {"name": "gemma", "tier": "large"}, "retries": 2})),
+    BenchCase("wide-tool-json-squares", "integration",
+              "Output ONLY a JSON array of the squares of the integers 6 through 10, as "
+              "integers.", _json_eq([36, 49, 64, 81, 100])),
+    BenchCase("wide-tool-json-null", "integration",
+              'Output ONLY a JSON object with "ok"=true and "error"=null.',
+              _json_eq({"ok": True, "error": None})),
+    BenchCase("wide-tool-kv", "integration",
+              "Output ONLY the two key=value pairs separated by a single space, in this "
+              "order: host=localhost port=11434", _eq_exact("host=localhost port=11434")),
+]
+
+
+# Named suites — `gama bench --suite {default,hard,brutal,wide}`. DEFAULT_SUITE stays
+# the default so public behavior is unchanged; hard/brutal break the ceiling, and
+# wide adds the breadth a three-way split (`gama grow`) needs.
 SUITES: dict[str, list[BenchCase]] = {
     "default": DEFAULT_SUITE,
     "hard": HARD_SUITE,
     "brutal": BRUTAL_SUITE,
+    "wide": WIDE_SUITE,
 }
 
 

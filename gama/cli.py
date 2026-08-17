@@ -309,9 +309,10 @@ def build_parser() -> argparse.ArgumentParser:
                          "system ('system' = the nested spec under a config's \"system\" key, "
                          "e.g. a grown recipe). 'echo' = free smoke")
     pb.add_argument("--tier", default="large", choices=["small", "medium", "large"])
-    pb.add_argument("--suite", default="default", choices=["default", "hard", "brutal"],
+    pb.add_argument("--suite", default="default", choices=["default", "hard", "brutal", "wide"],
                     help="case suite: default (5 classes, may hit a ceiling) | hard | "
-                         "brutal (discriminating suites that break the ceiling effect)")
+                         "brutal (discriminating, break the ceiling effect) | wide (40 cases, "
+                         "8 per class — breadth for splitting, same band as hard)")
     pb.add_argument("--repeats", type=int, default=1)
     pb.add_argument("--limit-per-class", type=int, default=None)
     pb.add_argument("--out", default=None, help="write a JSONL bench ledger")
@@ -341,7 +342,7 @@ def build_parser() -> argparse.ArgumentParser:
     pm.add_argument("--backends", default="echo,echo",
                     help="comma list, CHEAP->EXPENSIVE tiers (e.g. ollama,ssh-openai); the "
                          "last is the flat-strong baseline. 'echo,echo' = free smoke")
-    pm.add_argument("--suite", default="hard", choices=["default", "hard", "brutal"],
+    pm.add_argument("--suite", default="hard", choices=["default", "hard", "brutal", "wide"],
                     help="case suite (default: hard — discriminating, so the market has gaps "
                          "to exploit)")
     pm.add_argument("--costs", default=None,
@@ -360,7 +361,7 @@ def build_parser() -> argparse.ArgumentParser:
     pmesh.add_argument("--backends", default="echo,null",
                        help="comma list of ensemble members (>=2), e.g. gemma,qwen,llama. "
                             "'echo,null' = free smoke")
-    pmesh.add_argument("--suite", default="hard", choices=["default", "hard", "brutal"],
+    pmesh.add_argument("--suite", default="hard", choices=["default", "hard", "brutal", "wide"],
                        help="case suite (default: hard — discriminating, so members can differ)")
     pmesh.add_argument("--pass-score", type=float, default=1.0,
                        help="a case score >= this counts as solved (its external verifier passed)")
@@ -382,9 +383,11 @@ def build_parser() -> argparse.ArgumentParser:
                          "ollama)")
     pg.add_argument("--smoke", action="store_true",
                     help="free deterministic smoke with echo/null lanes (promotes nothing)")
-    pg.add_argument("--suites", default="default,hard,brutal",
-                    help="comma list of case suites to pool and split; the default covers all 5 "
-                         "classes, hard,brutal is the discriminating-only variant")
+    pg.add_argument("--suites", default="wide,hard,brutal",
+                    help="comma list of case suites to pool and split. The default pools the "
+                         "discriminating ones (56 cases); add 'default' for 10 easier cases, "
+                         "which widens coverage but compresses the differences you are "
+                         "searching for")
     pg.add_argument("--ratio", default="2:1:1",
                     help="search:confirm:sealed case ratio (sealed is never used for a decision)")
     pg.add_argument("--generations", type=_positive_int, default=3)

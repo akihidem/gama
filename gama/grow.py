@@ -432,7 +432,7 @@ def promote_gate(champion_search: float, challenger_search: float,
 # The loop
 # --------------------------------------------------------------------------- #
 def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
-         cases: Optional[list[BenchCase]] = None, suites=("default", "hard", "brutal"),
+         cases: Optional[list[BenchCase]] = None, suites=("wide", "hard", "brutal"),
          ratio: tuple[int, int, int] = (2, 1, 1), generations: int = 3, width: int = 6,
          repeats: int = 1, tier: ModelTier = ModelTier.LARGE, min_margin: float = 0.05,
          patience: int = 2, seed_spec: Optional[dict] = None,
@@ -460,7 +460,7 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
     classes = sorted(asked & confirmable)
     if not classes:
         raise ValueError("no task class appears in BOTH the search and confirm splits — "
-                         "widen the case pool (e.g. --suites default,hard,brutal)")
+                         "widen the case pool (e.g. --suites wide,hard,brutal)")
 
     champion = canonical(seed_spec or seed_champion(pool))
     # 参照先の無いルートを持つ seed は、GamaBackend が既定レーンへ黙って落とすので
