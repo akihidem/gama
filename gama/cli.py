@@ -20,9 +20,11 @@ from .config import (
     gama_from_config,
     load_config,
     meshflow_from_config,
+    system_from_config,
     trinity_from_config,
 )
 from .decorrelation import analyze as mesh_analyze
+from .grow import grow, ollama_pool, write_recipe
 from .logger import ExecutionLogger
 from .market import analyze as market_analyze
 from .models import ModelTier
@@ -50,6 +52,8 @@ def _build_backend_map(names: list, config) -> tuple:
                 be = trinity_from_config(config)
             elif n == "abmcts":
                 be = abmcts_from_config(config)
+            elif n == "system":
+                be = system_from_config(config)   # a whole stack declared as one nested spec
             else:
                 be = get_backend(n, **cfg["backends"].get(n, {}))
         except Exception as e:  # unknown name / bad kwargs — skip, don't abort the sweep
@@ -193,6 +197,106 @@ def cmd_mesh(args: argparse.Namespace) -> int:
     return 0
 
 
+def _positive_int(value: str) -> int:
+    """argparse type: reject 0/negative up front rather than degrading into a silent no-op
+    (``--width 0`` would 'run' a growth loop that proposes nothing and reports no promotion,
+    which reads like a measured result)."""
+    n = int(value)
+    if n < 1:
+        raise argparse.ArgumentTypeError(f"must be >= 1 (got {n})")
+    return n
+
+
+def cmd_grow(args: argparse.Namespace) -> int:
+    """Run the self-improvement loop over gama's own config space and print the champion.
+
+    Progress goes to stderr as it happens: a real run spends minutes per candidate on local
+    models, and a loop you cannot watch is indistinguishable from a hung one.
+    """
+    pool: dict = {}
+    if args.pool:
+        try:
+            pool.update(json.loads(Path(args.pool).read_text(encoding="utf-8")))
+        except (OSError, ValueError) as e:
+            sys.stderr.write(f"[gama] --pool {args.pool!r} is not readable JSON: {e}\n")
+            return 2
+    if args.models:
+        pool.update(ollama_pool([m.strip() for m in args.models.split(",") if m.strip()],
+                                host=args.host))
+    if args.smoke and not pool:
+        # Free deterministic smoke: echo/null solve nothing, so the honest outcome is
+        # "nothing was promoted" — which is exactly the behaviour worth smoke-testing.
+        pool = {"echo": {"backend": "echo"}, "null": {"backend": "null"}}
+    if not pool:
+        sys.stderr.write("[gama] grow needs lanes: --models m1,m2 (ollama) | --pool lanes.json "
+                         "| --smoke\n")
+        return 2
+    for lane, spec in sorted(pool.items()):
+        try:                      # 入力 JSON の壊れた spec は、走らせる前にレーン名付きで断る
+            build_backend(spec)
+        except Exception as e:
+            sys.stderr.write(f"[gama] lane {lane!r} is not a usable backend spec: "
+                             f"{type(e).__name__}: {e}\n")
+            return 2
+    try:
+        ratio = tuple(int(x) for x in args.ratio.split(":"))
+        if len(ratio) != 3 or any(r < 0 for r in ratio) or sum(ratio) <= 0:
+            raise ValueError
+    except ValueError:
+        sys.stderr.write(f"[gama] --ratio must be three non-negative ints summing > 0, like "
+                         f"2:1:1 (got {args.ratio!r})\n")
+        return 2
+    sys.stderr.write("[gama] NOTE: code/tool cases EXECUTE model-generated Python (opt-in, "
+                     "like a sandbox). Only grow on trusted backends.\n")
+
+    def on_event(row: dict) -> None:
+        ev = row.get("event")
+        if ev == "seed":
+            sizes = {k: len(v) for k, v in row["splits"].items()}
+            sys.stderr.write(f"[gama] splits {sizes} | seed search={row['search']['score']} "
+                             f"confirm={row['confirm']['score']}\n")
+            if row.get("classes_unconfirmable"):
+                sys.stderr.write(
+                    f"[gama] NOTE: no confirm cases for {row['classes_unconfirmable']} — those "
+                    "classes are left alone (a win there could never be confirmed). Widen with "
+                    "--suites default,hard,brutal.\n")
+        elif ev == "candidate":
+            sys.stderr.write(f"[gama]  gen{row['gen']} {row['label']:<34} "
+                             f"search={row['search']['score']}\n")
+        elif ev == "generation":
+            sys.stderr.write(
+                f"[gama] gen{row['gen']} challenger={row['challenger']} "
+                f"search {row['champion_search']}->{row['challenger_search']} "
+                f"confirm {row['champion_confirm']}->{row['challenger_confirm']} "
+                f"(delta={row['delta']}) -> {row['reason']}\n")
+        elif ev == "stop":
+            sys.stderr.write(f"[gama] stop: {row['reason']}\n")
+
+    try:
+        result = grow(pool, suites=[s.strip() for s in args.suites.split(",") if s.strip()],
+                      ratio=ratio, generations=args.generations, width=args.width,
+                      repeats=args.repeats, tier=ModelTier(args.tier),
+                      min_margin=args.min_margin, patience=args.patience, ledger_path=args.out,
+                      ensemble_strategy=args.ensemble_strategy, on_event=on_event)
+    except ValueError as e:      # too few cases to split honestly / bad lane names / bad suite
+        sys.stderr.write(f"[gama] cannot grow: {e}\n")
+        return 2
+    print(json.dumps({k: v for k, v in result.items() if k != "history"},
+                     ensure_ascii=False, indent=2))
+    sealed = result["sealed"]
+    if sealed:
+        sys.stderr.write(
+            f"[gama] sealed (never used for a decision): seed={sealed['seed']['score']} "
+            f"-> champion={sealed['champion']['score']} ({result['promotions']} promotions)\n")
+    else:
+        sys.stderr.write("[gama] WARNING: case pool too small for a sealed split — the reported "
+                         "scores all fed decisions (optimistic). Widen --suites.\n")
+    if args.write_recipe:
+        d = write_recipe(result, args.write_recipe, hardware=args.hardware)
+        sys.stderr.write(f"[gama] recipe -> {d}/config.json + {d}/recipe.md\n")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="gama", description="combine local LLMs: route, ensemble, tool, benchmark")
@@ -201,8 +305,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     pb = sub.add_parser("bench", help="benchmark backends per task-class; propose a routing_table")
     pb.add_argument("--backends", default="echo",
-                    help="comma list, e.g. ollama,ssh-openai,gama,ensemble,meshflow,abmcts. "
-                         "'echo' = free smoke")
+                    help="comma list, e.g. ollama,ssh-openai,gama,ensemble,meshflow,abmcts,"
+                         "system ('system' = the nested spec under a config's \"system\" key, "
+                         "e.g. a grown recipe). 'echo' = free smoke")
     pb.add_argument("--tier", default="large", choices=["small", "medium", "large"])
     pb.add_argument("--suite", default="default", choices=["default", "hard", "brutal"],
                     help="case suite: default (5 classes, may hit a ceiling) | hard | "
@@ -264,6 +369,44 @@ def build_parser() -> argparse.ArgumentParser:
     pmesh.add_argument("--config", default=None,
                        help="per-backend kwargs + composites (ensemble/gama/meshflow)")
     pmesh.set_defaults(func=cmd_mesh)
+
+    pg = sub.add_parser(
+        "grow", help="self-improvement loop: mutate the config, measure, keep only "
+                     "held-out-confirmed wins")
+    pg.add_argument("--models", default=None,
+                    help="comma list of ollama models = the lane pool (e.g. "
+                         "llama3.2:3b,qwen2.5:7b,gemma4:latest)")
+    pg.add_argument("--host", default="http://localhost:11434", help="ollama host for --models")
+    pg.add_argument("--pool", default=None,
+                    help="JSON file mapping lane name -> backend spec (any backend, not just "
+                         "ollama)")
+    pg.add_argument("--smoke", action="store_true",
+                    help="free deterministic smoke with echo/null lanes (promotes nothing)")
+    pg.add_argument("--suites", default="default,hard,brutal",
+                    help="comma list of case suites to pool and split; the default covers all 5 "
+                         "classes, hard,brutal is the discriminating-only variant")
+    pg.add_argument("--ratio", default="2:1:1",
+                    help="search:confirm:sealed case ratio (sealed is never used for a decision)")
+    pg.add_argument("--generations", type=_positive_int, default=3)
+    pg.add_argument("--width", type=_positive_int, default=6,
+                    help="candidates proposed per generation")
+    pg.add_argument("--repeats", type=_positive_int, default=1,
+                    help="bench repeats per case (raise to average out sampling noise)")
+    pg.add_argument("--tier", default="large", choices=["small", "medium", "large"])
+    pg.add_argument("--min-margin", type=float, default=0.05,
+                    help="floor on the confirm-split margin required to promote; the champion's "
+                         "own measured drift raises it when the models are noisier than this")
+    pg.add_argument("--patience", type=_positive_int, default=2,
+                    help="stop after this many generations with no promotion")
+    pg.add_argument("--ensemble-strategy", default="majority",
+                    choices=["majority", "first", "synthesize"],
+                    help="strategy for proposed ensemble lanes (synthesize costs an extra call)")
+    pg.add_argument("--out", default=None, help="write the JSONL grow ledger")
+    pg.add_argument("--write-recipe", default=None,
+                    help="write the champion to this recipe directory (config.json + recipe.md)")
+    pg.add_argument("--hardware", default="(fill in: box, RAM, GPU)",
+                    help="hardware line for the emitted recipe.md")
+    pg.set_defaults(func=cmd_grow)
     return p
 
 

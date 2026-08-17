@@ -179,6 +179,43 @@ organisation is sound before you run it**:
 Same round-trip both ways: every config in `examples/` and `recipes/` loads into the canvas and
 writes back byte-identical (that's yoriai's L0-1).
 
+### Let it grow itself — `gama grow`
+`bench` measures a combination *you* wrote. **`grow` writes the combinations.** It mutates the
+config one move at a time (route a class to another model, wrap a lane in `tool`, ensemble it,
+escalate it under verification — or **strip structure back off**), measures every candidate with
+the same deterministic checkers, and installs a new champion **only when a held-out split
+confirms the win**. No model judges anything, anywhere in the loop.
+
+```bash
+gama grow --models llama3.2:3b,qwen2.5:7b,qwen2.5-coder:7b --generations 4 --width 5 \
+          --out grow.jsonl --write-recipe recipes/my-box
+```
+
+Three splits, because winning the split you searched on is not a result:
+
+| split | what it may decide |
+|---|---|
+| `search` | measure candidates, pick **one** challenger per generation (the max of K noisy scores is biased upward, so this earns a challenge, not a promotion) |
+| `confirm` | the only thing that can promote: the challenger must beat the champion here by more than the champion's **own re-measurement drift** (a win smaller than your setup's noise is not a win) |
+| `sealed` | nothing. Never touched until the run ends, then opened once — so the headline number is the one no decision was fitted to |
+
+First real run, on a WSL2 box with CPU-only ollama (26 cases split 13/8/5, 15 designs measured):
+
+| generation | challenger | search | confirm | verdict |
+|---|---|---|---|---|
+| 0 | `tool:integration(llama3.2:3b)` | 0.673 → 0.635 | — | rejected (didn't earn the challenge) |
+| 1 | `tool:qa(llama3.2:3b)` | 0.673 → 0.692 | 0.75 → **1.0** | **promoted** |
+| 2 | `meshflow:research(llama3.2:3b→qwen2.5-coder:7b)` | 0.692 → 0.846 | 0.875 → **1.0** | **promoted** |
+| 3 | `meshflow:research(llama3.2:3b→qwen2.5:7b)` | 0.846 → 0.942 | 1.0 → 1.0 | rejected (no confirm gain) |
+
+It rediscovered gama's own two theses without being told them: give the arithmetic class a
+**tool**, and let the research class **escalate under verification**. And then the honest part —
+on the sealed split the grown champion scored **0.6, exactly what the bare seed model scored**.
+Two confirmed wins that did not show up on cases no decision had touched. With 5 sealed cases
+(0.2 per case) that is "no transfer detected", not "no transfer": the loop's discipline is
+sound and the *case pool* is what is too small to certify growth. Grow the suite, then grow the
+config.
+
 ## Recipes — grow it together 🌱
 `recipes/` is a community library: each recipe is a `config.json` (a combination) +
 `recipe.md` (the models, the hardware, the `gama bench` numbers). Found a small-model combo

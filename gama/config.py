@@ -7,6 +7,7 @@ composite (gama / ensemble / tool / meshflow / trinity / abmcts) from a nested s
 """
 from __future__ import annotations
 
+import copy
 import json
 from pathlib import Path
 from typing import Any, Optional
@@ -143,6 +144,22 @@ def abmcts_from_config(source: Optional[Any]):
     if not spec.get("workers"):
         raise ValueError("abmcts config needs 'workers' (a list of backend specs)")
     return build_backend({"backend": "abmcts", "kwargs": spec})
+def system_from_config(source: Optional[Any]):
+    """Build the backend declared under cfg['system'] — a whole stack as one nested spec.
+
+    ``gama run`` already accepts this form; benchmarking needs it too. Without it,
+    ``gama bench --backends gama --config <a {"system": ...} config>`` silently falls back
+    to the flat ``default_backend``/``routing_table`` keys, which are absent from such a
+    config — so it benchmarks a bare default model while *reporting* the composite's name.
+    A grown recipe that ships a reproduce command must reproduce the thing it measured.
+    """
+    raw = source if isinstance(source, dict) else json.loads(
+        Path(source).read_text(encoding="utf-8"))
+    if not isinstance(raw.get("system"), dict):
+        raise ValueError("config has no 'system' backend spec")
+    # 呼び出し元の dict をそのまま握らない(build_backend は現状 spec を壊さないが、
+    # 「渡した dict が後で変わっていた」型の事故はこの一行で永久に消せる)。
+    return build_backend(copy.deepcopy(raw["system"]))
 
 
 def build_backend(spec: Any):

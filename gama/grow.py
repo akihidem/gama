@@ -1,0 +1,645 @@
+r"""grow — 外部錨で律する自己改善ループ (RSI) を gama 自身の config 空間に回す.
+
+gama は「組み合わせ」を*測る*道具だった。``grow`` はその輪を閉じる: 組み合わせを**提案し**、
+同じ決定的ベンチで**測り**、**held-out split が確認したときだけ**チャンピオンを差し替える。
+
+  提案(変異) ──▶ search split で測る ──▶ 最良を挑戦者に ──▶ confirm split で裁定 ──▶ 台帳
+
+`anchored-self-improvement` の第一原理をそのまま持ち込む: **良し悪しを LLM に判定させない**。
+このモジュールのどこにも judge モデルは居ない。採点するのは ``benchmark.BenchCase.checker``
+(コードを実行する / 厳密一致を見る) だけで、``grow`` はその数字にしか従わない。
+
+### なぜ split を 3 つに割るのか (search / confirm / sealed)
+
+1. **search** — 変異を測って挑戦者を選ぶ場。K 個の候補の *最大値* は上振れに偏る(多重比較)。
+   だから search で勝ったことは「昇格の根拠」にならず、「挑戦権」にしかならない。
+2. **confirm** — 挑戦者とチャンピオンだけを測り直す held-out。昇格の可否はここだけで決める。
+3. **sealed** — 全世代を通して**一度も**判定に使わない封印。confirm も世代を跨いで再利用され続ける
+   以上、じわじわ overfit する(判定に使った集合は、いずれ判定できなくなる)。最後に一度だけ開けて
+   「偏りのない今の実力」を報告するために取っておく。
+
+### なぜ margin(δ) を実測から取るのか
+
+ローカル LLM は同じ config でも走らせるたびに点が動く。だから毎世代チャンピオンを confirm で
+**測り直し**、前回との差 = そのセットアップ自身の揺れ幅を δ の下限にする。チャンピオン自身の
+揺れより小さい「改善」は、改善ではなくノイズなので昇格させない。
+
+### なぜ縮む変異 (simplify) を入れるのか
+
+足す方向の変異(tool / ensemble / meshflow)しか持たないループは、足す方向にしか進めない。
+非対称なループは想定外の方向(=無駄な構造が積み上がる)に必ず穴が開くので、**構造を剥がして
+単体モデルに戻す変異**を対等な候補として同居させる。gama の thesis は "structure, not scale"
+であって "more structure is better" ではない。
+
+SECURITY: 測定は ``run_bench`` 経由なので、code / tool のケースは**モデル生成コードを実行する**
+(gama の他のベンチと同じ opt-in の前提)。信頼できる backend にだけ回すこと。
+"""
+from __future__ import annotations
+
+import copy
+import hashlib
+import json
+import re
+import time
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
+from typing import Callable, Optional
+
+from .benchmark import SUITES, BenchCase, run_bench, summarize
+from .config import build_backend
+from .models import ModelTier
+
+SPLIT_NAMES = ("search", "confirm", "sealed")
+
+
+# --------------------------------------------------------------------------- #
+# Splits — 決定的に割る(乱数を使わない: 同じ suite なら誰が走らせても同じ split)
+# --------------------------------------------------------------------------- #
+def _allocate(n: int, ratio: tuple[int, int, int]) -> list[int]:
+    """n 件を ratio 比で 3 分割した件数(最大剰余法)。
+
+    素朴に「pattern を n 件に巡回で当てる」と、端数が必ず先頭(search)に落ちる。1 クラス 2 件の
+    suite ではそれが「search 2 / confirm 0」になり、そのクラスは**永久に確認できない**。
+    端数は剰余の大きい split(confirm -> sealed)から先に配るので、2 件あれば confirm に 1 件届く。
+    **1 件しかないクラスは search だけに入る** —— それは分割では救えないので、``grow`` 側が
+    「confirm に居ないクラスは変異させない」で受ける。
+    """
+    total = sum(ratio)
+    quota = [n * r / total for r in ratio]
+    base = [int(q) for q in quota]
+    order = sorted(range(3), key=lambda i: (-(quota[i] - base[i]), i))
+    for k in range(n - sum(base)):
+        base[order[k % 3]] += 1
+    return base
+
+
+def _weave(counts: list[int]) -> list[str]:
+    """件数配分を「並び順に散らした」split ラベル列にする。
+
+    先頭から塊で配ると、case_id 順に並んだ suite (``brutal-*`` が後ろに固まる等) がそのまま
+    split の難易度差になり、search と confirm が交換可能でなくなる。毎回いちばん配分に遅れて
+    いる split を選ぶことで、難易度の並びを split 間で均す。
+    """
+    n = sum(counts)
+    seq, taken = [], [0, 0, 0]
+    for i in range(n):
+        j = max(range(3), key=lambda k: (counts[k] * (i + 1) / n - taken[k], -k))
+        seq.append(SPLIT_NAMES[j])
+        taken[j] += 1
+    return seq
+
+
+def split_cases(cases: list[BenchCase],
+                ratio: tuple[int, int, int] = (2, 1, 1)) -> dict[str, list[BenchCase]]:
+    """``search`` / ``confirm`` / ``sealed`` の 3 分割を返す(交差なし・全件どれか 1 つ)。
+
+    task_type ごとに独立に配分するので、**件数が足りるクラスはどの split にも入る**(クラスが
+    片側に寄ると「search で強い = confirm で強い」の前提が壊れる)。2 件なら search/confirm、
+    1 件なら search だけ —— 全クラスが 3 分割される保証ではないので、``grow`` は confirm に
+    現れないクラスを変異対象から外して辻褄を合わせる。乱数は使わないので、同じ suite なら
+    誰が走らせても同じ split になる。
+    """
+    if sum(ratio) <= 0 or any(r < 0 for r in ratio):
+        raise ValueError(f"bad ratio {ratio!r}")
+
+    by_class: dict[str, list[BenchCase]] = {}
+    for c in cases:
+        by_class.setdefault(c.task_type, []).append(c)
+
+    out: dict[str, list[BenchCase]] = {n: [] for n in SPLIT_NAMES}
+    for task_type in sorted(by_class):
+        group = sorted(by_class[task_type], key=lambda c: c.case_id)
+        for case, split in zip(group, _weave(_allocate(len(group), ratio))):
+            out[split].append(case)
+
+    # fail-closed は肯定形で: 「confirm が在ると証明できた」ときだけ先へ進む。
+    # confirm が空のまま回ると、昇格判定が search の上振れをそのまま通す fail-open になる。
+    if not out["confirm"]:
+        raise ValueError(
+            "confirm split is empty — need at least ~4 cases per class-pool to grow honestly "
+            f"(got {len(cases)} cases across {len(by_class)} classes)")
+    return out
+
+
+def suite_pool(names) -> list[BenchCase]:
+    """suite 名の並び (``["hard", "brutal"]``) を 1 本の case プールに連結する。"""
+    pool: list[BenchCase] = []
+    seen: set[str] = set()
+    for n in names:
+        if n not in SUITES:
+            raise ValueError(f"unknown suite {n!r}; choose from {sorted(SUITES)}")
+        for c in SUITES[n]:
+            if c.case_id not in seen:       # 同じ case を二重に数えない(split の交差防止)
+                seen.add(c.case_id)
+                pool.append(c)
+    return pool
+
+
+# --------------------------------------------------------------------------- #
+# Spec — チャンピオンは常に「gama router 1 段 + 名前付きレーン」の平らな形に正規化する
+# --------------------------------------------------------------------------- #
+def canonical(spec: dict) -> dict:
+    """参照されていないレーンを落とした正規形を返す。
+
+    正規化しないと「振る舞いは同じだが孤児レーンが残っている」spec が別ハッシュになり、
+    archive の重複排除がすり抜けて同じ設計を何度も測り直す(=無駄に実モデルを焚く)。
+    """
+    if spec.get("backend") != "gama":
+        return copy.deepcopy(spec)
+    kw = spec.get("kwargs") or {}
+    lanes = dict(kw.get("backends") or {})
+    table = dict(kw.get("routing_table") or {})
+    default = kw.get("default")
+    used = set(table.values()) | ({default} if default else set())
+    return {"backend": "gama",
+            "kwargs": {"backends": {k: copy.deepcopy(v) for k, v in sorted(lanes.items())
+                                    if k in used},
+                       "routing_table": {k: table[k] for k in sorted(table)},
+                       "default": default}}
+
+
+def spec_hash(spec: dict) -> str:
+    """正規形の内容ハッシュ(archive の同一性キー・台帳の証跡)。"""
+    blob = json.dumps(canonical(spec), sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:12]
+
+
+def seed_champion(pool: dict[str, dict], default_lane: Optional[str] = None) -> dict:
+    """出発点: ルーティング無しの単体レーン(=「構造ゼロ」のベースライン)。
+
+    ここから構造が積まれて初めて「structure が効いた」と言えるので、種は必ず素の 1 モデル。
+    """
+    if not pool:
+        raise ValueError("grow needs at least one lane in the pool")
+    default_lane = default_lane or sorted(pool)[0]
+    if default_lane not in pool:
+        raise ValueError(f"default lane {default_lane!r} not in pool {sorted(pool)}")
+    return canonical({"backend": "gama",
+                      "kwargs": {"backends": {default_lane: copy.deepcopy(pool[default_lane])},
+                                 "routing_table": {}, "default": default_lane}})
+
+
+def ollama_pool(models, host: str = "http://localhost:11434") -> dict[str, dict]:
+    """``ollama list`` のモデル名 -> レーン spec。``gama grow --models`` の糖衣。"""
+    return {m: {"backend": "ollama",
+                "kwargs": {"host": host, "model_by_tier": {"small": m, "medium": m, "large": m}}}
+            for m in models}
+
+
+def validate_pool(pool: dict[str, dict]) -> None:
+    """レーン名が grow の合成レーン名前空間 ``tool(...)`` / ``ens(...)`` / ``mesh(...)`` と
+    衝突していないことを確かめる。
+
+    合成レーンの中身は spec の ``_grow_base`` から引くので、名前の解釈違いはもう起きない。
+    ここで見るのは**上書き衝突**だけ: 同名の利用者定義レーンがあると変異がそれを差し替え、
+    「宣言した spec とは別の backend を、その名前のまま測る」ことになる。名前を付け替えて
+    回避するより入口で断る方が安全(付け替えは台帳のラベルと config の名前をずらす)。
+    """
+    bad = sorted(n for n in pool if _DERIVED_LANE.match(n))
+    if bad:
+        raise ValueError(
+            f"lane names {bad} collide with grow's composite namespace (tool(...)/ens(...)/"
+            "mesh(...)); rename them in the pool")
+
+
+_DERIVED_LANE = re.compile(r"^(tool|ens|mesh)\(.*\)$")
+
+
+def _lane_for(champion: dict, task_type: str) -> str:
+    kw = champion["kwargs"]
+    return kw["routing_table"].get(task_type, kw["default"])
+
+
+def _atomic_lane(champion: dict, lane: str) -> Optional[str]:
+    """合成レーンが包んでいる素のレーン名。素なら None。
+
+    **名前からは読まない**。合成レーンを作るときに spec へ書いた ``_grow_base`` を引くだけ。
+    以前は ``tool(a)`` / ``ens(a+b)`` / ``mesh(a->b)`` を逆パースしていたが、pool の lane 名は
+    利用者の JSON 由来で任意なので、括弧・``+``・``->`` の扱いを直すたび別の取りこぼしが出た
+    (同じ場所で三度パッチを当てた時点で、パッチでなく設計の問題)。名前は人が読むラベルに徹し、
+    構造は spec 自身に持たせる。``build_backend`` は未知の最上位キーを見ないので構築には影響しない。
+    """
+    spec = (champion.get("kwargs", {}).get("backends") or {}).get(lane) or {}
+    base = spec.get("_grow_base")
+    return base if isinstance(base, str) else None
+
+
+_DERIVED_LANE = re.compile(r"^(tool|ens|mesh)\(.*\)$")
+
+
+def _lane_for(champion: dict, task_type: str) -> str:
+    kw = champion["kwargs"]
+    return kw["routing_table"].get(task_type, kw["default"])
+
+
+def _atomic_lane(champion: dict, lane: str) -> Optional[str]:
+    """合成レーンが包んでいる素のレーン名(``tool(qwen)`` -> ``qwen``)。素なら None。
+
+    区切りは合成の種類ごとに違う(``ens(a+b)`` / ``mesh(a->b)``)。片方だけ剥がすと、
+    剥がせない合成レーンが**縮む変異の効かない袋小路**になる(足す方向にしか動けなくなる)。
+
+    判定は ``validate_pool`` と**同じ述語**(``_DERIVED_LANE``)で行う。「入口で弾く名前」と
+    「合成として分解する名前」がずれると、弾かれなかった利用者のレーン名(``foo(a)`` 等)が
+    分解され、``simplify:qa->a`` という嘘のラベルで別 backend へ振り替わる。
+    """
+    if not _DERIVED_LANE.match(lane):
+        return None
+    inner = lane[lane.index("(") + 1:-1]
+    return inner.replace("->", "+").split("+")[0] if inner else None
+
+
+# --------------------------------------------------------------------------- #
+# Mutations — 決定的な候補生成器(LLM に「次に何を試すか」を考えさせない)
+# --------------------------------------------------------------------------- #
+@dataclass(frozen=True)
+class Candidate:
+    label: str          # 例 "route:qa->qwen2.5:7b" — 台帳を人が読める単位にする
+    kind: str           # route | tool | ensemble | meshflow | simplify
+    spec: dict = field(compare=False)
+
+
+def _with_lane(champion: dict, task_type: str, lane_name: str, lane_spec: dict) -> dict:
+    """レーンを 1 本足して task_type をそこへ向けた新しい champion spec。"""
+    new = copy.deepcopy(champion)
+    new["kwargs"]["backends"][lane_name] = lane_spec
+    new["kwargs"]["routing_table"][task_type] = lane_name
+    return canonical(new)
+
+
+def _by_class_rotation(items: list, classes: list[str], offset: int) -> list:
+    """``[(task_type, Candidate)]`` を「クラスを 1 周ずつ」巡る順に並べ替える。
+
+    ``offset`` は開始クラスをずらす量。種類ごとに違う offset を与えることで、width を小さく
+    しても *種類* と *クラス* の両方に候補が散る(同じクラスに 4 種類まとめて刺さらない)。
+    """
+    by_cls: dict[str, list] = {}
+    for task_type, cand in items:
+        by_cls.setdefault(task_type, []).append(cand)
+    rotated = [classes[(offset + i) % len(classes)] for i in range(len(classes))] if classes else []
+    out, depth = [], 0
+    while True:
+        row = [by_cls[c][depth] for c in rotated if c in by_cls and depth < len(by_cls[c])]
+        if not row:
+            return out
+        out += row
+        depth += 1
+
+
+def propose(champion: dict, pool: dict[str, dict], classes: list[str],
+            width: int = 6, exclude: Optional[set] = None,
+            ensemble_strategy: str = "majority") -> list[Candidate]:
+    """チャンピオンから 1 手だけ動かした候補を、種類を混ぜて ``width`` 本返す。
+
+    1 手だけなのは、勝因を測定に帰属させるため(2 手同時だとどちらが効いたか台帳から読めない)。
+    種類を round-robin で混ぜるのは、``width`` を絞ったときに ``route`` 変異だけで埋まって
+    構造変異が一生試されない偏りを防ぐため。
+
+    ``exclude`` は「confirm で一度挑戦して負けた設計」のハッシュ集合。**search で測っただけの
+    設計は除外しない** — search で選ばれなかっただけの候補を永久追放すると、後で本命になりうる
+    踏み石(archive)を毎回捨てることになる。除外するのは決着がついた設計だけ。
+    """
+    validate_pool(pool)
+    exclude = exclude or set()
+    lanes = sorted(pool)
+    ordered_classes = sorted(classes)
+    # 種類ごとに (task_type, Candidate) で貯める。task_type を保つのは、最後に**クラスも跨いで**
+    # 巡回させるため — クラス順に詰めたまま width で切ると、辞書順で先頭のクラスだけが延々
+    # 探索され、残りのクラスは一度も触られない(小さい width ほど効く偏り)。
+    buckets: dict[str, list] = {k: [] for k in
+                                ("route", "tool", "ensemble", "meshflow", "simplify")}
+
+    for task_type in ordered_classes:
+        cur = _lane_for(champion, task_type)
+        base = _atomic_lane(champion, cur) or cur          # 合成レーンなら中身の素モデルを基準に
+        for lane in lanes:                                  # ① 別モデルへ振り替える
+            if lane != cur:
+                buckets["route"].append((task_type, Candidate(
+                    f"route:{task_type}->{lane}", "route",
+                    _with_lane(champion, task_type, lane, copy.deepcopy(pool[lane])))))
+        if base in pool and not cur.startswith("tool("):     # ② PAL(コードを書かせて実行)で包む
+            name = f"tool({base})"
+            buckets["tool"].append((task_type, Candidate(
+                f"tool:{task_type}({base})", "tool",
+                _with_lane(champion, task_type, name,
+                           {"backend": "tool", "_grow_base": base,
+                            "kwargs": {"inner": copy.deepcopy(pool[base])}}))))
+        for other in lanes:                                 # ③ 2 モデルの合議
+            if other == base or base not in pool:
+                continue
+            name = f"ens({base}+{other})"
+            if name == cur:
+                continue
+            buckets["ensemble"].append((task_type, Candidate(
+                f"ensemble:{task_type}({base}+{other})", "ensemble",
+                _with_lane(champion, task_type, name,
+                           {"backend": "ensemble", "_grow_base": base,
+                            "kwargs": {"members": [copy.deepcopy(pool[base]),
+                                                   copy.deepcopy(pool[other])],
+                                       "strategy": ensemble_strategy}}))))
+        for other in lanes:                                 # ④ 検証で gate した段階委譲
+            if other == base or base not in pool:
+                continue
+            name = f"mesh({base}->{other})"
+            if name == cur:
+                continue
+            # verify は渡さない: bench が case の checker を kwargs で差し込むので、
+            # エスカレーションは採点と同一の外部検証で gate される(自己申告での昇格を作らない)。
+            buckets["meshflow"].append((task_type, Candidate(
+                f"meshflow:{task_type}({base}->{other})", "meshflow",
+                _with_lane(champion, task_type, name,
+                           {"backend": "meshflow", "_grow_base": base,
+                            "kwargs": {"tiers": [copy.deepcopy(pool[base]),
+                                                 copy.deepcopy(pool[other])],
+                                       "mesh": "union"}}))))
+        if _atomic_lane(champion, cur):                     # ⑤ 構造を剥がして素に戻す
+            inner = _atomic_lane(champion, cur)
+            if inner in pool:
+                buckets["simplify"].append((task_type, Candidate(
+                    f"simplify:{task_type}->{inner}", "simplify",
+                    _with_lane(champion, task_type, inner, copy.deepcopy(pool[inner])))))
+
+    order = ["simplify", "route", "tool", "ensemble", "meshflow"]   # 縮む手を先に見る
+    queues = {k: _by_class_rotation(buckets[k], ordered_classes, offset)
+              for offset, k in enumerate(order)}
+
+    champ_hash = spec_hash(champion)
+    out: list[Candidate] = []
+    emitted: set = set()
+    i = 0
+    while len(out) < width and any(queues[k] for k in order):
+        kind = order[i % len(order)]
+        i += 1
+        if not queues[kind]:
+            continue
+        cand = queues[kind].pop(0)
+        h = spec_hash(cand.spec)
+        if h == champ_hash or h in exclude or h in emitted:   # 決着済み / 重複は出さない
+            continue
+        emitted.add(h)
+        out.append(cand)
+    return out
+
+
+# --------------------------------------------------------------------------- #
+# Measurement — 決定的チェッカだけを信じる
+# --------------------------------------------------------------------------- #
+@dataclass
+class Measurement:
+    score: float
+    success_rate: float
+    latency_s: float
+    n: int
+    cases: int
+
+
+def measure(spec: dict, cases: list[BenchCase], tier: ModelTier = ModelTier.LARGE,
+            repeats: int = 1, unit_cost: Optional[dict] = None,
+            label: str = "candidate") -> Measurement:
+    """1 つの spec を case 集合で測る。例外は ``run_bench`` 側で 0 点に落ちる(掃引を止めない)。"""
+    if not cases:
+        raise ValueError("measure() needs at least one case (an empty split has no score, "
+                         "and returning 0.0 would read as 'measured and failed')")
+    backend = build_backend(spec)
+    records = run_bench({label: backend}, suite=cases, tier=tier, repeats=repeats,
+                        unit_cost=unit_cost or {}, run_id="grow")
+    agg = summarize(records)["overall"][label]
+    return Measurement(score=agg["score"], success_rate=agg["success_rate"],
+                       latency_s=agg["latency_s"], n=agg["n"], cases=len(cases))
+
+
+# --------------------------------------------------------------------------- #
+# The gate — 昇格を決める唯一の関数(肯定形: 「昇格してよいと証明できた」ときだけ True)
+# --------------------------------------------------------------------------- #
+def promote_gate(champion_search: float, challenger_search: float,
+                 champion_confirm: float, challenger_confirm: float,
+                 delta: float) -> tuple[bool, str]:
+    """3 条件が**すべて**証明できたときだけ昇格。理由は台帳に残せる文字列で返す。
+
+    ① 挑戦権: search で本当に上回ったか(上回っていない候補は挑戦者になれない)
+    ② held-out: confirm でも上回ったか(search の上振れは confirm を通らない)
+    ③ ノイズ超え: 差がチャンピオン自身の揺れ幅 δ 以上か(揺れの内側は改善ではない)
+    """
+    if not challenger_search > champion_search:
+        return False, "search-not-better"
+    if not challenger_confirm > champion_confirm:
+        return False, "confirm-not-better"
+    if not (challenger_confirm - champion_confirm) >= delta:
+        return False, f"within-noise(delta={round(delta, 4)})"
+    return True, "promote"
+
+
+# --------------------------------------------------------------------------- #
+# The loop
+# --------------------------------------------------------------------------- #
+def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
+         cases: Optional[list[BenchCase]] = None, suites=("default", "hard", "brutal"),
+         ratio: tuple[int, int, int] = (2, 1, 1), generations: int = 3, width: int = 6,
+         repeats: int = 1, tier: ModelTier = ModelTier.LARGE, min_margin: float = 0.05,
+         patience: int = 2, seed_spec: Optional[dict] = None,
+         ledger_path: Optional[str] = None, unit_cost: Optional[dict] = None,
+         ensemble_strategy: str = "majority",
+         on_event: Optional[Callable[[dict], None]] = None) -> dict:
+    """RSI を ``generations`` 世代回し、最終チャンピオンと全世代の台帳を返す。
+
+    ``patience`` 世代続けて昇格が出なければ収束とみなして打ち切る(空回りで実モデルを焚かない)。
+    ``sealed`` split は世代中一切参照せず、最後に**一度だけ**開けて種と最終チャンピオンを測る。
+    """
+    validate_pool(pool)
+    pool_cases = cases if cases is not None else suite_pool(suites)
+    splits = split_cases(pool_cases, ratio=ratio)
+    # 変異させるクラスは「confirm にも case が在るクラス」だけに絞る。confirm に無いクラスを
+    # いじった候補は search でしか動かず、昇格ゲートを構造的に通れない(= 実モデルを焚くだけ
+    # 無駄になる)。肯定形の絞り込み: 確認できると証明できたクラスだけを触る。
+    searchable = {c.task_type for c in splits["search"]}
+    confirmable = {c.task_type for c in splits["confirm"]}
+    asked = set(classes) if classes else searchable
+    dropped = sorted(asked - confirmable)
+    # 呼び出し側がクラスを明示しても絞り込みは外さない。ここを bypass できると、
+    # 「confirm に居ないクラスを変異させる」= 昇格し得ない候補に実モデルを焚く経路が
+    # Python API 側にだけ開く(CLI で閉じた穴が API で開く、が典型的な穴の空き方)。
+    classes = sorted(asked & confirmable)
+    if not classes:
+        raise ValueError("no task class appears in BOTH the search and confirm splits — "
+                         "widen the case pool (e.g. --suites default,hard,brutal)")
+
+    champion = canonical(seed_spec or seed_champion(pool))
+    # 参照先の無いルートを持つ seed は、GamaBackend が既定レーンへ黙って落とすので
+    # 「台帳に記録した spec」と「実際に測った backend」がずれる。記録が実態と一致することが
+    # この loop の全部なので、入口で断る。
+    _lanes = champion["kwargs"]["backends"]
+    _missing = sorted({v for v in champion["kwargs"]["routing_table"].values() if v not in _lanes}
+                      | ({champion["kwargs"]["default"]} - set(_lanes)))
+    if _missing:
+        raise ValueError(f"seed spec routes to lanes that do not exist: {_missing}")
+    seed = copy.deepcopy(champion)
+    archive: dict[str, dict] = {}
+    history: list[dict] = []
+    ledger = Path(ledger_path) if ledger_path else None
+    if ledger:
+        ledger.parent.mkdir(parents=True, exist_ok=True)
+        ledger.write_text("", encoding="utf-8")
+
+    def emit(row: dict) -> None:
+        if ledger:
+            with ledger.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+        if on_event:
+            on_event(row)
+
+    champ_search = measure(champion, splits["search"], tier, repeats, unit_cost, "champion")
+    champ_confirm = measure(champion, splits["confirm"], tier, repeats, unit_cost, "champion")
+    emit({"event": "seed", "hash": spec_hash(champion),
+          "search": asdict(champ_search), "confirm": asdict(champ_confirm),
+          "classes": classes, "classes_unconfirmable": dropped,
+          "splits": {k: [c.case_id for c in v] for k, v in splits.items()}})
+
+    stale = 0
+    challenged: set = set()      # confirm で決着がついた設計(勝っても負けても二度は問わない)
+    for gen in range(generations):
+        t0 = time.time()
+        cands = propose(champion, pool, classes, width=width, exclude=challenged,
+                        ensemble_strategy=ensemble_strategy)
+        if not cands:
+            emit({"event": "stop", "gen": gen, "reason": "no-new-candidates"})
+            break
+
+        scored = []
+        for c in cands:
+            h = spec_hash(c.spec)
+            cached = archive.get(h)
+            # 同じ設計を二度測らない(実モデルを無駄に焚かない)。search 側の測定揺れはここで
+            # 固定されるが、上振れした候補も confirm で必ず測り直されるので昇格判定は汚れない
+            # (代償は「上振れ candidate に挑戦権を 1 回使う」ことだけ)。揺れ自体を抑えたい場合は
+            # repeats を上げる。
+            if cached:
+                m = Measurement(**cached["search"])
+            else:
+                m = measure(c.spec, splits["search"], tier, repeats, unit_cost, "candidate")
+                archive[h] = {"label": c.label, "kind": c.kind, "search": asdict(m)}
+                emit({"event": "candidate", "gen": gen, "label": c.label, "kind": c.kind,
+                      "hash": h, "search": asdict(m)})
+            scored.append((c, m))
+
+        # 同点はコスト(=実測レイテンシ)の低い方、それも同じならラベル順。決定的に選ぶ。
+        challenger, chal_search = min(scored, key=lambda t: (-t[1].score, t[1].latency_s,
+                                                             t[0].label))
+
+        # チャンピオンを毎世代 confirm で測り直す。差 δ の下限は「同じ config を測り直したときの
+        # 揺れ」そのもの — 自分の揺れより小さい改善を採らないための実測アンカー。
+        champ_confirm_now = measure(champion, splits["confirm"], tier, repeats, unit_cost,
+                                    "champion")
+        drift = abs(champ_confirm_now.score - champ_confirm.score)
+        delta = max(min_margin, drift)
+        chal_confirm = measure(challenger.spec, splits["confirm"], tier, repeats, unit_cost,
+                               "challenger")
+        ok, reason = promote_gate(champ_search.score, chal_search.score,
+                                  champ_confirm_now.score, chal_confirm.score, delta)
+        challenged.add(spec_hash(challenger.spec))
+
+        row = {"event": "generation", "gen": gen, "champion_hash": spec_hash(champion),
+               "challenger": challenger.label, "kind": challenger.kind,
+               "challenger_hash": spec_hash(challenger.spec),
+               "champion_search": champ_search.score, "challenger_search": chal_search.score,
+               "champion_confirm": champ_confirm_now.score,
+               "challenger_confirm": chal_confirm.score,
+               "drift": round(drift, 4), "delta": round(delta, 4),
+               "verdict": "promote" if ok else "reject", "reason": reason,
+               "candidates": len(cands), "elapsed_s": round(time.time() - t0, 2)}
+        if ok:
+            champion, champ_search, champ_confirm = challenger.spec, chal_search, chal_confirm
+            stale = 0
+        else:
+            champ_confirm = champ_confirm_now       # 次世代の drift 基準は常に最新の実測
+            stale += 1
+        row["champion_after"] = spec_hash(champion)
+        history.append(row)
+        emit(row)
+        if stale >= patience:
+            emit({"event": "stop", "gen": gen, "reason": f"no-promotion-for-{patience}-gens"})
+            break
+
+    # 封印を開けるのはここだけ。判定には一切使っていないので、この数字だけが偏っていない。
+    # case が足りず封印を作れなかった場合は None を返す —— 判定に使った数字を「偏っていない
+    # 数字」の欄に流用するのが、この設計でいちばんやってはいけないこと。
+    if splits["sealed"]:
+        sealed_seed = measure(seed, splits["sealed"], tier, repeats, unit_cost, "seed")
+        sealed_champ = (sealed_seed if spec_hash(seed) == spec_hash(champion) else
+                        measure(champion, splits["sealed"], tier, repeats, unit_cost, "champion"))
+        sealed = {"seed": asdict(sealed_seed), "champion": asdict(sealed_champ)}
+    else:
+        sealed = None
+    result = {
+        "champion": champion, "champion_hash": spec_hash(champion),
+        "seed": seed, "seed_hash": spec_hash(seed),
+        "promotions": sum(1 for h in history if h["verdict"] == "promote"),
+        "generations_run": len(history),
+        "search": asdict(champ_search), "confirm": asdict(champ_confirm),
+        "sealed": sealed,
+        "splits": {k: [c.case_id for c in v] for k, v in splits.items()},
+        "params": {"suites": list(suites) if cases is None else "custom", "ratio": list(ratio),
+                   "tier": tier.value, "repeats": repeats, "width": width,
+                   "generations": generations, "patience": patience,
+                   "min_margin": min_margin, "ensemble_strategy": ensemble_strategy},
+        "history": history, "archive_size": len(archive),
+    }
+    emit({"event": "final", **{k: v for k, v in result.items() if k != "history"}})
+    return result
+
+
+# --------------------------------------------------------------------------- #
+# Recipe emission — 育った成果を gama の recipe library に還す
+# --------------------------------------------------------------------------- #
+def write_recipe(result: dict, directory, name: Optional[str] = None,
+                 hardware: str = "(fill in: box, RAM, GPU)") -> Path:
+    """勝ったチャンピオンを ``config.json`` + ``recipe.md`` として書き出す。
+
+    数字は必ず sealed(判定に使っていない封印)を主役に書く。search/confirm の点は選抜に使った
+    以上どうしても上振れするので、そこを見出しに置くと「育った」ではなく「盛れた」になる。
+    """
+    d = Path(directory)
+    d.mkdir(parents=True, exist_ok=True)
+    name = name or d.name
+    config = {"_comment": f"GROWN by `gama grow` — champion {result['champion_hash']}. "
+                          "Numbers below are from a sealed split never used for any decision.",
+              "system": result["champion"],
+              "grow": {"seed_hash": result["seed_hash"], "promotions": result["promotions"],
+                       "generations_run": result["generations_run"],
+                       "splits": result["splits"], "sealed": result["sealed"]}}
+    (d / "config.json").write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n",
+                                   encoding="utf-8")
+    sealed = result["sealed"]
+    lines = [
+        f"# {name} (grown by `gama grow`)", "",
+        f"Hardware: {hardware}", "",
+        "| | seed (no structure) | grown champion |",
+        "|---|---|---|",
+    ]
+    if sealed:
+        lines.append(
+            f"| sealed score (n={sealed['champion']['cases']} cases, never used for a decision) "
+            f"| **{sealed['seed']['score']}** | **{sealed['champion']['score']}** |")
+    else:
+        lines.append("| sealed score | _no sealed split — every number below fed a decision, "
+                     "so read them as optimistic_ | |")
+    lines += [
+        f"| confirm score (the split that decided promotions) | — | {result['confirm']['score']} |",
+        f"| search score (selection — biased upward, do not quote) | — | "
+        f"{result['search']['score']} |", "",
+        f"- promotions: {result['promotions']} over {result['generations_run']} generations "
+        f"({result['archive_size']} designs measured)",
+        "- every promotion required a held-out `confirm` win larger than the champion's own "
+        "re-measurement drift; no LLM judged anything.",
+        f"- grown with: {json.dumps(result.get('params', {}), ensure_ascii=False)}",
+        "- spot-check the champion (this is NOT a reproduction of the numbers above, which "
+        "come from the splits recorded in config.json): "
+        "`gama bench --backends system --config config.json --suite hard`", "",
+        "## What grew", "",
+    ]
+    for h in result.get("history", []):     # a result round-tripped through JSON may omit it
+        mark = "✅" if h["verdict"] == "promote" else "·"
+        lines.append(f"- {mark} gen{h['gen']} `{h['challenger']}` — search "
+                     f"{h['champion_search']}→{h['challenger_search']}, confirm "
+                     f"{h['champion_confirm']}→{h['challenger_confirm']} "
+                     f"(δ={h['delta']}) → {h['reason']}")
+    (d / "recipe.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return d

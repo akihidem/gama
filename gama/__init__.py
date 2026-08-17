@@ -33,9 +33,24 @@ from .config import (
     gama_from_config,
     load_config,
     meshflow_from_config,
+    system_from_config,
     trinity_from_config,
 )
 from .decorrelation import analyze as mesh_analyze
+from .grow import (
+    Candidate,
+    canonical,
+    grow,
+    measure,
+    ollama_pool,
+    promote_gate,
+    propose,
+    seed_champion,
+    spec_hash,
+    split_cases,
+    suite_pool,
+    write_recipe,
+)
 from .decorrelation import (
     failure_correlation,
     ignites,
@@ -61,11 +76,13 @@ __all__ = [
     "TrinityBackend", "ABMCTSBackend",
     "OllamaBackend", "SshOpenAIBackend", "get_backend", "NEEDS_HUMAN",
     "build_backend", "gama_from_config", "ensemble_from_config", "meshflow_from_config",
-    "trinity_from_config", "abmcts_from_config",
+    "trinity_from_config", "abmcts_from_config", "system_from_config",
     "load_config",
     "run_bench", "summarize", "propose_routing_table", "BenchCase",
     "DEFAULT_SUITE", "HARD_SUITE", "BRUTAL_SUITE", "SUITES", "score_output",
     "escalation_cost", "p_star", "dominates", "ladder", "market_over_records", "analyze",
     "mesh_gain", "mesh_correctness", "ignites", "failure_correlation", "mesh_analyze",
+    "grow", "propose", "promote_gate", "measure", "split_cases", "suite_pool",
+    "seed_champion", "ollama_pool", "canonical", "spec_hash", "Candidate", "write_recipe",
     "__version__",
 ]
