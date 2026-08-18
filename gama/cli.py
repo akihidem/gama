@@ -318,10 +318,12 @@ def build_parser() -> argparse.ArgumentParser:
                          "system ('system' = the nested spec under a config's \"system\" key, "
                          "e.g. a grown recipe). 'echo' = free smoke")
     pb.add_argument("--tier", default="large", choices=["small", "medium", "large"])
-    pb.add_argument("--suite", default="default", choices=["default", "hard", "brutal", "wide"],
+    pb.add_argument("--suite", default="default", choices=["default", "hard", "brutal", "wide", "graded"],
                     help="case suite: default (5 classes, may hit a ceiling) | hard | "
                          "brutal (discriminating, break the ceiling effect) | wide (40 cases, "
-                         "8 per class — breadth for splitting, same band as hard)")
+                         "8 per class — breadth for splitting, same band as hard) | graded "
+                         "(20 cases scored as a FRACTION of independently checked "
+                         "requirements, so a score can move by less than a whole case)")
     pb.add_argument("--repeats", type=int, default=1)
     pb.add_argument("--limit-per-class", type=int, default=None)
     pb.add_argument("--out", default=None, help="write a JSONL bench ledger")
@@ -351,7 +353,7 @@ def build_parser() -> argparse.ArgumentParser:
     pm.add_argument("--backends", default="echo,echo",
                     help="comma list, CHEAP->EXPENSIVE tiers (e.g. ollama,ssh-openai); the "
                          "last is the flat-strong baseline. 'echo,echo' = free smoke")
-    pm.add_argument("--suite", default="hard", choices=["default", "hard", "brutal", "wide"],
+    pm.add_argument("--suite", default="hard", choices=["default", "hard", "brutal", "wide", "graded"],
                     help="case suite (default: hard — discriminating, so the market has gaps "
                          "to exploit)")
     pm.add_argument("--costs", default=None,
@@ -370,7 +372,7 @@ def build_parser() -> argparse.ArgumentParser:
     pmesh.add_argument("--backends", default="echo,null",
                        help="comma list of ensemble members (>=2), e.g. gemma,qwen,llama. "
                             "'echo,null' = free smoke")
-    pmesh.add_argument("--suite", default="hard", choices=["default", "hard", "brutal", "wide"],
+    pmesh.add_argument("--suite", default="hard", choices=["default", "hard", "brutal", "wide", "graded"],
                        help="case suite (default: hard — discriminating, so members can differ)")
     pmesh.add_argument("--pass-score", type=float, default=1.0,
                        help="a case score >= this counts as solved (its external verifier passed)")

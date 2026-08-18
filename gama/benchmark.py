@@ -657,14 +657,262 @@ WIDE_SUITE: list[BenchCase] = [
 ]
 
 
-# Named suites — `gama bench --suite {default,hard,brutal,wide}`. DEFAULT_SUITE stays
-# the default so public behavior is unchanged; hard/brutal break the ceiling, and
-# wide adds the breadth a three-way split (`gama grow`) needs.
+# --------------------------------------------------------------------------- #
+# Graded suite — cases whose score is a FRACTION by construction.
+#
+# The other suites are effectively pass/fail: a checker returns 1.0 or 0.0, so a
+# backend's score can only move in whole cases. Two things need a finer signal:
+#
+#   * `gama grow`'s promotion floor is "one confirm case". Whether that floor
+#     differs from a hand-set constant can only show up when a real improvement
+#     lands *between* half a case and a whole one, which pass/fail cases cannot
+#     produce (replaying 14 real generations, no decision ever landed there).
+#   * an inference-time search (`abmcts`) steers on the verify score as a reward.
+#     With a binary reward there is no gradient for "this draft is closer" — its
+#     "go deeper" branch has nothing to refine toward, and the search degenerates
+#     into best-of-N.
+#
+# So every case here carries several INDEPENDENTLY checkable requirements and
+# scores the fraction satisfied. Still deterministic, still no LLM judge — the
+# grain is finer, not softer. Existing suites are left untouched: their numbers
+# are quoted in README/recipes and a suite that changes underneath them makes
+# every published score incomparable.
+# --------------------------------------------------------------------------- #
+def _fraction(checks) -> float:
+    """Fraction of independently verified requirements that hold."""
+    checks = list(checks)
+    return sum(1.0 for c in checks if c) / len(checks) if checks else 0.0
+
+
+def _alnum_tokens(s: str) -> set:
+    return set(re.findall(r"[A-Za-z0-9]+", (s or "").lower()))
+
+
+def _bare_list_of(n: int) -> Callable[[str], bool]:
+    """Is the reply exactly a bare comma-separated list of n items (no prose around it)?"""
+    def ok(out: str) -> bool:
+        items = [t.strip() for t in (out or "").strip().split(",")]
+        return (len(items) == n and all(items)
+                and not any(re.search(r"\s", t) for t in items))
+    return ok
+
+
+def _found_all(expected) -> Callable[[str], float]:
+    """Fraction of the expected values present, PLUS one requirement for the shape the
+    prompt asks for (a bare comma-separated list of the right length).
+
+    Value matching is deliberately position-free, so "2 of the 3 sub-answers are right"
+    scores 2/3 instead of collapsing to pass/fail the moment the model annotates its list.
+    But the prompts here do say "comma-separated, nothing else", and a checker that ignores
+    a constraint its own prompt makes is measuring something nobody asked for — so the format
+    is scored as one more independently checked requirement rather than silently dropped.
+    """
+    want = [str(e).lower() for e in expected]
+    shaped = _bare_list_of(len(want))
+    return lambda out: _fraction([w in _alnum_tokens(out) for w in want] + [shaped(out)])
+
+
+def _chk_g_order(out: str) -> float:
+    """Credit per correct POSITION, not per name present.
+
+    The question is about the order, so membership scoring would give full marks to any
+    permutation — the finer grain has to measure the thing the prompt actually asks for.
+    """
+    got = [t.strip().lower() for t in re.split(r"[,\n]", out or "") if t.strip()]
+    want = ["ann", "ben", "cid"]
+    return _fraction([got[i] == want[i] if i < len(got) else False for i in range(3)])
+
+
+def _chk_g_b5(out: str) -> float:
+    o = (out or "").strip()
+    words = re.findall(r"[A-Za-z']+", o)
+    return _fraction([len(words) == 5,
+                      bool(words) and all(w[0].lower() == "b" for w in words),
+                      o.endswith("!")])
+
+
+def _chk_g_lines(out: str) -> float:
+    lines = [ln.strip() for ln in (out or "").splitlines() if ln.strip()]
+    body = "\n".join(lines)
+    return _fraction([len(lines) == 3,
+                      bool(lines) and all(len(ln) <= 20 for ln in lines),
+                      body.lower().count("gama") == 1,
+                      not re.search(r"\d", body)])
+
+
+def _chk_g_three_words(out: str) -> float:
+    o = (out or "").strip()
+    low = o.lower()
+    return _fraction([len(re.findall(r"\bfrog\b", low)) == 1,
+                      len(re.findall(r"\bpond\b", low)) == 1,
+                      len(re.findall(r"\bnight\b", low)) == 1,
+                      # "a short paragraph" and "output ONLY" are constraints too: one block,
+                      # no preamble. Left unscored, a wall of text with the three words in it
+                      # would take full marks off a prompt it did not follow.
+                      "\n\n" not in o and len(o) <= 300])
+
+
+def _chk_g_sun_moon(out: str) -> float:
+    o = (out or "").strip()
+    sentences = [x.strip() for x in o.split(".") if x.strip()]
+    return _fraction([len(sentences) == 2,
+                      bool(sentences) and "sun" in sentences[0].lower(),
+                      len(sentences) > 1 and "moon" in sentences[1].lower(),
+                      len(o) < 100,
+                      o.count(".") == 2 and o.endswith(".")])   # "each ending with a period"
+
+
+def _g_json(out):
+    try:
+        d = _extract_json(out)
+    except Exception:
+        return None
+    return d
+
+
+def _chk_g_json4(out: str) -> float:
+    d = _g_json(out)
+    if not isinstance(d, dict):
+        return 0.0
+    return _fraction([d.get("name") == "gama", d.get("version") == 2,
+                      d.get("ok") is True, d.get("tags") == ["a", "b"]])
+
+
+def _chk_g_jsonlist3(out: str) -> float:
+    d = _g_json(out)
+    if not isinstance(d, list):
+        return 0.0
+    return _fraction([isinstance(d[i], dict) and d[i].get("id") == i + 1
+                      if i < len(d) else False for i in range(3)])
+
+
+def _chk_g_csv(out: str) -> float:
+    rows = [ln.strip() for ln in (out or "").splitlines() if ln.strip()]
+    want = [["gama", "toad", "3"], ["yoriai", "knot", "5"]]
+    cells = []
+    for r in range(2):
+        got = [c.strip().lower() for c in rows[r].split(",")] if r < len(rows) else []
+        cells += [got[c] == want[r][c] if c < len(got) else False for c in range(3)]
+    # "two lines, no header, no spaces" is part of the ask; scoring only the cell values
+    # would give full marks to a table with a header row and padding.
+    shape = len(rows) == 2 and all(len(r.split(",")) == 3 for r in rows) and " " not in "".join(rows)
+    return _fraction(cells + [shape])
+
+
+def _chk_g_kv4(out: str) -> float:
+    o = (out or "").strip()
+    toks = _norm_ws(o).lower().split()
+    pairs = dict(t.split("=", 1) for t in toks if "=" in t)
+    return _fraction([pairs.get("host") == "localhost", pairs.get("port") == "11434",
+                      pairs.get("tls") == "off", pairs.get("retries") == "2",
+                      # "on one line, single spaces, ONLY": four tokens and nothing else.
+                      len(toks) == 4 and "\n" not in o])
+
+
+GRADED_SUITE: list[BenchCase] = [
+    # --- qa: several sub-answers, credit per sub-answer --------------------- #
+    BenchCase("g-qa-powers", "qa",
+              "Give the values of 2^5, 3^4 and 5^3, in that order, as a comma-separated list "
+              "of integers and nothing else.", _found_all([32, 81, 125])),
+    BenchCase("g-qa-div60", "qa",
+              "For the number 60 give three integers, comma-separated and nothing else: how "
+              "many positive divisors it has, the sum of all its positive divisors, and its "
+              "largest prime factor.", _found_all([12, 168, 5])),
+    BenchCase("g-qa-bases", "qa",
+              "Write 255 in binary, octal and hexadecimal, in that order, comma-separated, "
+              "lowercase, with no 0b/0o/0x prefixes and no other text.",
+              _found_all(["11111111", "377", "ff"])),
+    BenchCase("g-qa-gcdlcm", "qa",
+              "Give the greatest common divisor and the least common multiple of 18 and 24, "
+              "in that order, comma-separated, nothing else.", _found_all([6, 72])),
+
+    # --- research: multi-part reasoning ------------------------------------- #
+    BenchCase("g-research-geometric", "research",
+              "Continue this sequence with the next THREE terms: 2, 4, 8, 16, ... Give only "
+              "the three integers, comma-separated.", _found_all([32, 64, 128])),
+    BenchCase("g-research-banana", "research",
+              "For the word 'banana' give three integers, comma-separated and nothing else: "
+              "its length, how many DISTINCT letters it uses, and how many times 'n' appears.",
+              # 期待値に重複を置かない: membership で測る以上、[6,3,3] だと 3 が一度でも出れば
+              # 2 つ分の credit が付き、部分点が出なくなる(=この suite の存在意義が消える)。
+              _found_all([6, 3, 2])),
+    BenchCase("g-research-primes", "research",
+              "List every prime number strictly between 20 and 40, comma-separated, ascending, "
+              "nothing else.", _found_all([23, 29, 31, 37])),
+    BenchCase("g-research-order", "research",
+              "Ann is taller than Ben. Ben is taller than Cid. List the three names from "
+              "tallest to shortest, comma-separated, nothing else.", _chk_g_order),
+
+    # --- code: partial credit falls out of the per-test-case checker --------- #
+    BenchCase("g-code-divide", "code_implementation",
+              "Write a Python function `divide_safe(a, b)` returning a / b, or None when b is "
+              "zero. Return ONLY the function definition.",
+              _func("divide_safe", [((6, 3), 2.0), ((7, 2), 3.5), ((1, 0), None),
+                                    ((0, 5), 0.0)])),
+    BenchCase("g-code-chunk", "code_implementation",
+              "Write a Python function `chunk(lst, n)` splitting lst into consecutive lists of "
+              "length n, the last one shorter if it does not divide evenly. Return ONLY the "
+              "function definition.",
+              _func("chunk", [(([1, 2, 3, 4, 5], 2), [[1, 2], [3, 4], [5]]),
+                              (([], 3), []), (([1, 2, 3], 3), [[1, 2, 3]]),
+                              (([1], 5), [[1]])])),
+    BenchCase("g-code-title", "code_implementation",
+              "Write a Python function `smart_title(s)` that capitalises each word except "
+              "'of', 'the' and 'and', which stay lowercase unless they are the first word. "
+              "Return ONLY the function definition.",
+              _func("smart_title", [(("the lord of the rings",), "The Lord of the Rings"),
+                                    (("a tale of two cities",), "A Tale of Two Cities"),
+                                    (("war and peace",), "War and Peace"),
+                                    (("the end",), "The End")])),
+    BenchCase("g-code-range", "code_implementation",
+              "Write a Python function `parse_range(s)` where '1-5' -> [1,2,3,4,5], a bare "
+              "'7' -> [7], and a descending range like '5-1' -> []. Return ONLY the function "
+              "definition.",
+              _func("parse_range", [(("1-5",), [1, 2, 3, 4, 5]), (("7",), [7]),
+                                    (("3-3",), [3]), (("5-1",), [])])),
+
+    # --- content: several constraints, credit per constraint ----------------- #
+    BenchCase("g-content-b5", "content",
+              "Write a line of exactly 5 words where every word begins with the letter 'b' "
+              "and the line ends with an exclamation mark. Output ONLY that line.", _chk_g_b5),
+    BenchCase("g-content-lines", "content",
+              "Output exactly 3 lines. Every line must be 20 characters or shorter, the word "
+              "'gama' must appear exactly once across all three, and no digit may appear "
+              "anywhere. Output ONLY the lines.", _chk_g_lines),
+    BenchCase("g-content-three-words", "content",
+              "Write a short paragraph containing the words 'frog', 'pond' and 'night', each "
+              "exactly once. Output ONLY the paragraph.", _chk_g_three_words),
+    BenchCase("g-content-sun-moon", "content",
+              "Write exactly two sentences, each ending with a period, under 100 characters "
+              "in total: the first must mention the sun, the second must mention the moon. "
+              "Output ONLY the sentences.", _chk_g_sun_moon),
+
+    # --- integration: several fields, credit per field ----------------------- #
+    BenchCase("g-tool-json4", "integration",
+              'Output ONLY a JSON object with "name"="gama", "version"=2, "ok"=true and '
+              '"tags"=["a","b"].', _chk_g_json4),
+    BenchCase("g-tool-jsonlist3", "integration",
+              'Output ONLY a JSON array of three objects, with "id" 1, 2 and 3 respectively.',
+              _chk_g_jsonlist3),
+    BenchCase("g-tool-csv2", "integration",
+              "Output ONLY two CSV lines, no header, no spaces: the first is gama,toad,3 and "
+              "the second is yoriai,knot,5.", _chk_g_csv),
+    BenchCase("g-tool-kv4", "integration",
+              "Output ONLY these four key=value pairs on one line, separated by single "
+              "spaces: host=localhost port=11434 tls=off retries=2", _chk_g_kv4),
+]
+
+
+# Named suites — `gama bench --suite {default,hard,brutal,wide,graded}`. DEFAULT_SUITE
+# stays the default so public behavior is unchanged; hard/brutal break the ceiling, wide
+# adds the breadth a three-way split (`gama grow`) needs, and graded adds partial credit
+# so a score can move by less than a whole case.
 SUITES: dict[str, list[BenchCase]] = {
     "default": DEFAULT_SUITE,
     "hard": HARD_SUITE,
     "brutal": BRUTAL_SUITE,
     "wide": WIDE_SUITE,
+    "graded": GRADED_SUITE,
 }
 
 

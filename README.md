@@ -140,6 +140,19 @@ nothing in CI guards these numbers): `llama3.2:3b` **0.550**, `qwen2.5:7b` **0.7
 what a suite has to do before you split it. 19 of the 40 cases separate those three; 17 are
 solved by all of them (they still earn their place — they are what catches a mutation that
 *breaks* an easy class) and 4 by none of them.
+
+**`--suite graded` is the one that scores in fractions.** Every other suite is effectively
+pass/fail, so a score can only move in whole cases. Each of its 20 cases carries several
+independently checkable requirements (three sub-answers, four format constraints, six CSV
+cells) and returns the fraction satisfied — still deterministic, still no judge model, just a
+finer grain. Two things need that grain: `gama grow`'s "one confirm case" floor can only
+differ from a fixed constant when a real gain lands *between* half a case and a whole one, and
+an inference-time search like `abmcts` steers on the verify score as a reward — with a binary
+reward, "go deeper" has nothing to refine toward. Measured on the same box, **35% / 22% / 15%**
+of measurements land strictly between 0 and 1 for the 3B / 7B / 7B-coder (observed values
+0.33, 0.43, 0.5, 0.6, 0.67, 0.75, 0.8 — sevenths and fifths, not just halves). Honest caveat:
+`graded` is *easier* than `wide` (means 0.73 / 0.90 / 0.94), so use it for gradient, not for
+separating strong backends.
 **`gama market` — when is escalation cheaper than scaling?** Verification-routed escalation
 (meshflow) Pareto-dominates the single strong model **iff the cheap tier's solve-rate `p`
 exceeds the cost ratio `w/s`** (`p > w/s`). `gama market` runs the bench over your tiers

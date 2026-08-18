@@ -137,6 +137,50 @@ def most_common_word(text):
     return Counter(words).most_common(1)[0][0]
 '''
 
+_DIVIDE = """
+def divide_safe(a, b):
+    return None if b == 0 else a / b
+"""
+_DIVIDE_NO_ZERO = """
+def divide_safe(a, b):
+    return a / b
+"""
+_CHUNK = """
+def chunk(lst, n):
+    return [lst[i:i + n] for i in range(0, len(lst), n)]
+"""
+_CHUNK_BAD_EMPTY = """
+def chunk(lst, n):
+    if not lst:
+        return [[]]
+    return [lst[i:i + n] for i in range(0, len(lst), n)]
+"""
+_TITLE = """
+def smart_title(s):
+    small = {"of", "the", "and"}
+    out = []
+    for i, w in enumerate(s.split()):
+        out.append(w.capitalize() if (i == 0 or w.lower() not in small) else w.lower())
+    return " ".join(out)
+"""
+_TITLE_NAIVE = """
+def smart_title(s):
+    return s.title()
+"""
+_RANGE = """
+def parse_range(s):
+    if "-" not in s:
+        return [int(s)]
+    a, b = s.split("-")
+    a, b = int(a), int(b)
+    return list(range(a, b + 1)) if b >= a else []
+"""
+_RANGE_NO_BARE = """
+def parse_range(s):
+    a, b = s.split("-")
+    return list(range(int(a), int(b) + 1))
+"""
+
 REFERENCE: dict[str, str] = {
     # --- default ---------------------------------------------------------- #
     "code-palindrome": _PALINDROME,
@@ -217,6 +261,54 @@ REFERENCE: dict[str, str] = {
     "wide-tool-json-squares": "[36, 49, 64, 81, 100]",
     "wide-tool-json-null": '{"ok": true, "error": null}',
     "wide-tool-kv": "host=localhost port=11434",
+    # --- graded: full marks ------------------------------------------------- #
+    "g-qa-powers": "32,81,125",
+    "g-qa-div60": "12,168,5",
+    "g-qa-bases": "11111111,377,ff",
+    "g-qa-gcdlcm": "6,72",
+    "g-research-geometric": "32,64,128",
+    "g-research-banana": "6,3,2",
+    "g-research-primes": "23,29,31,37",
+    "g-research-order": "Ann,Ben,Cid",
+    "g-code-divide": _DIVIDE,
+    "g-code-chunk": _CHUNK,
+    "g-code-title": _TITLE,
+    "g-code-range": _RANGE,
+    "g-content-b5": "Big brown bears bring bread!",
+    "g-content-lines": "gama waits\nthe pond is still\na toad blinks",
+    "g-content-three-words": "A frog sat by the pond at night.",
+    "g-content-sun-moon": "The sun rose. The moon set.",
+    "g-tool-json4": '{"name": "gama", "version": 2, "ok": true, "tags": ["a", "b"]}',
+    "g-tool-jsonlist3": '[{"id": 1}, {"id": 2}, {"id": 3}]',
+    "g-tool-csv2": "gama,toad,3\nyoriai,knot,5",
+    "g-tool-kv4": "host=localhost port=11434 tls=off retries=2",
+}
+
+
+# A graded case earns its place only if it can return something BETWEEN 0 and 1. A checker
+# that is secretly pass/fail sails through the reference test above while leaving the suite
+# as coarse as the ones it was added to refine.
+PARTIAL: dict[str, str] = {
+    "g-qa-powers": "32, 81, 100",
+    "g-qa-div60": "12, 168, 7",
+    "g-qa-bases": "11111111, 377, aa",
+    "g-qa-gcdlcm": "6, 36",
+    "g-research-geometric": "32, 64, 100",
+    "g-research-banana": "6, 3, 5",
+    "g-research-primes": "23, 29, 31, 41",
+    "g-research-order": "Ann, Cid, Ben",
+    "g-code-divide": _DIVIDE_NO_ZERO,
+    "g-code-chunk": _CHUNK_BAD_EMPTY,
+    "g-code-title": _TITLE_NAIVE,
+    "g-code-range": _RANGE_NO_BARE,
+    "g-content-b5": "big brown bears bring bread",
+    "g-content-lines": "gama waits\n3 toads blink\nthe pond is still",
+    "g-content-three-words": "A frog sat by the pond.",
+    "g-content-sun-moon": "The sun rose. The sky turned gold.",
+    "g-tool-json4": '{"name": "gama", "version": 2, "ok": true, "tags": ["a"]}',
+    "g-tool-jsonlist3": '[{"id": 1}, {"id": 2}]',
+    "g-tool-csv2": "gama,toad,3\nyoriai,knot,9",
+    "g-tool-kv4": "host=localhost port=11434 tls=on retries=2",
 }
 
 
@@ -242,6 +334,19 @@ class TestSuiteIntegrity(unittest.TestCase):
             with self.subTest(suite=suite_name, case=case.case_id):
                 self.assertLess(score_output(case, JUNK), 1.0)
                 self.assertLess(score_output(case, ""), 1.0)
+
+    def test_graded_cases_can_actually_return_a_fraction(self):
+        # The point of the graded suite: a partially-correct answer must land strictly
+        # between 0 and 1. Without this check, a pass/fail checker passes every other test
+        # in this file while leaving the suite as coarse as the ones it refines.
+        graded = SUITES["graded"]
+        missing = sorted(c.case_id for c in graded if c.case_id not in PARTIAL)
+        self.assertEqual(missing, [], "graded cases with no partially-correct reference")
+        for case in graded:
+            with self.subTest(case=case.case_id):
+                score = score_output(case, PARTIAL[case.case_id])
+                self.assertGreater(score, 0.0)
+                self.assertLess(score, 1.0)
 
     def test_case_ids_are_unique_across_suites(self):
         # `suite_pool` de-duplicates by case_id, so a collision would silently drop a case
