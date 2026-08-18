@@ -359,6 +359,26 @@ class TestGrowLoop(ScriptedCase):
         self.assertEqual(res["params"]["min_margin"], 1.0)
         self.assertEqual(res["params"]["min_margin_source"], "auto(one confirm case)")
 
+    def test_a_coarse_margin_floor_is_declared_up_front(self):
+        # A 5-case confirm split makes the floor 0.2, which refuses real improvements worth
+        # less than a whole case. That limit has to be visible at the start of the run, not
+        # inferred afterwards from a champion that never moved.
+        Scripted.WINS = {"a": set()}
+        events = []
+        res = self._grow({"a": _lane("a")}, generations=1, width=1, min_margin=None,
+                         on_event=events.append)
+        seed = [e for e in events if e["event"] == "seed"][0]
+        self.assertTrue(seed["margin_floor_coarse"])
+        self.assertEqual(res["params"]["min_margin"], 1.0)
+
+    def test_a_fine_margin_floor_is_not_flagged(self):
+        Scripted.WINS = {}
+        events = []
+        grow({"a": _lane("a")}, cases=_cases(40), generations=1, width=1,
+             on_event=events.append)
+        seed = [e for e in events if e["event"] == "seed"][0]
+        self.assertFalse(seed["margin_floor_coarse"])
+
     def test_gain_smaller_than_one_confirm_case_is_refused(self):
         # `b` genuinely improves the confirm case, but only by partial credit (0.0 -> 0.4).
         # Under the derived floor that is not a case, so it is not a promotion.

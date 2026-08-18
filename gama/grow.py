@@ -481,6 +481,11 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
                          "disables the gate instead of loosening it")
     one_case = 1.0 / len(splits["confirm"])
     margin_floor = one_case if min_margin is None else min_margin
+    # confirm が小さいと「1 問ぶん」がそのまま高い壁になる。実測: confirm 5 問(=1 問 0.2)で
+    # 他の 4 走すべてが昇格させた本物の改善が +0.075 にしか見えず、床に弾かれた。床は宣言
+    # どおり「1 問未満は証明できない」と言っただけで、悪いのは split の細さの方。ただしそれが
+    # **走り終わってから**分かるのでは遅いので、入口で粗さを申告する。
+    coarse = one_case > 0.1
 
     champion = canonical(seed_spec or seed_champion(pool))
     # 参照先の無いルートを持つ seed は、GamaBackend が既定レーンへ黙って落とすので
@@ -513,6 +518,7 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
           "classes": classes, "classes_unconfirmable": dropped,
           "margin_floor": round(margin_floor, 4),
           "margin_floor_source": "auto(one confirm case)" if min_margin is None else "explicit",
+          "margin_floor_coarse": coarse,
           "splits": {k: [c.case_id for c in v] for k, v in splits.items()}})
 
     stale = 0

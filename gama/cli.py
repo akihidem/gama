@@ -264,6 +264,12 @@ def cmd_grow(args: argparse.Namespace) -> int:
             sizes = {k: len(v) for k, v in row["splits"].items()}
             sys.stderr.write(f"[gama] splits {sizes} | seed search={row['search']['score']} "
                              f"confirm={row['confirm']['score']}\n")
+            if row.get("margin_floor_coarse"):
+                sys.stderr.write(
+                    f"[gama] WARNING: only {len(row['splits']['confirm'])} confirm cases, so "
+                    f"one case = {row['margin_floor']} — a real improvement worth less than "
+                    "that cannot be certified here and will be refused. Widen --suites if you "
+                    "want this run to be able to promote small gains.\n")
             if row.get("classes_unconfirmable"):
                 sys.stderr.write(
                     f"[gama] NOTE: no confirm cases for {row['classes_unconfirmable']} — those "
