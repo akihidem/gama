@@ -51,6 +51,7 @@ class Scripted(ModelBackend):
     name = "scripted"
     available = True
     WINS: dict = {}
+    PARTIAL: dict = {}
     SEEN: list = []
 
     def __init__(self, tag: str = "a"):
@@ -60,6 +61,8 @@ class Scripted(ModelBackend):
     def complete(self, prompt, tier, **kw):
         cid = prompt.split("case=")[1].split()[0] if "case=" in prompt else "?"
         Scripted.SEEN.append(cid)
+        if cid in Scripted.PARTIAL.get(self.tag, set()):
+            return "HALF"
         return "GOOD" if cid in Scripted.WINS.get(self.tag, set()) else "BAD"
 
 
@@ -69,6 +72,13 @@ def _cases(n=4, task_type="qa", prefix="qa"):
                       lambda o: 1.0 if "GOOD" in o else 0.0) for i in range(1, n + 1)]
 
 
+def _partial_cases(n=4):
+    """Same, but a reply of "HALF" earns 0.4 — less than one whole case."""
+    def chk(o):
+        return 1.0 if "GOOD" in o else (0.4 if "HALF" in o else 0.0)
+    return [BenchCase(f"qa{i}", "qa", f"case=qa{i}", chk) for i in range(1, n + 1)]
+
+
 def _lane(tag):
     return {"backend": "scripted", "kwargs": {"tag": tag}}
 
@@ -76,11 +86,11 @@ def _lane(tag):
 class ScriptedCase(unittest.TestCase):
     def setUp(self):
         backends_mod._BACKENDS["scripted"] = Scripted
-        Scripted.WINS, Scripted.SEEN = {}, []
+        Scripted.WINS, Scripted.SEEN, Scripted.PARTIAL = {}, [], {}
 
     def tearDown(self):
         backends_mod._BACKENDS.pop("scripted", None)
-        Scripted.WINS, Scripted.SEEN = {}, []
+        Scripted.WINS, Scripted.SEEN, Scripted.PARTIAL = {}, [], {}
 
 
 # --------------------------------------------------------------------------- #
@@ -269,10 +279,10 @@ class TestPromoteGate(unittest.TestCase):
         self.assertFalse(ok)
         self.assertEqual(why, "confirm-not-better")
 
-    def test_rejects_improvement_inside_the_noise(self):
+    def test_rejects_improvement_below_the_margin(self):
         ok, why = promote_gate(0.5, 1.0, 0.50, 0.52, 0.10)
         self.assertFalse(ok)
-        self.assertTrue(why.startswith("within-noise"))
+        self.assertTrue(why.startswith("below-margin"))
 
 
 # --------------------------------------------------------------------------- #
@@ -340,6 +350,44 @@ class TestGrowLoop(ScriptedCase):
         self.assertEqual(r1["champion_hash"], r2["champion_hash"])
         self.assertEqual([(h["challenger"], h["verdict"]) for h in r1["history"]],
                          [(h["challenger"], h["verdict"]) for h in r2["history"]])
+
+    def test_margin_floor_defaults_to_one_confirm_case(self):
+        Scripted.WINS = {"a": set()}
+        res = self._grow({"a": _lane("a")}, generations=1, width=1, min_margin=None)
+        # confirm holds 1 of the 4 cases here, so one case is the whole score
+        self.assertEqual(len(res["splits"]["confirm"]), 1)
+        self.assertEqual(res["params"]["min_margin"], 1.0)
+        self.assertEqual(res["params"]["min_margin_source"], "auto(one confirm case)")
+
+    def test_gain_smaller_than_one_confirm_case_is_refused(self):
+        # `b` genuinely improves the confirm case, but only by partial credit (0.0 -> 0.4).
+        # Under the derived floor that is not a case, so it is not a promotion.
+        Scripted.WINS = {"a": set(), "b": {"qa1", "qa2", "qa4"}}
+        Scripted.PARTIAL = {"b": {"qa2"}}
+        opts = dict(cases=_partial_cases(4), generations=1, width=1, patience=5)
+        refused = grow({"a": _lane("a"), "b": _lane("b")}, **opts)
+        self.assertEqual(refused["promotions"], 0)
+        self.assertTrue(refused["history"][0]["reason"].startswith("below-margin"))
+        # ...and an explicit, smaller floor still promotes it, so the refusal is the floor
+        # doing its job rather than the candidate being weak.
+        taken = grow({"a": _lane("a"), "b": _lane("b")}, min_margin=0.3, **opts)
+        self.assertEqual(taken["promotions"], 1)
+
+    def test_exactly_one_confirm_case_is_enough(self):
+        # The floor is "at least one case", not "more than one case" — the README says the
+        # same thing, and a gate that disagrees with its own docs is the bug either way.
+        ok, why = promote_gate(0.5, 0.6, 0.60, 0.60 + 1 / 15, 1 / 15)
+        self.assertTrue(ok, why)
+        # and with the 4-decimal scores `summarize` actually emits (11/15 -> 12/15), where a
+        # bare `>=` against the raw 1/n would land on the wrong side of the rounding
+        ok, why = promote_gate(0.5, 0.6, 0.7333, 0.8, 1 / 15)
+        self.assertTrue(ok, why)
+
+    def test_negative_margin_is_refused(self):
+        # max(negative, drift) collapses to drift, and drift can be 0 — that removes the
+        # gate rather than loosening it.
+        with self.assertRaises(ValueError):
+            grow({"a": _lane("a")}, cases=_cases(4), generations=1, width=1, min_margin=-0.1)
 
     def test_patience_stops_a_loop_that_is_going_nowhere(self):
         Scripted.WINS = {"a": set(), "b": set()}

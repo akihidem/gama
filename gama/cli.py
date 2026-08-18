@@ -207,6 +207,15 @@ def _positive_int(value: str) -> int:
     return n
 
 
+def _nonneg_float(value: str) -> float:
+    """argparse type: a negative promotion floor would not loosen the gate, it would remove
+    it (max(negative, drift) collapses to drift, and drift can be 0)."""
+    f = float(value)
+    if f < 0:
+        raise argparse.ArgumentTypeError(f"must be >= 0 (got {f})")
+    return f
+
+
 def cmd_grow(args: argparse.Namespace) -> int:
     """Run the self-improvement loop over gama's own config space and print the champion.
 
@@ -396,9 +405,11 @@ def build_parser() -> argparse.ArgumentParser:
     pg.add_argument("--repeats", type=_positive_int, default=1,
                     help="bench repeats per case (raise to average out sampling noise)")
     pg.add_argument("--tier", default="large", choices=["small", "medium", "large"])
-    pg.add_argument("--min-margin", type=float, default=0.05,
-                    help="floor on the confirm-split margin required to promote; the champion's "
-                         "own measured drift raises it when the models are noisier than this")
+    pg.add_argument("--min-margin", type=_nonneg_float, default=None,
+                    help="floor on the confirm-split margin required to promote. Default: one "
+                         "confirm case (1/n), so 'smaller than one case' never promotes at any "
+                         "suite size; the champion's own measured drift raises it further when "
+                         "the models are noisier than that")
     pg.add_argument("--patience", type=_positive_int, default=2,
                     help="stop after this many generations with no promotion")
     pg.add_argument("--ensemble-strategy", default="majority",

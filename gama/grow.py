@@ -417,14 +417,19 @@ def promote_gate(champion_search: float, challenger_search: float,
 
     ① 挑戦権: search で本当に上回ったか(上回っていない候補は挑戦者になれない)
     ② held-out: confirm でも上回ったか(search の上振れは confirm を通らない)
-    ③ ノイズ超え: 差がチャンピオン自身の揺れ幅 δ 以上か(揺れの内側は改善ではない)
+    ③ 幅超え: 差が δ 以上か。δ = max(confirm 1 問ぶん, チャンピオン自身の測り直しの揺れ)。
+       1 問未満の差は部分点の揺らぎでしかなく、揺れの内側の差は改善ではない。
     """
     if not challenger_search > champion_search:
         return False, "search-not-better"
     if not challenger_confirm > champion_confirm:
         return False, "confirm-not-better"
-    if not (challenger_confirm - champion_confirm) >= delta:
-        return False, f"within-noise(delta={round(delta, 4)})"
+    # 「1 問ぶんちょうど」は通す約束なので、比較には浮動小数の遊びを持たせる。scores は
+    # summarize が 4 桁に丸めた値、delta は 1/n の生の値なので、素の >= だと 0.0666 >= 0.066667
+    # が偽になり、**丸め方次第で同じ 1 問ぶんの改善が通ったり落ちたりする**。1e-9 は 4 桁丸めの
+    # 世界では絶対に効いてこない幅。
+    if (challenger_confirm - champion_confirm) < delta - 1e-9:
+        return False, f"below-margin(delta={round(delta, 4)})"
     return True, "promote"
 
 
@@ -434,7 +439,8 @@ def promote_gate(champion_search: float, challenger_search: float,
 def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
          cases: Optional[list[BenchCase]] = None, suites=("wide", "hard", "brutal"),
          ratio: tuple[int, int, int] = (2, 1, 1), generations: int = 3, width: int = 6,
-         repeats: int = 1, tier: ModelTier = ModelTier.LARGE, min_margin: float = 0.05,
+         repeats: int = 1, tier: ModelTier = ModelTier.LARGE,
+         min_margin: Optional[float] = None,
          patience: int = 2, seed_spec: Optional[dict] = None,
          ledger_path: Optional[str] = None, unit_cost: Optional[dict] = None,
          ensemble_strategy: str = "majority",
@@ -443,6 +449,8 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
 
     ``patience`` 世代続けて昇格が出なければ収束とみなして打ち切る(空回りで実モデルを焚かない)。
     ``sealed`` split は世代中一切参照せず、最後に**一度だけ**開けて種と最終チャンピオンを測る。
+
+    ``min_margin`` を省くと **confirm 1 問ぶん** (``1/len(confirm)``) が下限になる。
     """
     validate_pool(pool)
     pool_cases = cases if cases is not None else suite_pool(suites)
@@ -461,6 +469,18 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
     if not classes:
         raise ValueError("no task class appears in BOTH the search and confirm splits — "
                          "widen the case pool (e.g. --suites wide,hard,brutal)")
+
+    # 昇格の下限は「confirm 1 問ぶん」を既定にする(ちょうど 1 問ぶんは通る = 以上判定)。
+    # 部分点を返す checker があるので刻みが常に 1/n という訳ではない。狙いはそこではなく、
+    # **1 問を丸ごと動かせていない改善は採らない**という線引きの方。ここを定数(旧既定 0.05)
+    # にすると、confirm 8 問なら半問で通り、30 問なら丸 1 問勝っても落ちる —— **suite を
+    # 差し替えた瞬間に門の意味が黙って変わる**ので、下限は case 数から導く。実測 drift の
+    # 方が大きい日はそちらが勝つ(max)。
+    if min_margin is not None and min_margin < 0:
+        raise ValueError(f"min_margin must be >= 0 (got {min_margin}); a negative floor "
+                         "disables the gate instead of loosening it")
+    one_case = 1.0 / len(splits["confirm"])
+    margin_floor = one_case if min_margin is None else min_margin
 
     champion = canonical(seed_spec or seed_champion(pool))
     # 参照先の無いルートを持つ seed は、GamaBackend が既定レーンへ黙って落とすので
@@ -491,6 +511,8 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
     emit({"event": "seed", "hash": spec_hash(champion),
           "search": asdict(champ_search), "confirm": asdict(champ_confirm),
           "classes": classes, "classes_unconfirmable": dropped,
+          "margin_floor": round(margin_floor, 4),
+          "margin_floor_source": "auto(one confirm case)" if min_margin is None else "explicit",
           "splits": {k: [c.case_id for c in v] for k, v in splits.items()}})
 
     stale = 0
@@ -529,7 +551,7 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
         champ_confirm_now = measure(champion, splits["confirm"], tier, repeats, unit_cost,
                                     "champion")
         drift = abs(champ_confirm_now.score - champ_confirm.score)
-        delta = max(min_margin, drift)
+        delta = max(margin_floor, drift)
         chal_confirm = measure(challenger.spec, splits["confirm"], tier, repeats, unit_cost,
                                "challenger")
         ok, reason = promote_gate(champ_search.score, chal_search.score,
@@ -579,7 +601,10 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
         "params": {"suites": list(suites) if cases is None else "custom", "ratio": list(ratio),
                    "tier": tier.value, "repeats": repeats, "width": width,
                    "generations": generations, "patience": patience,
-                   "min_margin": min_margin, "ensemble_strategy": ensemble_strategy},
+                   "min_margin": round(margin_floor, 4),
+                   "min_margin_source": "auto(one confirm case)" if min_margin is None
+                                        else "explicit",
+                   "ensemble_strategy": ensemble_strategy},
         "history": history, "archive_size": len(archive),
     }
     emit({"event": "final", **{k: v for k, v in result.items() if k != "history"}})

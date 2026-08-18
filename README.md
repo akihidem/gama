@@ -208,7 +208,7 @@ It pools `wide,hard,brutal` (56 cases) by default and splits them three ways:
 | split | what it may decide |
 |---|---|
 | `search` | measure candidates, pick **one** challenger per generation (the max of K noisy scores is biased upward, so this earns a challenge, not a promotion) |
-| `confirm` | the only thing that can promote: the challenger must beat the champion here by more than the champion's **own re-measurement drift** (a win smaller than your setup's noise is not a win) |
+| `confirm` | the only thing that can promote: the challenger must beat the champion here by at least **max(one confirm case, the champion's own re-measurement drift)** — a win smaller than one whole case, or smaller than your setup's noise, is not a win |
 | `sealed` | nothing. Never touched until the run ends, then opened once — so the headline number is the one no decision was fitted to |
 
 Run on a WSL2 box with CPU-only ollama, over the 56-case `wide,hard,brutal` pool
@@ -231,7 +231,15 @@ Two things in that table are the loop working, not the loop being lucky:
   on *first*, or "it won" just means "we looked at confirm enough times".
 - **The champion's own confirm score moved 0.733 → 0.667 → 0.733 between generations** without
   the champion changing. That is the measurement noise, and it is why the bar δ is read off that
-  drift (0.0666 here = one case) instead of being a constant someone picked.
+  drift instead of being a constant someone picked. Its floor is not a constant either: it is
+  **one confirm case** (1/n), so "smaller than one case" never promotes at any suite size — a
+  fixed 0.05 would be half a case on an 8-case confirm split and *stricter than a whole case*
+  on a 30-case one, i.e. the gate would silently change meaning when you changed the suite.
+
+Re-run with `--repeats 2` (each case measured twice), it promoted the same single change again
+and the sealed split moved 0.603 → 0.789 — direction reproduced, magnitude within one case. The
+champion, both runs' numbers and every rejected candidate are checked in as
+[`recipes/grown-wsl-ollama`](recipes/grown-wsl-ollama), the first recipe here that no human wrote.
 
 An earlier run of the same loop, on the 26-case pool before `wide` existed, promoted twice and
 then showed **0.6 → 0.6 on a 5-case sealed split** — no transfer detectable at 0.2 per case. Same

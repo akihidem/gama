@@ -1,0 +1,149 @@
+{
+  "_comment": "GROWN by `gama grow` (run B, repeats=2). `system` is the champion; the `backends` key below exists so `gama bench --backends system,ollama` compares it against the seed model it grew from, not against ollama's default model. Sealed numbers were never used for any decision.",
+  "system": {
+    "backend": "gama",
+    "kwargs": {
+      "backends": {
+        "llama3.2:3b": {
+          "backend": "ollama",
+          "kwargs": {
+            "host": "http://localhost:11434",
+            "model_by_tier": {
+              "small": "llama3.2:3b",
+              "medium": "llama3.2:3b",
+              "large": "llama3.2:3b"
+            }
+          }
+        },
+        "tool(llama3.2:3b)": {
+          "backend": "tool",
+          "_grow_base": "llama3.2:3b",
+          "kwargs": {
+            "inner": {
+              "backend": "ollama",
+              "kwargs": {
+                "host": "http://localhost:11434",
+                "model_by_tier": {
+                  "small": "llama3.2:3b",
+                  "medium": "llama3.2:3b",
+                  "large": "llama3.2:3b"
+                }
+              }
+            }
+          }
+        }
+      },
+      "routing_table": {
+        "qa": "tool(llama3.2:3b)"
+      },
+      "default": "llama3.2:3b"
+    }
+  },
+  "grow": {
+    "seed_hash": "dfc9558a56d3",
+    "promotions": 1,
+    "generations_run": 3,
+    "splits": {
+      "search": [
+        "hard-code-longpal",
+        "wide-code-balanced",
+        "wide-code-bsearch",
+        "wide-code-roman",
+        "wide-code-twosum",
+        "brutal-content-alliteration",
+        "hard-write-primelist",
+        "wide-content-acrostic",
+        "wide-content-lipogram",
+        "wide-content-reverse",
+        "wide-content-weekdays",
+        "hard-tool-json-nested",
+        "wide-tool-csv",
+        "wide-tool-json-list",
+        "wide-tool-json-null",
+        "wide-tool-kv",
+        "brutal-qa-powmod",
+        "hard-math-mult",
+        "wide-qa-binary",
+        "wide-qa-lcm",
+        "wide-qa-modpow",
+        "wide-qa-sum50",
+        "brutal-research-distinct",
+        "hard-reason-weekday",
+        "wide-research-ages",
+        "wide-research-dice",
+        "wide-research-digitsum",
+        "wide-research-tallest"
+      ],
+      "confirm": [
+        "hard-code-merge",
+        "wide-code-flatten",
+        "wide-code-topword",
+        "brutal-content-palindrome",
+        "wide-content-alliteration",
+        "wide-content-sevenwords",
+        "hard-tool-json-squares",
+        "wide-tool-json-nested",
+        "wide-tool-json-user",
+        "brutal-qa-trailzeros",
+        "wide-qa-divisors",
+        "wide-qa-pow2",
+        "brutal-research-knights",
+        "wide-research-arrangements",
+        "wide-research-knave"
+      ],
+      "sealed": [
+        "wide-code-anagram",
+        "wide-code-rotate",
+        "hard-write-acrostic",
+        "wide-content-bullets",
+        "wide-content-toad",
+        "wide-tool-call",
+        "wide-tool-json-squares",
+        "hard-math-modexp",
+        "wide-qa-gcd",
+        "wide-qa-seconds",
+        "hard-reason-lookandsay",
+        "wide-research-choose",
+        "wide-research-seq"
+      ]
+    },
+    "sealed": {
+      "seed": {
+        "score": 0.6026,
+        "success_rate": 0.6538,
+        "latency_s": 0.4862,
+        "n": 26,
+        "cases": 13
+      },
+      "champion": {
+        "score": 0.7885,
+        "success_rate": 0.8077,
+        "latency_s": 0.6113,
+        "n": 26,
+        "cases": 13
+      }
+    },
+    "runs": {
+      "A (repeats=1)": {
+        "sealed_seed": 0.5769,
+        "sealed_champion": 0.8462,
+        "promotions": 1
+      },
+      "B (repeats=2)": {
+        "sealed_seed": 0.6026,
+        "sealed_champion": 0.7885,
+        "promotions": 1
+      }
+    }
+  },
+  "backends": {
+    "ollama": {
+      "host": "http://localhost:11434",
+      "model_by_tier": {
+        "small": "llama3.2:3b",
+        "medium": "llama3.2:3b",
+        "large": "llama3.2:3b"
+      }
+    }
+  }
+}
