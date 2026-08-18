@@ -236,9 +236,15 @@ Two things in that table are the loop working, not the loop being lucky:
   fixed 0.05 would be half a case on an 8-case confirm split and *stricter than a whole case*
   on a 30-case one, i.e. the gate would silently change meaning when you changed the suite.
 
-Re-run with `--repeats 2` (each case measured twice), it promoted the same single change again
-and the sealed split moved 0.603 → 0.789 — direction reproduced, magnitude within one case. The
-champion, both runs' numbers and every rejected candidate are checked in as
+Run it three times and it promotes that same single change every time. The whole-split sealed
+totals, though, come out **+0.269 / +0.186 / +0.019** — the third one looks like the effect
+vanished. It didn't: the champion reroutes only `qa`, which is 3 of the 13 sealed cases, so ten
+cases of unrelated noise are averaged into every one of those totals. Measured on the cases that
+actually changed (3 reps each), `qa` goes **0.222 → 1.000** and every other class sits still.
+
+That is worth more than the number: **a whole-split score dilutes a class-restricted change with
+the noise of every class it did not touch.** If you change one lane, measure that lane's cases.
+All three runs, the per-case table and every rejected candidate are checked in as
 [`recipes/grown-wsl-ollama`](recipes/grown-wsl-ollama), the first recipe here that no human wrote.
 
 An earlier run of the same loop, on the 26-case pool before `wide` existed, promoted twice and

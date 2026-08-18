@@ -133,6 +133,60 @@
         "sealed_seed": 0.6026,
         "sealed_champion": 0.7885,
         "promotions": 1
+      },
+      "C (repeats=2, auto margin floor)": {
+        "sealed_seed": 0.6538,
+        "sealed_champion": 0.6731,
+        "promotions": 1
+      }
+    },
+    "sealed_per_case_3reps": {
+      "_comment": "The champion only reroutes `qa`, so only qa cases can carry the effect; the other 10 sealed cases contribute noise to any whole-split total. Measured directly, 3 reps per case.",
+      "qa_cases": {
+        "hard-math-modexp": {
+          "seed": [
+            0,
+            0,
+            0
+          ],
+          "champion": [
+            1,
+            1,
+            1
+          ]
+        },
+        "wide-qa-seconds": {
+          "seed": [
+            0,
+            0,
+            0
+          ],
+          "champion": [
+            1,
+            1,
+            1
+          ]
+        },
+        "wide-qa-gcd": {
+          "seed": [
+            1,
+            0,
+            1
+          ],
+          "champion": [
+            1,
+            1,
+            1
+          ]
+        }
+      },
+      "qa_mean": {
+        "seed": 0.222,
+        "champion": 1.0
+      },
+      "all_13_mean": {
+        "seed": 0.6155,
+        "champion": 0.7949
       }
     }
   },
