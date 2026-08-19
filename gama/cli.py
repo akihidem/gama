@@ -420,9 +420,12 @@ def build_parser() -> argparse.ArgumentParser:
                          "the models are noisier than that")
     pg.add_argument("--patience", type=_positive_int, default=2,
                     help="stop after this many generations with no promotion")
-    pg.add_argument("--ensemble-strategy", default="majority",
+    pg.add_argument("--ensemble-strategy", default="synthesize",
                     choices=["majority", "first", "synthesize"],
-                    help="strategy for proposed ensemble lanes (synthesize costs an extra call)")
+                    help="aggregation for proposed ensemble lanes. Default synthesize: the "
+                         "other member writes the final answer from both drafts (one extra "
+                         "call per case). majority compares replies verbatim, so on free-text "
+                         "answers it ties and falls back to the first member")
     pg.add_argument("--out", default=None, help="write the JSONL grow ledger")
     pg.add_argument("--write-recipe", default=None,
                     help="write the champion to this recipe directory (config.json + recipe.md)")

@@ -287,7 +287,8 @@ def _by_class_rotation(items: list, classes: list[str], offset: int) -> list:
 
 def propose(champion: dict, pool: dict[str, dict], classes: list[str],
             width: int = 6, exclude: Optional[set] = None,
-            ensemble_strategy: str = "majority", generation: int = 0) -> list[Candidate]:
+            ensemble_strategy: str = "synthesize",
+            generation: int = 0) -> list[Candidate]:
     """チャンピオンから 1 手だけ動かした候補を、種類を混ぜて ``width`` 本返す。
 
     1 手だけなのは、勝因を測定に帰属させるため(2 手同時だとどちらが効いたか台帳から読めない)。
@@ -333,7 +334,12 @@ def propose(champion: dict, pool: dict[str, dict], classes: list[str],
                 _with_lane(champion, task_type, name,
                            {"backend": "tool", "_grow_base": base,
                             "kwargs": {"inner": copy.deepcopy(pool[base])}}))))
-        for other in lanes:                                 # ③ 2 モデルの合議
+        # ③ 2 モデルの合議。既定は synthesize —— majority は**自由文では機能しない**。逐語一致が
+        # まず起きないので Counter が全部 1 になり、most_common が「最初に入れたメンバー」を返す。
+        # 実測(graded 20 問): majority 0.705 に対し素の 3B 単体が 0.830、synthesize は 0.975
+        # (case 単位で 8 勝 0 敗)。既定のままだとこの変異は「一番安いモデルの答えを、全員ぶんの
+        # 金を払って採用する」になっていた。
+        for other in lanes:
             if other == base or base not in pool:
                 continue
             name = f"ens({base}+{other})"
@@ -343,9 +349,16 @@ def propose(champion: dict, pool: dict[str, dict], classes: list[str],
                 f"ensemble:{task_type}({base}+{other})", "ensemble",
                 _with_lane(champion, task_type, name,
                            {"backend": "ensemble", "_grow_base": base,
-                            "kwargs": {"members": [copy.deepcopy(pool[base]),
-                                                   copy.deepcopy(pool[other])],
-                                       "strategy": ensemble_strategy}}))))
+                            "kwargs": dict(
+                                {"members": [copy.deepcopy(pool[base]),
+                                             copy.deepcopy(pool[other])],
+                                 "strategy": ensemble_strategy},
+                                # 統合役は「もう一方」= base でない側。既定の aggregator は
+                                # members[0](=base) なので、弱い方に最終回答を書かせてしまう。
+                                # synthesize 以外では使われないキーなので入れない —— 入れると
+                                # build_backend が使わない backend を先に構築してしまう。
+                                **({"aggregator": copy.deepcopy(pool[other])}
+                                   if ensemble_strategy == "synthesize" else {}))}))))
         for other in lanes:                                 # ④ 検証で gate した段階委譲
             if other == base or base not in pool:
                 continue
@@ -453,7 +466,7 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
          min_margin: Optional[float] = None,
          patience: int = 2, seed_spec: Optional[dict] = None,
          ledger_path: Optional[str] = None, unit_cost: Optional[dict] = None,
-         ensemble_strategy: str = "majority",
+         ensemble_strategy: str = "synthesize",
          on_event: Optional[Callable[[dict], None]] = None) -> dict:
     """RSI を ``generations`` 世代回し、最終チャンピオンと全世代の台帳を返す。
 

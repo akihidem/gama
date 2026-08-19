@@ -207,10 +207,17 @@ writes back byte-identical (that's yoriai's L0-1).
 
 ### Let it grow itself — `gama grow`
 `bench` measures a combination *you* wrote. **`grow` writes the combinations.** It mutates the
-config one move at a time (route a class to another model, wrap a lane in `tool`, ensemble it,
-escalate it under verification — or **strip structure back off**), measures every candidate with
-the same deterministic checkers, and installs a new champion **only when a held-out split
-confirms the win**. No model judges anything, anywhere in the loop.
+config one move at a time (route a class to another model, wrap a lane in `tool`, ensemble it
+behind an aggregator, escalate it under verification — or **strip structure back off**), measures
+every candidate with the same deterministic checkers, and installs a new champion **only when a
+held-out split confirms the win**. No model judges anything, anywhere in the loop.
+
+Measuring the loop's own mutations is worth doing, and it found one of them broken: proposed
+ensembles used `majority`, which compares replies verbatim, so on free-text answers all counts
+tie and the aggregate silently becomes the *first member*. On the graded suite that scored
+**0.705 — below the bare 3B's 0.830 — while costing 14x the latency**: the mutation was paying
+for two models to keep the cheaper one's answer. Proposals now synthesize through the other
+member (0.975 on the same cases, better on 8 of 20 and worse on none).
 
 ```bash
 gama grow --models llama3.2:3b,qwen2.5:7b,qwen2.5-coder:7b --generations 4 --width 5 \

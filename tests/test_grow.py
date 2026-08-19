@@ -264,6 +264,33 @@ class TestPropose(ScriptedCase):
                                              generation=g)}
         self.assertEqual(seen, {"simplify", "route", "tool", "ensemble", "meshflow"}, seen)
 
+    def test_ensemble_mutations_aggregate_with_the_other_member(self):
+        # `majority` needs verbatim agreement, which free-text answers never give: Counter sees
+        # all-ones and returns members[0]. Measured on graded: majority 0.705, below the bare
+        # 3B's 0.830, at 14x the latency — the mutation was paying for three models to keep the
+        # cheapest one's answer. synthesize scored 0.975 (8-0 by case).
+        cands = propose(self.champ, self.pool, ["qa"], width=12)
+        ens = [c for c in cands if c.kind == "ensemble"]
+        self.assertTrue(ens)
+        for c in ens:
+            lane = c.spec["kwargs"]["routing_table"]["qa"]
+            kw = c.spec["kwargs"]["backends"][lane]["kwargs"]
+            self.assertEqual(kw["strategy"], "synthesize")
+            self.assertEqual(kw["aggregator"], kw["members"][1])  # the other model, not base
+            build_backend(c.spec)
+
+    def test_non_synthesize_ensembles_carry_no_unused_aggregator(self):
+        # build_backend constructs `aggregator` eagerly, so shipping one with a strategy that
+        # never reads it builds a backend for nothing (and drags in whatever that backend needs).
+        for strategy in ("majority", "first"):
+            for c in propose(self.champ, self.pool, ["qa"], width=12,
+                             ensemble_strategy=strategy):
+                if c.kind != "ensemble":
+                    continue
+                lane = c.spec["kwargs"]["routing_table"]["qa"]
+                self.assertNotIn("aggregator", c.spec["kwargs"]["backends"][lane]["kwargs"])
+                build_backend(c.spec)
+
     def test_never_proposes_the_champion_or_excluded(self):
         cands = propose(self.champ, self.pool, ["qa"], width=12)
         hashes = {spec_hash(c.spec) for c in cands}
