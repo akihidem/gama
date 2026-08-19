@@ -46,6 +46,7 @@ from .grow import (
     measure,
     ollama_pool,
     promote_gate,
+    simplify_gate,
     propose,
     seed_champion,
     spec_hash,
@@ -85,7 +86,7 @@ __all__ = [
     "score_output",
     "escalation_cost", "p_star", "dominates", "ladder", "market_over_records", "analyze",
     "mesh_gain", "mesh_correctness", "ignites", "failure_correlation", "mesh_analyze",
-    "grow", "propose", "promote_gate", "measure", "split_cases", "suite_pool",
+    "grow", "propose", "promote_gate", "simplify_gate", "measure", "split_cases", "suite_pool",
     "seed_champion", "ollama_pool", "canonical", "spec_hash", "Candidate", "write_recipe",
     "__version__",
 ]

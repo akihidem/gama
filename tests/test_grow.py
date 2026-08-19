@@ -29,6 +29,7 @@ from gama.cli import build_parser, main
 from gama.config import build_backend, system_from_config
 from gama.grow import (
     canonical,
+    simplify_gate,
     measure,
     validate_pool,
     grow,
@@ -131,6 +132,15 @@ class TestSplit(unittest.TestCase):
 # 2. Spec canonicalisation
 # --------------------------------------------------------------------------- #
 class TestCanonical(ScriptedCase):
+    def test_a_route_back_to_the_default_lane_is_dropped(self):
+        # Shrinking a class back onto the default lane must land on the SAME design as the
+        # seed, not a look-alike with a no-op route in it.
+        pool = {"a": _lane("a")}
+        seed = seed_champion(pool, "a")
+        shrunk = json.loads(json.dumps(seed))
+        shrunk["kwargs"]["routing_table"]["qa"] = "a"
+        self.assertEqual(spec_hash(canonical(shrunk)), spec_hash(seed))
+
     def test_orphan_lane_dropped_so_hashes_match(self):
         champ = seed_champion({"a": _lane("a"), "b": _lane("b")}, "a")
         with_orphan = json.loads(json.dumps(champ))
@@ -346,6 +356,21 @@ class TestPromoteGate(unittest.TestCase):
 # --------------------------------------------------------------------------- #
 # 5. The loop
 # --------------------------------------------------------------------------- #
+class TestSimplifyGate(unittest.TestCase):
+    def test_promotes_a_simpler_champion_that_is_not_measurably_worse(self):
+        ok, why = simplify_gate(0.80, 0.78, 0.05, 2, 1)
+        self.assertTrue(ok, why)
+
+    def test_refuses_when_the_drop_is_measurable(self):
+        ok, why = simplify_gate(0.80, 0.70, 0.05, 2, 1)
+        self.assertFalse(ok)
+        self.assertTrue(why.startswith("measurably-worse"))
+
+    def test_refuses_when_nothing_got_simpler(self):
+        # "no worse" alone would let the loop churn between equivalent designs forever.
+        self.assertFalse(simplify_gate(0.80, 0.80, 0.05, 1, 1)[0])
+
+
 class TestGrowLoop(ScriptedCase):
     """Landscape: 4 qa cases -> search {qa1,qa4}, confirm {qa2}, sealed {qa3}."""
 
@@ -466,6 +491,52 @@ class TestGrowLoop(ScriptedCase):
         # gate rather than loosening it.
         with self.assertRaises(ValueError):
             grow({"a": _lane("a")}, cases=_cases(4), generations=1, width=1, min_margin=-0.1)
+
+    def test_a_champion_can_shrink_again(self):
+        # Counted across six real runs: simplify was proposed 4 times, became the challenger 0
+        # times, and the champion's cost only ever went up. Additions and removals are
+        # different questions ("is it better?" vs "is it worse?") and need different gates.
+        Scripted.WINS = {"a": {"qa1", "qa2", "qa4"}}
+        pool = {"a": _lane("a")}
+        champ = seed_champion(pool, "a")
+        champ["kwargs"]["backends"]["tool(a)"] = {
+            "backend": "tool", "_grow_base": "a", "kwargs": {"inner": _lane("a")}}
+        champ["kwargs"]["routing_table"]["qa"] = "tool(a)"
+        res = grow(pool, cases=_cases(4), seed_spec=canonical(champ), generations=2, width=6,
+                   patience=5, min_margin=0.05)
+        gen0 = res["history"][0]
+        self.assertEqual(gen0.get("simplify_challenger"), "simplify:qa->a")
+        self.assertEqual(gen0.get("simplify_verdict"), "promote", gen0.get("simplify_reason"))
+        self.assertEqual(res["champion"]["kwargs"]["routing_table"], {})
+        self.assertEqual(res["history"][0]["structure_size"], 0)
+
+    def test_a_shrink_counts_as_a_promotion(self):
+        # The champion changed; a ledger that says "0 promotions" because the additive gate
+        # said reject is a record that disagrees with what happened.
+        Scripted.WINS = {"a": {"qa1", "qa2", "qa4"}}
+        pool = {"a": _lane("a")}
+        champ = seed_champion(pool, "a")
+        champ["kwargs"]["backends"]["tool(a)"] = {
+            "backend": "tool", "_grow_base": "a", "kwargs": {"inner": _lane("a")}}
+        champ["kwargs"]["routing_table"]["qa"] = "tool(a)"
+        res = grow(pool, cases=_cases(4), seed_spec=canonical(champ), generations=1, width=6,
+                   patience=5, min_margin=0.05)
+        self.assertEqual(res["promotions"], 1)
+        self.assertNotEqual(res["champion_hash"], res["seed_hash"])
+
+    def test_structure_is_counted_per_routed_class(self):
+        # Two classes sharing one composite lane: returning one of them to the bare model is a
+        # real reduction, and counting lanes instead of routes would call it "not simpler".
+        from gama.grow import _structure_size
+        shared = {"backend": "gama", "kwargs": {
+            "backends": {"a": _lane("a"),
+                         "tool(a)": {"backend": "tool", "_grow_base": "a",
+                                     "kwargs": {"inner": _lane("a")}}},
+            "routing_table": {"qa": "tool(a)", "research": "tool(a)"}, "default": "a"}}
+        one_back = json.loads(json.dumps(shared))
+        one_back["kwargs"]["routing_table"]["research"] = "a"
+        self.assertEqual(_structure_size(canonical(shared)), 2)
+        self.assertEqual(_structure_size(canonical(one_back)), 1)
 
     def test_patience_stops_a_loop_that_is_going_nowhere(self):
         Scripted.WINS = {"a": set(), "b": set()}

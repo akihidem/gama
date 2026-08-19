@@ -150,6 +150,9 @@ def canonical(spec: dict) -> dict:
     lanes = dict(kw.get("backends") or {})
     table = dict(kw.get("routing_table") or {})
     default = kw.get("default")
+    # 既定レーンを指すルートは no-op。残すと「構造を剥がして種に戻った設計」が種と別ハッシュに
+    # なり、台帳では何もしていないルートが表示され、archive でも別物として測り直される。
+    table = {k: v for k, v in table.items() if v != default}
     used = set(table.values()) | ({default} if default else set())
     return {"backend": "gama",
             "kwargs": {"backends": {k: copy.deepcopy(v) for k, v in sorted(lanes.items())
@@ -456,6 +459,43 @@ def promote_gate(champion_search: float, challenger_search: float,
     return True, "promote"
 
 
+_COMPOSITES = ("tool", "ensemble", "meshflow", "trinity", "abmcts")
+
+
+def _structure_size(spec: dict) -> int:
+    """How much structure the champion carries, counted **per routed class**.
+
+    Counting composite *lanes* instead would miss the common case: two classes sharing one
+    `tool(...)` lane, where returning one of them to the bare model leaves the lane standing —
+    a real reduction that would score "not simpler" and never be allowed through.
+    """
+    kw = spec.get("kwargs") or {}
+    lanes = kw.get("backends") or {}
+    composite = {n for n, v in lanes.items() if v.get("backend") in _COMPOSITES}
+    routed = sum(1 for v in (kw.get("routing_table") or {}).values() if v in composite)
+    return routed + (1 if kw.get("default") in composite else 0)
+
+
+def simplify_gate(champion_confirm: float, challenger_confirm: float, delta: float,
+                  champion_structure: int, challenger_structure: int) -> tuple[bool, str]:
+    """削減の門。追加とは**違う問い**で裁く。
+
+    追加は「測って良くなったか」だが、削減は「測って悪くなっていないか」。同じ門(厳密改善)で
+    裁くと、削減は原理的にほぼ通らない —— 実測でも全 6 走で simplify 候補は挑戦者にすらなれず
+    (提案 4 回・挑戦 0 回)、その間チャンピオンのコストは 0.61s→1.73s/問 と単調に増えた。
+    「足す方向にしか進めないループを作らない」と宣言しておきながら、非対称は変異の層ではなく
+    門の層に残っていた。
+
+    条件: ①構造が厳密に減る ②confirm の低下が δ 未満(=測って悪いと言えない)。
+    差が測れないなら簡単な方を採る、という Occam の適用であって、「同点だから通す」ではない。
+    """
+    if not challenger_structure < champion_structure:
+        return False, "not-simpler"
+    if (champion_confirm - challenger_confirm) >= delta:
+        return False, f"measurably-worse(delta={round(delta, 4)})"
+    return True, "simplify"
+
+
 # --------------------------------------------------------------------------- #
 # The loop
 # --------------------------------------------------------------------------- #
@@ -571,38 +611,67 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
                       "hash": h, "search": asdict(m)})
             scored.append((c, m))
 
-        # 同点はコスト(=実測レイテンシ)の低い方、それも同じならラベル順。決定的に選ぶ。
-        challenger, chal_search = min(scored, key=lambda t: (-t[1].score, t[1].latency_s,
-                                                             t[0].label))
-
         # チャンピオンを毎世代 confirm で測り直す。差 δ の下限は「同じ config を測り直したときの
         # 揺れ」そのもの — 自分の揺れより小さい改善を採らないための実測アンカー。
         champ_confirm_now = measure(champion, splits["confirm"], tier, repeats, unit_cost,
                                     "champion")
         drift = abs(champ_confirm_now.score - champ_confirm.score)
         delta = max(margin_floor, drift)
-        chal_confirm = measure(challenger.spec, splits["confirm"], tier, repeats, unit_cost,
-                               "challenger")
-        ok, reason = promote_gate(champ_search.score, chal_search.score,
-                                  champ_confirm_now.score, chal_confirm.score, delta)
-        challenged.add(spec_hash(challenger.spec))
 
+        # 追加と削減は別々に選ぶ。混ぜると、構造を剥がした候補が search 最高点の勝負に放り込まれ、
+        # 「良くなったか」という**別の問い**の門で焼かれる(そして二度と挑戦できない)。
+        additive = [(c, m) for c, m in scored if c.kind != "simplify"]
         row = {"event": "generation", "gen": gen, "champion_hash": spec_hash(champion),
-               "challenger": challenger.label, "kind": challenger.kind,
-               "challenger_hash": spec_hash(challenger.spec),
-               "champion_search": champ_search.score, "challenger_search": chal_search.score,
+               "champion_search": champ_search.score,
                "champion_confirm": champ_confirm_now.score,
-               "challenger_confirm": chal_confirm.score,
                "drift": round(drift, 4), "delta": round(delta, 4),
-               "verdict": "promote" if ok else "reject", "reason": reason,
-               "candidates": len(cands), "elapsed_s": round(time.time() - t0, 2)}
+               "candidates": len(cands)}
+        ok, reason = False, "no-additive-candidate"
+        if additive:
+            # 同点はコスト(=実測レイテンシ)の低い方、それも同じならラベル順。決定的に選ぶ。
+            challenger, chal_search = min(additive, key=lambda t: (-t[1].score, t[1].latency_s,
+                                                                    t[0].label))
+            chal_confirm = measure(challenger.spec, splits["confirm"], tier, repeats, unit_cost,
+                                   "challenger")
+            ok, reason = promote_gate(champ_search.score, chal_search.score,
+                                      champ_confirm_now.score, chal_confirm.score, delta)
+            challenged.add(spec_hash(challenger.spec))
+            row.update({"challenger": challenger.label, "kind": challenger.kind,
+                        "challenger_hash": spec_hash(challenger.spec),
+                        "challenger_search": chal_search.score,
+                        "challenger_confirm": chal_confirm.score})
+        row.update({"verdict": "promote" if ok else "reject", "reason": reason})
         if ok:
             champion, champ_search, champ_confirm = challenger.spec, chal_search, chal_confirm
             stale = 0
         else:
             champ_confirm = champ_confirm_now       # 次世代の drift 基準は常に最新の実測
             stale += 1
+        # 追加が却下された世代だけ、削減にも 1 枠まわす。追加が通った世代は見送る:
+        # 1 世代 1 手を守らないと、どちらが効いたのか台帳から帰属できなくなる。
+        if not ok:
+            shrinks = [(c, m) for c, m in scored
+                       if c.kind == "simplify"
+                       and _structure_size(c.spec) < _structure_size(champion)
+                       and spec_hash(c.spec) not in challenged]
+            if shrinks:
+                cand, cand_search = min(shrinks, key=lambda t: (-t[1].score, t[0].label))
+                cand_confirm = measure(cand.spec, splits["confirm"], tier, repeats, unit_cost,
+                                       "simplifier")
+                s_ok, s_reason = simplify_gate(champ_confirm_now.score, cand_confirm.score,
+                                               delta, _structure_size(champion),
+                                               _structure_size(cand.spec))
+                challenged.add(spec_hash(cand.spec))
+                row["simplify_challenger"] = cand.label
+                row["simplify_confirm"] = cand_confirm.score
+                row["simplify_verdict"] = "promote" if s_ok else "reject"
+                row["simplify_reason"] = s_reason
+                if s_ok:
+                    champion, champ_search, champ_confirm = cand.spec, cand_search, cand_confirm
+                    stale = 0
         row["champion_after"] = spec_hash(champion)
+        row["structure_size"] = _structure_size(champion)
+        row["elapsed_s"] = round(time.time() - t0, 2)     # 削減の測定まで含めた世代の実時間
         history.append(row)
         emit(row)
         if stale >= patience:
@@ -622,7 +691,10 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
     result = {
         "champion": champion, "champion_hash": spec_hash(champion),
         "seed": seed, "seed_hash": spec_hash(seed),
-        "promotions": sum(1 for h in history if h["verdict"] == "promote"),
+        # 「チャンピオンが実際に入れ替わった世代」を数える。片方の門の verdict を数えると、
+        # 削減で入れ替わった世代が reject 扱いのまま promotions に乗らず、**台帳が実態と食い違う**
+        # (しかも門を足すたび同じ穴が空く)。
+        "promotions": sum(1 for h in history if h["champion_hash"] != h["champion_after"]),
         "generations_run": len(history),
         "search": asdict(champ_search), "confirm": asdict(champ_confirm),
         "sealed": sealed,
