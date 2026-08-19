@@ -645,6 +645,9 @@ def write_recipe(result: dict, directory, name: Optional[str] = None,
               "system": result["champion"],
               "grow": {"seed_hash": result["seed_hash"], "promotions": result["promotions"],
                        "generations_run": result["generations_run"],
+                       # the conditions travel with the numbers: a sealed score means nothing
+                       # without the suites/ratio/repeats it was produced under
+                       "params": result.get("params", {}),
                        "splits": result["splits"], "sealed": result["sealed"]}}
     (d / "config.json").write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n",
                                    encoding="utf-8")

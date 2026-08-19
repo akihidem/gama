@@ -1,5 +1,5 @@
 {
-  "_comment": "GROWN by `gama grow` (run B, repeats=2). `system` is the champion; the `backends` key below exists so `gama bench --backends system,ollama` compares it against the seed model it grew from, not against ollama's default model. Sealed numbers were never used for any decision.",
+  "_comment": "GROWN by `gama grow` (run F: all five suites, repeats=2, rotating frontier). `system` is the champion; the `backends` key exists so `gama bench --backends system,ollama` compares it against the seed model it grew from, not ollama's default. Sealed numbers never fed a decision.",
   "system": {
     "backend": "gama",
     "kwargs": {
@@ -13,6 +13,37 @@
               "medium": "llama3.2:3b",
               "large": "llama3.2:3b"
             }
+          }
+        },
+        "mesh(llama3.2:3b->qwen2.5-coder:7b)": {
+          "backend": "meshflow",
+          "_grow_base": "llama3.2:3b",
+          "kwargs": {
+            "tiers": [
+              {
+                "backend": "ollama",
+                "kwargs": {
+                  "host": "http://localhost:11434",
+                  "model_by_tier": {
+                    "small": "llama3.2:3b",
+                    "medium": "llama3.2:3b",
+                    "large": "llama3.2:3b"
+                  }
+                }
+              },
+              {
+                "backend": "ollama",
+                "kwargs": {
+                  "host": "http://localhost:11434",
+                  "model_by_tier": {
+                    "small": "qwen2.5-coder:7b",
+                    "medium": "qwen2.5-coder:7b",
+                    "large": "qwen2.5-coder:7b"
+                  }
+                }
+              }
+            ],
+            "mesh": "union"
           }
         },
         "tool(llama3.2:3b)": {
@@ -34,160 +65,10 @@
         }
       },
       "routing_table": {
-        "qa": "tool(llama3.2:3b)"
+        "qa": "tool(llama3.2:3b)",
+        "research": "mesh(llama3.2:3b->qwen2.5-coder:7b)"
       },
       "default": "llama3.2:3b"
-    }
-  },
-  "grow": {
-    "seed_hash": "dfc9558a56d3",
-    "promotions": 1,
-    "generations_run": 3,
-    "splits": {
-      "search": [
-        "hard-code-longpal",
-        "wide-code-balanced",
-        "wide-code-bsearch",
-        "wide-code-roman",
-        "wide-code-twosum",
-        "brutal-content-alliteration",
-        "hard-write-primelist",
-        "wide-content-acrostic",
-        "wide-content-lipogram",
-        "wide-content-reverse",
-        "wide-content-weekdays",
-        "hard-tool-json-nested",
-        "wide-tool-csv",
-        "wide-tool-json-list",
-        "wide-tool-json-null",
-        "wide-tool-kv",
-        "brutal-qa-powmod",
-        "hard-math-mult",
-        "wide-qa-binary",
-        "wide-qa-lcm",
-        "wide-qa-modpow",
-        "wide-qa-sum50",
-        "brutal-research-distinct",
-        "hard-reason-weekday",
-        "wide-research-ages",
-        "wide-research-dice",
-        "wide-research-digitsum",
-        "wide-research-tallest"
-      ],
-      "confirm": [
-        "hard-code-merge",
-        "wide-code-flatten",
-        "wide-code-topword",
-        "brutal-content-palindrome",
-        "wide-content-alliteration",
-        "wide-content-sevenwords",
-        "hard-tool-json-squares",
-        "wide-tool-json-nested",
-        "wide-tool-json-user",
-        "brutal-qa-trailzeros",
-        "wide-qa-divisors",
-        "wide-qa-pow2",
-        "brutal-research-knights",
-        "wide-research-arrangements",
-        "wide-research-knave"
-      ],
-      "sealed": [
-        "wide-code-anagram",
-        "wide-code-rotate",
-        "hard-write-acrostic",
-        "wide-content-bullets",
-        "wide-content-toad",
-        "wide-tool-call",
-        "wide-tool-json-squares",
-        "hard-math-modexp",
-        "wide-qa-gcd",
-        "wide-qa-seconds",
-        "hard-reason-lookandsay",
-        "wide-research-choose",
-        "wide-research-seq"
-      ]
-    },
-    "sealed": {
-      "seed": {
-        "score": 0.6026,
-        "success_rate": 0.6538,
-        "latency_s": 0.4862,
-        "n": 26,
-        "cases": 13
-      },
-      "champion": {
-        "score": 0.7885,
-        "success_rate": 0.8077,
-        "latency_s": 0.6113,
-        "n": 26,
-        "cases": 13
-      }
-    },
-    "runs": {
-      "A (repeats=1)": {
-        "sealed_seed": 0.5769,
-        "sealed_champion": 0.8462,
-        "promotions": 1
-      },
-      "B (repeats=2)": {
-        "sealed_seed": 0.6026,
-        "sealed_champion": 0.7885,
-        "promotions": 1
-      },
-      "C (repeats=2, auto margin floor)": {
-        "sealed_seed": 0.6538,
-        "sealed_champion": 0.6731,
-        "promotions": 1
-      }
-    },
-    "sealed_per_case_3reps": {
-      "_comment": "The champion only reroutes `qa`, so only qa cases can carry the effect; the other 10 sealed cases contribute noise to any whole-split total. Measured directly, 3 reps per case.",
-      "qa_cases": {
-        "hard-math-modexp": {
-          "seed": [
-            0,
-            0,
-            0
-          ],
-          "champion": [
-            1,
-            1,
-            1
-          ]
-        },
-        "wide-qa-seconds": {
-          "seed": [
-            0,
-            0,
-            0
-          ],
-          "champion": [
-            1,
-            1,
-            1
-          ]
-        },
-        "wide-qa-gcd": {
-          "seed": [
-            1,
-            0,
-            1
-          ],
-          "champion": [
-            1,
-            1,
-            1
-          ]
-        }
-      },
-      "qa_mean": {
-        "seed": 0.222,
-        "champion": 1.0
-      },
-      "all_13_mean": {
-        "seed": 0.6155,
-        "champion": 0.7949
-      }
     }
   },
   "backends": {
@@ -197,6 +78,198 @@
         "small": "llama3.2:3b",
         "medium": "llama3.2:3b",
         "large": "llama3.2:3b"
+      }
+    }
+  },
+  "grow": {
+    "seed_hash": "dfc9558a56d3",
+    "promotions": 2,
+    "generations_run": 4,
+    "params": {
+      "suites": [
+        "default",
+        "hard",
+        "brutal",
+        "wide",
+        "graded"
+      ],
+      "ratio": [
+        2,
+        1,
+        1
+      ],
+      "tier": "large",
+      "repeats": 2,
+      "width": 4,
+      "generations": 4,
+      "patience": 4,
+      "min_margin": 0.0435,
+      "min_margin_source": "auto(one confirm case)",
+      "ensemble_strategy": "majority"
+    },
+    "splits": {
+      "search": [
+        "code-fizzbuzz",
+        "g-code-divide",
+        "g-code-range",
+        "hard-code-merge",
+        "wide-code-anagram",
+        "wide-code-flatten",
+        "wide-code-roman",
+        "wide-code-twosum",
+        "brutal-content-alliteration",
+        "g-content-lines",
+        "g-content-sun-moon",
+        "hard-write-primelist",
+        "wide-content-acrostic",
+        "wide-content-bullets",
+        "wide-content-sevenwords",
+        "wide-content-toad",
+        "write-summary",
+        "g-tool-csv2",
+        "g-tool-kv4",
+        "hard-tool-json-nested",
+        "tool-json",
+        "wide-tool-call",
+        "wide-tool-json-nested",
+        "wide-tool-json-null",
+        "wide-tool-kv",
+        "brutal-qa-powmod",
+        "g-qa-div60",
+        "g-qa-gcdlcm",
+        "hard-math-mult",
+        "math-arith",
+        "wide-qa-binary",
+        "wide-qa-lcm",
+        "wide-qa-modpow",
+        "wide-qa-sum50",
+        "brutal-research-distinct",
+        "g-research-geometric",
+        "g-research-order",
+        "hard-reason-weekday",
+        "reason-seq",
+        "wide-research-ages",
+        "wide-research-dice",
+        "wide-research-digitsum",
+        "wide-research-tallest"
+      ],
+      "confirm": [
+        "code-palindrome",
+        "g-code-title",
+        "wide-code-balanced",
+        "wide-code-rotate",
+        "brutal-content-palindrome",
+        "g-content-three-words",
+        "wide-content-alliteration",
+        "wide-content-reverse",
+        "write-haiku",
+        "g-tool-json4",
+        "hard-tool-json-squares",
+        "wide-tool-csv",
+        "wide-tool-json-squares",
+        "brutal-qa-trailzeros",
+        "g-qa-powers",
+        "math-speed",
+        "wide-qa-gcd",
+        "wide-qa-seconds",
+        "brutal-research-knights",
+        "g-research-primes",
+        "reason-syllogism",
+        "wide-research-choose",
+        "wide-research-seq"
+      ],
+      "sealed": [
+        "g-code-chunk",
+        "hard-code-longpal",
+        "wide-code-bsearch",
+        "wide-code-topword",
+        "g-content-b5",
+        "hard-write-acrostic",
+        "wide-content-lipogram",
+        "wide-content-weekdays",
+        "g-tool-jsonlist3",
+        "tool-call",
+        "wide-tool-json-list",
+        "wide-tool-json-user",
+        "g-qa-bases",
+        "hard-math-modexp",
+        "wide-qa-divisors",
+        "wide-qa-pow2",
+        "g-research-banana",
+        "hard-reason-lookandsay",
+        "wide-research-arrangements",
+        "wide-research-knave"
+      ]
+    },
+    "sealed": {
+      "seed": {
+        "score": 0.6375,
+        "success_rate": 0.7,
+        "latency_s": 0.6074,
+        "n": 40,
+        "cases": 20
+      },
+      "champion": {
+        "score": 0.8542,
+        "success_rate": 0.9,
+        "latency_s": 1.7257,
+        "n": 40,
+        "cases": 20
+      }
+    },
+    "runs": {
+      "A (26 cases, repeats=1)": {
+        "champion": "qa->tool",
+        "sealed": [
+          0.5769,
+          0.8462
+        ]
+      },
+      "B (56 cases, repeats=2)": {
+        "champion": "qa->tool",
+        "sealed": [
+          0.6026,
+          0.7885
+        ]
+      },
+      "C (56 cases, repeats=2, derived floor)": {
+        "champion": "qa->tool",
+        "sealed": [
+          0.6538,
+          0.6731
+        ]
+      },
+      "D (graded only, confirm=5)": {
+        "champion": "none — floor too coarse to certify",
+        "sealed": [
+          0.85,
+          0.85
+        ]
+      },
+      "E (86 cases, starved frontier)": {
+        "champion": "research->meshflow",
+        "sealed": [
+          0.6687,
+          0.7312
+        ]
+      },
+      "F (86 cases, rotating frontier)": {
+        "champion": "qa->tool + research->meshflow",
+        "sealed": [
+          0.6375,
+          0.8542
+        ]
+      }
+    },
+    "sealed_per_case_3reps": {
+      "_comment": "From run C's champion (qa->tool only): the change reroutes one class, so only that class can carry the effect.",
+      "qa_mean": {
+        "seed": 0.222,
+        "champion": 1.0
+      },
+      "all_13_mean": {
+        "seed": 0.6155,
+        "champion": 0.7949
       }
     }
   }

@@ -224,46 +224,29 @@ It pools `wide,hard,brutal` (56 cases) by default and splits them three ways:
 | `confirm` | the only thing that can promote: the challenger must beat the champion here by at least **max(one confirm case, the champion's own re-measurement drift)** — a win smaller than one whole case, or smaller than your setup's noise, is not a win |
 | `sealed` | nothing. Never touched until the run ends, then opened once — so the headline number is the one no decision was fitted to |
 
-Run on a WSL2 box with CPU-only ollama, over the 56-case `wide,hard,brutal` pool
-(split 28 / 15 / 13):
+Run on a WSL2 box with CPU-only ollama over all five suites (86 cases, split 43 / 23 / 20):
 
 | generation | challenger | search | confirm | verdict |
 |---|---|---|---|---|
-| 0 | `ensemble:qa(llama3.2:3b+qwen2.5-coder:7b)` | 0.607 → 0.571 | 0.733 → 0.733 | rejected (didn't earn the challenge) |
-| 1 | `meshflow:research(llama3.2:3b→qwen2.5-coder:7b)` | 0.607 → 0.548 | 0.667 → 0.800 | rejected (didn't earn the challenge) |
-| 2 | `tool:qa(llama3.2:3b)` | 0.607 → 0.714 | 0.733 → **0.867** | **promoted** |
+| 0 | `meshflow:research(3b→coder7b)` | 0.651 → 0.709 | 0.635 → **0.832** | **promoted** |
+| 1 | `tool:qa(3b)` | 0.709 → 0.828 | 0.761 → **0.929** | **promoted** |
+| 2 | `meshflow:content(3b→coder7b)` | 0.828 → 0.896 | 0.859 → 0.913 (+0.054) | refused, below the bar (0.071) |
+| 3 | `meshflow:integration(3b→coder7b)` | 0.828 → 0.849 | 0.908 → 0.951 (+0.044) | refused, below the bar (0.049) |
 
-**Sealed split (13 cases, never used for any decision): seed 0.577 → champion 0.846.** The one
-confirmed win transfers to cases no decision was fitted to, and the size of it is accounted for:
-3 of the 13 sealed cases are `qa`, which is exactly the class the promotion changed.
+**Sealed split (20 cases, never used for any decision): 0.638 → 0.854.** The loop rediscovered
+both of gama's own theses without being told them — give the arithmetic class a **tool**, let
+the research class **escalate under verification** — and then refused two further structural
+changes that *did* improve confirm, because the improvement was smaller than the champion's own
+re-measurement drift that generation. Generations 0–1 were bounded by the one-case floor and
+2–3 by the drift: both halves of `max(one case, drift)` did work in the same run.
 
-Two things in that table are the loop working, not the loop being lucky:
-
-- **Generation 1 lost on `search` while scoring higher on `confirm` (0.800 vs 0.667).** A loop
-  that promoted on confirm alone would have taken it. It has to win the split it was selected
-  on *first*, or "it won" just means "we looked at confirm enough times".
-- **The champion's own confirm score moved 0.733 → 0.667 → 0.733 between generations** without
-  the champion changing. That is the measurement noise, and it is why the bar δ is read off that
-  drift instead of being a constant someone picked. Its floor is not a constant either: it is
-  **one confirm case** (1/n), so "smaller than one case" never promotes at any suite size — a
-  fixed 0.05 would be half a case on an 8-case confirm split and *stricter than a whole case*
-  on a 30-case one, i.e. the gate would silently change meaning when you changed the suite.
-
-Run it three times and it promotes that same single change every time. The whole-split sealed
-totals, though, come out **+0.269 / +0.186 / +0.019** — the third one looks like the effect
-vanished. It didn't: the champion reroutes only `qa`, which is 3 of the 13 sealed cases, so ten
-cases of unrelated noise are averaged into every one of those totals. Measured on the cases that
-actually changed (3 reps each), `qa` goes **0.222 → 1.000** and every other class sits still.
-
-That is worth more than the number: **a whole-split score dilutes a class-restricted change with
-the noise of every class it did not touch.** If you change one lane, measure that lane's cases.
-All three runs, the per-case table and every rejected candidate are checked in as
-[`recipes/grown-wsl-ollama`](recipes/grown-wsl-ollama), the first recipe here that no human wrote.
-
-An earlier run of the same loop, on the 26-case pool before `wide` existed, promoted twice and
-then showed **0.6 → 0.6 on a 5-case sealed split** — no transfer detectable at 0.2 per case. Same
-loop, same box, same discipline: what changed is that there are now enough cases to see the
-answer. Grow the suite, then grow the config.
+Six runs of this loop are checked in as [`recipes/grown-wsl-ollama`](recipes/grown-wsl-ollama),
+including the ones that make the method look worse: a run whose whole-split total came out flat
+(+0.019) because ten unrelated cases diluted a change that only touched three; a candidate this
+project called noise for three runs before a finer split showed it was real; and a run that
+never proposed the best-known change at all because a narrow search width parked it behind
+another candidate. Absence in a ledger reads exactly like a verdict, which is the argument for
+keeping the ledger.
 
 ## Recipes — grow it together 🌱
 `recipes/` is a community library: each recipe is a `config.json` (a combination) +

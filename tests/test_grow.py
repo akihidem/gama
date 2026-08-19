@@ -481,6 +481,9 @@ class TestWriteRecipe(ScriptedCase):
             cfg = json.loads((out / "config.json").read_text(encoding="utf-8"))
             build_backend(cfg["system"])              # `gama run --config` path must work
             self.assertEqual(cfg["grow"]["promotions"], 1)
+            # provenance travels with the numbers, not just in the prose
+            self.assertEqual(cfg["grow"]["params"]["repeats"], 1)
+            self.assertIn("min_margin", cfg["grow"]["params"])
             md = (out / "recipe.md").read_text(encoding="utf-8")
             self.assertIn("sealed score", md)
             self.assertIn("do not quote", md)         # the biased number is labelled as such
