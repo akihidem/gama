@@ -58,7 +58,9 @@ dilutes a class-restricted change with the noise of every class it did not touch
 change one lane, measure that lane's cases.
 
 What *did* reproduce tightly is the decision itself — 3 promotions out of 3 runs, with confirm
-margins of +0.133, +0.133, +0.100 (the gate needs one confirm case = 0.067).
+margins of +0.133, +0.133, +0.100 (the gate needs one confirm case = 0.067). A fourth run on
+`wide` alone promoted it again (+0.150), and a fifth on all five suites never proposed it (see
+the search defect below), so it stands at 4 for 4 attempts rather than 4 of 5.
 
 ## Why the tool lane, and why nothing else
 
@@ -69,16 +71,25 @@ split to keep it.
 
 The rejections are the more interesting half:
 
-| candidate | run A | run B | run C |
-|---|---|---|---|
-| `meshflow:research(3b→coder7b)` | lost on `search` (but scored *higher* on confirm) | won `search`, then flat on confirm | won `search`, confirm +0.033 = **half a case**, below the margin |
-| `ensemble:qa(3b+coder7b)` | rejected | rejected | rejected |
-| `tool:integration(3b)` | rejected | rejected | rejected |
-| `route:content→coder7b` | rejected | rejected | rejected |
+| candidate | run A | run B | run C | run E (86 cases) |
+|---|---|---|---|---|
+| `meshflow:research(3b→coder7b)` | lost on `search` (but scored *higher* on confirm) | won `search`, then flat on confirm | won `search`, confirm +0.033 = half a case, below the margin | **promoted: confirm 0.667 → 0.826 (+0.159)** |
+| `ensemble:qa(3b+coder7b)` | rejected | rejected | rejected | rejected |
+| `tool:integration(3b)` | rejected | rejected | rejected | rejected |
+| `route:content→coder7b` | rejected | rejected | rejected | rejected |
 
-`meshflow:research` failing for a **different reason on each run** is the useful signal: a
-candidate that loses a different gate every time is noise, not an effect. Any single run of it
-reads as "so close", in a different direction each time.
+**`meshflow:research` was called noise here, and that was wrong.** Across runs A–C it lost a
+*different* gate every time, which is what a noise effect looks like — so this recipe said so.
+Run E pooled all five suites (23 confirm cases instead of 8–15) and the same candidate won by
++0.159, about 3.6 cases. The earlier reading was a fair reading of the evidence available then;
+the evidence changed when the split got fine enough to see it. Escalating `research` to the 7B
+coder under external verification is a second real structural win on this box, and the loop
+found it as soon as it could measure it.
+
+Run E also exposed a defect in the *search*, not the gate: with `--width 4` an un-challenged
+candidate sat at the head of its kind's queue forever, so `tool:qa` — the promotion in runs
+A–D — was never proposed at all in run E. Its absence there is not a fifth verdict on it. The
+frontier now rotates per generation (`propose(..., round=gen)`).
 
 ## Reproduce
 ```bash

@@ -572,8 +572,15 @@ class ToolBackend(ModelBackend):
         code = max(blocks, key=len) if blocks else (raw or "")
         self.last_code = code
         try:
-            proc = subprocess.run([sys.executable, "-c", code], capture_output=True,
-                                  text=True, timeout=self.timeout)
+            # Run in a throwaway directory: a model asked for CSV happily writes
+            # `output.csv` next to whatever the caller was working on, and a benchmark that
+            # litters the repo it is being run from is its own kind of side effect. (Found
+            # exactly that file committed-adjacent after a bench sweep.)
+            import tempfile
+
+            with tempfile.TemporaryDirectory(prefix="gama-tool-") as sandbox:
+                proc = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                                      text=True, timeout=self.timeout, cwd=sandbox)
             out = proc.stdout.strip()
             if out:
                 return out

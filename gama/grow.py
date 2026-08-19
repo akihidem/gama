@@ -287,7 +287,7 @@ def _by_class_rotation(items: list, classes: list[str], offset: int) -> list:
 
 def propose(champion: dict, pool: dict[str, dict], classes: list[str],
             width: int = 6, exclude: Optional[set] = None,
-            ensemble_strategy: str = "majority") -> list[Candidate]:
+            ensemble_strategy: str = "majority", generation: int = 0) -> list[Candidate]:
     """チャンピオンから 1 手だけ動かした候補を、種類を混ぜて ``width`` 本返す。
 
     1 手だけなのは、勝因を測定に帰属させるため(2 手同時だとどちらが効いたか台帳から読めない)。
@@ -297,6 +297,16 @@ def propose(champion: dict, pool: dict[str, dict], classes: list[str],
     ``exclude`` は「confirm で一度挑戦して負けた設計」のハッシュ集合。**search で測っただけの
     設計は除外しない** — search で選ばれなかっただけの候補を永久追放すると、後で本命になりうる
     踏み石(archive)を毎回捨てることになる。除外するのは決着がついた設計だけ。
+
+    ``generation`` は世代番号で、**クラスと種類の両方の巡回開始位置**をずらす。固定だと
+    2 種類の飢餓が起きる(どちらも実測):
+      * クラス側 —— 挑戦者に選ばれなかった候補が種類キューの先頭に居座り続け、同じ種類の別
+        クラスに永久に順番が来ない(全 suite 走で `tool:integration` が居座り、`tool:qa` は
+        3 世代とも一度も提案されなかった。落ちたのではなく試されていない)。
+      * 種類側 —— 種類の巡回が毎回 order の先頭から始まるので、``width`` が種類数より小さいと
+        末尾の種類が落ちる。しかも `simplify` は**昇格が起きた直後に空でなくなる**ため、
+        「1 つ昇格した瞬間に meshflow が候補から消える」という当たりの悪い噛み合わせになる
+        (同じ走の gen1 で実際に消えた)。
     """
     validate_pool(pool)
     exclude = exclude or set()
@@ -359,7 +369,7 @@ def propose(champion: dict, pool: dict[str, dict], classes: list[str],
                     _with_lane(champion, task_type, inner, copy.deepcopy(pool[inner])))))
 
     order = ["simplify", "route", "tool", "ensemble", "meshflow"]   # 縮む手を先に見る
-    queues = {k: _by_class_rotation(buckets[k], ordered_classes, offset)
+    queues = {k: _by_class_rotation(buckets[k], ordered_classes, offset + generation)
               for offset, k in enumerate(order)}
 
     champ_hash = spec_hash(champion)
@@ -367,7 +377,7 @@ def propose(champion: dict, pool: dict[str, dict], classes: list[str],
     emitted: set = set()
     i = 0
     while len(out) < width and any(queues[k] for k in order):
-        kind = order[i % len(order)]
+        kind = order[(i + generation) % len(order)]
         i += 1
         if not queues[kind]:
             continue
@@ -526,7 +536,7 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
     for gen in range(generations):
         t0 = time.time()
         cands = propose(champion, pool, classes, width=width, exclude=challenged,
-                        ensemble_strategy=ensemble_strategy)
+                        ensemble_strategy=ensemble_strategy, generation=gen)
         if not cands:
             emit({"event": "stop", "gen": gen, "reason": "no-new-candidates"})
             break

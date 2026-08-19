@@ -233,6 +233,37 @@ class TestPropose(ScriptedCase):
         with self.assertRaises(ValueError):
             grow(bad, cases=_cases(4), generations=1, width=2)
 
+    CLASSES = ["code_implementation", "content", "integration", "qa", "research"]
+
+    def test_the_frontier_rotates_across_generations(self):
+        # Measured defect: with width < #kinds x #classes, an un-challenged candidate sits at
+        # the head of its kind's queue forever, so later classes of that kind are never
+        # proposed at all. A real run spent three generations re-offering `tool:integration`
+        # and never once tried `tool:qa` — which reads in the ledger as "qa was not worth it".
+        rounds = [propose(self.champ, self.pool, self.CLASSES, width=4, generation=g)
+                  for g in range(3)]
+        labels = {c.label for r in rounds for c in r}
+        self.assertIn("tool:qa(a)", labels, sorted(labels))
+        self.assertEqual([c.label for c in rounds[1]],   # still deterministic per generation
+                         [c.label for c in propose(self.champ, self.pool, self.CLASSES,
+                                                   width=4, generation=1)])
+
+    def test_no_mutation_kind_is_starved_at_a_narrow_width(self):
+        # The nastier half of the same defect: kinds were always tried in a fixed order, so
+        # width=4 could never reach the 5th kind — and `simplify` becomes non-empty exactly
+        # when a promotion happens, so the first promotion pushed `meshflow` off the list.
+        champ = json.loads(json.dumps(self.champ))
+        champ["kwargs"]["backends"]["mesh(a+b)"] = {
+            "backend": "meshflow", "_grow_base": "a",
+            "kwargs": {"tiers": [_lane("a"), _lane("b")], "mesh": "union"}}
+        champ["kwargs"]["routing_table"]["research"] = "mesh(a+b)"
+        champ = canonical(champ)
+        seen = set()
+        for g in range(5):
+            seen |= {c.kind for c in propose(champ, self.pool, self.CLASSES, width=4,
+                                             generation=g)}
+        self.assertEqual(seen, {"simplify", "route", "tool", "ensemble", "meshflow"}, seen)
+
     def test_never_proposes_the_champion_or_excluded(self):
         cands = propose(self.champ, self.pool, ["qa"], width=12)
         hashes = {spec_hash(c.spec) for c in cands}

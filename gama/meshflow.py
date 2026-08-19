@@ -54,8 +54,11 @@ def verify_code_runs(artifact: str, timeout: int = 15) -> float:
     if not code.strip():
         return 0.0
     try:
-        proc = subprocess.run([sys.executable, "-c", code], capture_output=True,
-                              text=True, timeout=timeout)
+        import tempfile
+
+        with tempfile.TemporaryDirectory(prefix="gama-verify-") as sandbox:
+            proc = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                                  text=True, timeout=timeout, cwd=sandbox)  # not the caller's cwd
         return 1.0 if proc.returncode == 0 else 0.0
     except Exception:
         return 0.0
