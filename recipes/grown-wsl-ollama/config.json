@@ -1,5 +1,5 @@
 {
-  "_comment": "GROWN by `gama grow` (run F: all five suites, repeats=2, rotating frontier). `system` is the champion; the `backends` key exists so `gama bench --backends system,ollama` compares it against the seed model it grew from, not ollama's default. Sealed numbers never fed a decision.",
+  "_comment": "GROWN by `gama grow`. Ships only the change the record supports: `qa` through the tool lane (promoted in 7 of 8 runs that proposed it). The research->meshflow lane the loop also found is documented in recipe.md with its full 3-win / 6-loss record rather than shipped.",
   "system": {
     "backend": "gama",
     "kwargs": {
@@ -13,37 +13,6 @@
               "medium": "llama3.2:3b",
               "large": "llama3.2:3b"
             }
-          }
-        },
-        "mesh(llama3.2:3b->qwen2.5-coder:7b)": {
-          "backend": "meshflow",
-          "_grow_base": "llama3.2:3b",
-          "kwargs": {
-            "tiers": [
-              {
-                "backend": "ollama",
-                "kwargs": {
-                  "host": "http://localhost:11434",
-                  "model_by_tier": {
-                    "small": "llama3.2:3b",
-                    "medium": "llama3.2:3b",
-                    "large": "llama3.2:3b"
-                  }
-                }
-              },
-              {
-                "backend": "ollama",
-                "kwargs": {
-                  "host": "http://localhost:11434",
-                  "model_by_tier": {
-                    "small": "qwen2.5-coder:7b",
-                    "medium": "qwen2.5-coder:7b",
-                    "large": "qwen2.5-coder:7b"
-                  }
-                }
-              }
-            ],
-            "mesh": "union"
           }
         },
         "tool(llama3.2:3b)": {
@@ -65,8 +34,7 @@
         }
       },
       "routing_table": {
-        "qa": "tool(llama3.2:3b)",
-        "research": "mesh(llama3.2:3b->qwen2.5-coder:7b)"
+        "qa": "tool(llama3.2:3b)"
       },
       "default": "llama3.2:3b"
     }
@@ -270,6 +238,19 @@
       "all_13_mean": {
         "seed": 0.6155,
         "champion": 0.7949
+      }
+    },
+    "candidate_record": {
+      "tool:qa(llama3.2:3b)": {
+        "promoted": 7,
+        "refused": 1,
+        "never_proposed": 1,
+        "note": "the one refusal was a 5-case confirm split where one case = 0.2; the omission was a search-starvation bug"
+      },
+      "meshflow:research(3b->coder7b)": {
+        "promoted": 3,
+        "refused": 6,
+        "note": "won on the 26-case pool and twice on the 86-case pool, lost once on the same 86-case pool and on every mid-size pool — marginal, with no clean relationship to split size"
       }
     }
   }

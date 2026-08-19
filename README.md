@@ -231,29 +231,25 @@ It pools `wide,hard,brutal` (56 cases) by default and splits them three ways:
 | `confirm` | the only thing that can promote: the challenger must beat the champion here by at least **max(one confirm case, the champion's own re-measurement drift)** — a win smaller than one whole case, or smaller than your setup's noise, is not a win |
 | `sealed` | nothing. Never touched until the run ends, then opened once — so the headline number is the one no decision was fitted to |
 
-Run on a WSL2 box with CPU-only ollama over all five suites (86 cases, split 43 / 23 / 20):
+Nine runs of it on a WSL2 box with CPU-only ollama (up to 86 cases, split 43 / 23 / 20) found
+two structural changes and settled only one of them. `qa → tool` was promoted in **7 of the 8
+runs that proposed it**, and measured per case it takes the sealed `qa` cases from 0.222 to
+1.000 — including one that no model in the pool solves unaided (they answer 15300 seconds for
+3h45m; asked for a program, the same 3B writes `3*3600+45*60`). `research → meshflow` went 3
+wins to 6 losses, winning once on the smallest pool and losing once on the largest.
 
-| generation | challenger | search | confirm | verdict |
-|---|---|---|---|---|
-| 0 | `meshflow:research(3b→coder7b)` | 0.651 → 0.709 | 0.635 → **0.832** | **promoted** |
-| 1 | `tool:qa(3b)` | 0.709 → 0.828 | 0.761 → **0.929** | **promoted** |
-| 2 | `meshflow:content(3b→coder7b)` | 0.828 → 0.896 | 0.859 → 0.913 (+0.054) | refused, below the bar (0.071) |
-| 3 | `meshflow:integration(3b→coder7b)` | 0.828 → 0.849 | 0.908 → 0.951 (+0.044) | refused, below the bar (0.049) |
+This project called that second candidate noise, then retracted it as real, then retracted
+that. Each reversal came from reading a pattern into one or two runs; the stable statement
+needed nine. So the recipe ships the lane that reproduced and documents the other one with its
+whole record: [`recipes/grown-wsl-ollama`](recipes/grown-wsl-ollama).
 
-**Sealed split (20 cases, never used for any decision): 0.638 → 0.854.** The loop rediscovered
-both of gama's own theses without being told them — give the arithmetic class a **tool**, let
-the research class **escalate under verification** — and then refused two further structural
-changes that *did* improve confirm, because the improvement was smaller than the champion's own
-re-measurement drift that generation. Generations 0–1 were bounded by the one-case floor and
-2–3 by the drift: both halves of `max(one case, drift)` did work in the same run.
-
-Six runs of this loop are checked in as [`recipes/grown-wsl-ollama`](recipes/grown-wsl-ollama),
-including the ones that make the method look worse: a run whose whole-split total came out flat
-(+0.019) because ten unrelated cases diluted a change that only touched three; a candidate this
-project called noise for three runs before a finer split showed it was real; and a run that
-never proposed the best-known change at all because a narrow search width parked it behind
-another candidate. Absence in a ledger reads exactly like a verdict, which is the argument for
-keeping the ledger.
+The refusals are the bulk of what the loop does, and they come from every part of the gate: a
+candidate that never earned its challenge, one whose confirm gain was real but smaller than the
+champion's own re-measurement drift that generation (+0.054 against a bar of 0.071), one the
+split was too coarse to certify at all. The ledger keeps all of them, including the run where
+the best-known change was never proposed because a narrow search width parked it behind another
+candidate — absence in a ledger reads exactly like a verdict, which is the argument for keeping
+one.
 
 ## Recipes — grow it together 🌱
 `recipes/` is a community library: each recipe is a `config.json` (a combination) +

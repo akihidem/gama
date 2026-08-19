@@ -20,51 +20,46 @@ from, so the question being answered is "did structure pay", not "is this model 
   The case ids of each split are in `config.json`, so "the sealed split decided nothing" is
   checkable rather than promised.
 
-## Result — run F, both wins in one run
+## What this recipe ships, and why only half of what the loop found
 
-| gen | challenger | search | confirm | verdict |
-|---|---|---|---|---|
-| 0 | `meshflow:research(3b→coder7b)` | 0.651 → 0.709 | 0.635 → **0.832** (+0.197) | **promoted** |
-| 1 | `tool:qa(3b)` | 0.709 → 0.828 | 0.761 → **0.929** (+0.168) | **promoted** |
-| 2 | `meshflow:content(3b→coder7b)` | 0.828 → 0.896 | 0.859 → 0.913 (+0.054) | refused: below the bar (0.071) |
-| 3 | `meshflow:integration(3b→coder7b)` | 0.828 → 0.849 | 0.908 → 0.951 (+0.044) | refused: below the bar (0.049) |
+Nine runs proposed two structural changes. Their records are not comparable:
 
-**Sealed split (20 cases, never used for any decision): 0.638 → 0.854.** That is +4.3 cases,
-and 8 of the 20 sealed cases belong to the two rerouted classes — so the size is accounted
-for rather than merely observed.
-
-Generations 2 and 3 are the interesting refusals. Both *improved* confirm, by +0.054 and
-+0.044, and both were refused because the champion's own re-measurement drift that generation
-was larger (0.071, 0.049). The bar is `max(one confirm case, that drift)`: in gen 0–1 the case
-size bound it, in gen 2–3 the noise did. Structure kept looking slightly better and the loop
-kept saying "not by more than you wobble".
-
-## Six runs, and what changed between them
-
-| run | pool | champion | sealed |
+| candidate | promoted | refused | shipped here? |
 |---|---|---|---|
-| A | 26 cases, repeats 1 | `qa→tool` | 0.577 → 0.846 |
-| B | 56 cases, repeats 2 | `qa→tool` | 0.603 → 0.789 |
-| C | 56 cases, derived floor | `qa→tool` | 0.654 → 0.673 |
-| D | `graded` only (confirm = 5) | **none** — one case = 0.2, too coarse to certify anything | 0.85 → 0.85 |
-| E | 86 cases, starved frontier | `research→meshflow` | 0.669 → 0.731 |
-| F | 86 cases, rotating frontier | **both** | 0.638 → **0.854** |
+| `tool:qa(llama3.2:3b)` | **7** | 1 (a 5-case confirm split where one case = 0.2) + 1 run that never proposed it, due to a search bug | **yes** |
+| `meshflow:research(3b→coder7b)` | 3 | 6 | no — documented below |
 
-Three things in that table are worth more than the numbers:
+`qa → tool` also has evidence no aggregate can give: measured per case with 3 repeats, the
+three sealed `qa` cases go **0.222 → 1.000**, including `wide-qa-seconds`, which no model in
+the pool solves unaided (they answer 15300 for 3h45m; asked for a program, the same 3B writes
+`3*3600+45*60`). That is a mechanism, not a score.
 
-- **Run C looked like the effect vanished** (+0.019). It had not: the champion rerouted only
-  `qa`, 3 of 13 sealed cases, so ten cases of unrelated noise were averaged into the total.
-  Measured per case, `qa` went 0.222 → 1.000 and nothing else moved. **A whole-split score
-  dilutes a class-restricted change with the noise of every class it did not touch.**
-- **`meshflow:research` was called noise in an earlier version of this file.** Across runs A–C
-  it lost a *different* gate each time, which is exactly what noise looks like. With 23 confirm
-  cases instead of 8–15 it won by +0.197. The old reading was fair for the evidence then; it
-  was still wrong.
-- **Run E did not reject `tool:qa` — it never proposed it.** A narrow `--width` left an
-  un-challenged candidate parked at the head of its queue, and a fixed kind order dropped the
-  5th kind entirely once `simplify` became reachable (which happens the moment anything is
-  promoted). Absence in a ledger reads like a verdict; it wasn't one. Fixed by rotating both
-  offsets per generation, which is why run F could see both wins.
+`research → meshflow` is marginal, and this file has been wrong about it **twice, in opposite
+directions**. First it was called noise, because across three runs it lost a *different* gate
+each time. Then a run on the 86-case pool promoted it at +0.197 and this file called the noise
+reading a mistake. Then another run on **the same 86-case pool** refused it (confirm went
+down, −0.026). Final record: 3 wins, 6 losses, winning once on the smallest pool and losing
+once on the largest — no clean relationship to split size at all. Each retraction came from
+reading a pattern into one or two runs. The honest statement needs nine:
+
+> On this box, escalating `research` to the 7B coder under external verification helps
+> sometimes. If your box reproduces it, add the lane; the loop will tell you.
+
+## The refusals are most of what a loop does
+
+Across those runs the gate refused far more than it accepted, and the refusals came from every
+part of it:
+
+| reason | example |
+|---|---|
+| never earned the challenge | `meshflow:research` scored below the champion on `search` twice |
+| no confirm gain | `ensemble:*` in six consecutive runs |
+| below the margin | `meshflow:content` +0.054 against a bar of 0.071 — a real improvement, smaller than the champion's own drift that generation |
+| the split could not certify it | `tool:qa` +0.075 on a 5-case confirm split where one case = 0.2 |
+
+Two of those refusals were later shown to be right for the wrong reason, and one (`tool:qa` on
+the coarse split) refused something independently known to be real. That is the cost of
+refusing to certify below the resolution you have.
 
 ## Reproduce
 ```bash
