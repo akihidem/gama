@@ -182,8 +182,11 @@ class TestPropose(ScriptedCase):
         # Filling `width` class-by-class would leave every class after the first untouched.
         classes = ["code_implementation", "content", "integration", "qa", "research"]
         cands = propose(self.champ, self.pool, classes, width=5)
-        touched = {c.label.split(":")[1].split("(")[0].split("->")[0] for c in cands}
-        self.assertGreaterEqual(len(touched), 4, [c.label for c in cands])
+        # `default->X` changes the lane every unrouted class sits on, so it carries no class
+        # in its label; only the per-class mutations are counted here.
+        touched = {c.label.split(":")[1].split("(")[0].split("->")[0]
+                   for c in cands if ":" in c.label}
+        self.assertGreaterEqual(len(touched), 3, [c.label for c in cands])
 
     def test_lane_names_with_stray_parens_do_not_crash(self):
         # Pool keys come from user JSON; only grow's own derived names are `kind(...)`,
@@ -225,6 +228,8 @@ class TestPropose(ScriptedCase):
         pool = {"a": _lane("a"), "b": _lane("b")}
         champ = seed_champion(pool, "a")
         for c in propose(champ, pool, ["qa"], width=12):
+            if c.kind == "default":            # not a per-class move: it has no qa route
+                continue
             lane = c.spec["kwargs"]["routing_table"]["qa"]
             spec = c.spec["kwargs"]["backends"][lane]
             if spec["backend"] in ("tool", "ensemble", "meshflow"):
@@ -275,7 +280,8 @@ class TestPropose(ScriptedCase):
         for g in range(5):
             seen |= {c.kind for c in propose(champ, self.pool, self.CLASSES, width=4,
                                              generation=g)}
-        self.assertEqual(seen, {"simplify", "route", "tool", "ensemble", "meshflow"}, seen)
+        self.assertEqual(seen, {"simplify", "route", "tool", "ensemble", "meshflow",
+                                "default", "deepen"}, seen)
 
     def test_ensemble_mutations_aggregate_with_the_other_member(self):
         # `majority` needs verbatim agreement, which free-text answers never give: Counter sees
@@ -327,6 +333,34 @@ class TestPropose(ScriptedCase):
                                                exclude=decided, generation=g)
                       if c.kind == "simplify"}
         self.assertTrue(later, "the second simplification was never proposed")
+
+    def test_the_default_lane_itself_can_be_mutated(self):
+        # Every other mutation is per class, so the lane that serves every UNROUTED class was
+        # unreachable: a champion routing 2 of 5 classes had no move that touched the other 3.
+        cands = propose(self.champ, self.pool, ["qa"], width=20)
+        defaults = [c for c in cands if c.kind == "default"]
+        self.assertTrue(defaults, [c.label for c in cands])
+        for c in defaults:
+            self.assertNotEqual(c.spec["kwargs"]["default"],
+                                self.champ["kwargs"]["default"])
+            build_backend(c.spec)
+
+    def test_a_composite_lane_can_be_deepened(self):
+        # Composites were only ever built from atomic lanes, so a nested stack like
+        # mesh(tool(3b) -> 7b) — the shape gama's own README advertises — was structurally
+        # unreachable by the loop.
+        champ = json.loads(json.dumps(self.champ))
+        champ["kwargs"]["backends"]["mesh(a+b)"] = {
+            "backend": "meshflow", "_grow_base": "a",
+            "kwargs": {"tiers": [_lane("a"), _lane("b")], "mesh": "union"}}
+        champ["kwargs"]["routing_table"]["qa"] = "mesh(a+b)"
+        deep = [c for c in propose(canonical(champ), self.pool, ["qa"], width=20)
+                if c.kind == "deepen"]
+        self.assertTrue(deep)
+        lane = deep[0].spec["kwargs"]["routing_table"]["qa"]
+        inner = deep[0].spec["kwargs"]["backends"][lane]["kwargs"]["tiers"][0]
+        self.assertEqual(inner["backend"], "tool")     # the cheap tier now writes code
+        build_backend(deep[0].spec)
 
     def test_never_proposes_the_champion_or_excluded(self):
         cands = propose(self.champ, self.pool, ["qa"], width=12)

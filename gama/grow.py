@@ -320,7 +320,8 @@ def propose(champion: dict, pool: dict[str, dict], classes: list[str],
     # 巡回させるため — クラス順に詰めたまま width で切ると、辞書順で先頭のクラスだけが延々
     # 探索され、残りのクラスは一度も触られない(小さい width ほど効く偏り)。
     buckets: dict[str, list] = {k: [] for k in
-                                ("route", "tool", "ensemble", "meshflow", "simplify")}
+                                ("route", "tool", "ensemble", "meshflow", "simplify",
+                                 "default", "deepen")}
 
     for task_type in ordered_classes:
         cur = _lane_for(champion, task_type)
@@ -384,7 +385,41 @@ def propose(champion: dict, pool: dict[str, dict], classes: list[str],
                     f"simplify:{task_type}->{inner}", "simplify",
                     _with_lane(champion, task_type, inner, copy.deepcopy(pool[inner])))))
 
-    order = ["simplify", "route", "tool", "ensemble", "meshflow"]   # 縮む手を先に見る
+    # ⑥ 既定レーンそのものを差し替える。ここまでの変異は**クラス単位の振り替えしかできず**、
+    #    「ルーティングしていない全クラスが乗っている既定レーン」を一度も動かせなかった
+    #    (5 クラス中 3 クラスが既定に乗っている構成でも手が無い)。1 手で config の 1 箇所しか
+    #    変えない点は他の変異と同じ。
+    cur_default = champion["kwargs"]["default"]
+    for lane in lanes:
+        if lane != cur_default:
+            new_champ = copy.deepcopy(champion)
+            new_champ["kwargs"]["backends"][lane] = copy.deepcopy(pool[lane])
+            new_champ["kwargs"]["default"] = lane
+            buckets["default"].append((ordered_classes[0], Candidate(
+                f"default->{lane}", "default", canonical(new_champ))))
+
+    # ⑦ 合成レーンの中身をもう一段包む。既存の変異は素のレーンからしか合成を作れないので、
+    #    `mesh(tool(3b) -> coder7b)` のような入れ子は**構造上到達できない領域**だった。
+    for task_type in ordered_classes:
+        cur = _lane_for(champion, task_type)
+        base = _atomic_lane(champion, cur)
+        if not base or base not in pool or cur.startswith("tool("):
+            continue
+        spec = copy.deepcopy(champion["kwargs"]["backends"][cur])
+        wrapped = {"backend": "tool", "kwargs": {"inner": copy.deepcopy(pool[base])}}
+        kw = spec.get("kwargs") or {}
+        if "tiers" in kw and kw["tiers"]:
+            kw["tiers"][0] = wrapped
+        elif "members" in kw and kw["members"]:
+            kw["members"][0] = wrapped
+        else:
+            continue
+        name = f"{cur}+tool"
+        buckets["deepen"].append((task_type, Candidate(
+            f"deepen:{task_type}(tool inside {cur.split('(')[0]})", "deepen",
+            _with_lane(champion, task_type, name, spec))))
+
+    order = ["simplify", "route", "tool", "ensemble", "meshflow", "default", "deepen"]
     queues = {k: _by_class_rotation(buckets[k], ordered_classes, offset + generation)
               for offset, k in enumerate(order)}
 

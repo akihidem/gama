@@ -208,7 +208,8 @@ writes back byte-identical (that's yoriai's L0-1).
 ### Let it grow itself — `gama grow`
 `bench` measures a combination *you* wrote. **`grow` writes the combinations.** It mutates the
 config one move at a time (route a class to another model, wrap a lane in `tool`, ensemble it
-behind an aggregator, escalate it under verification — or **strip structure back off**), measures
+behind an aggregator, escalate it under verification, swap the default lane every unrouted class
+sits on, nest one composite inside another — or **strip structure back off**), measures
 every candidate with the same deterministic checkers, and installs a new champion **only when a
 held-out split confirms the win**. No model judges anything, anywhere in the loop.
 
