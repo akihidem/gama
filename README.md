@@ -141,6 +141,15 @@ what a suite has to do before you split it. 19 of the 40 cases separate those th
 solved by all of them (they still earn their place — they are what catches a mutation that
 *breaks* an easy class) and 4 by none of them.
 
+**`--suite steep` is for models that have already saturated the others.** `gemma4:e2b` scores
+0.95 on the other five suites pooled, which leaves a 20-case sealed split one case of headroom
+— at that point `gama grow` cannot promote anything and the ceiling, not the loop, is what
+stopped it. `steep` is 20 cases of exact modular arithmetic, factorial tails, CSV escaping and
+LRU eviction order: hard for a 7B *in its head*, and mostly trivial for a program, so the
+structure still has somewhere to help. Measured: `llama3.2:3b` **0.468**, `qwen2.5:7b`
+**0.683**, `gemma4:e2b` **0.894**. Honest limit: gemma4 still fully solves 16 of the 20, so
+this raised the ceiling rather than removing it.
+
 **`--suite graded` is the one that scores in fractions.** Every other suite is effectively
 pass/fail, so a score can only move in whole cases. Each of its 20 cases carries several
 independently checkable requirements (three sub-answers, four format constraints, six CSV

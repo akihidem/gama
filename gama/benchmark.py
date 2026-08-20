@@ -903,7 +903,172 @@ GRADED_SUITE: list[BenchCase] = [
 ]
 
 
-# Named suites — `gama bench --suite {default,hard,brutal,wide,graded}`. DEFAULT_SUITE
+# --------------------------------------------------------------------------- #
+# Steep suite — for models that have already saturated the others.
+#
+# Measured: `gemma4:e2b` scores 0.95 on the 86-case pool (wide+hard+brutal+
+# default+graded), leaving one case of headroom on a 20-case sealed split. At
+# that point `gama grow` cannot say anything — no mutation can clear a bar of
+# one confirm case — and the ceiling, not the loop, is what stopped it.
+#
+# Two properties are deliberate. The cases are hard for a 7B *in its head*, and
+# most of them are things a program does trivially: exact modular arithmetic,
+# factorial tails, prime sums, CSV escaping, LRU eviction. A suite that is merely
+# hard would only prove models are weak; this one leaves room for the STRUCTURE
+# to matter, which is what the loop is searching for. Several score in fractions
+# for the same reason `graded` does.
+# --------------------------------------------------------------------------- #
+def _chk_steep_acrostic(out: str) -> float:
+    lines = [ln.strip() for ln in (out or "").splitlines() if ln.strip()]
+    if not lines:
+        return 0.0
+    firsts = "".join(ln[0].upper() for ln in lines)
+    return _fraction([len(lines) == 4, firsts == "GAMA",
+                      all(len(re.findall(r"[A-Za-z']+", ln)) == 5 for ln in lines)])
+
+
+def _chk_steep_every_third(out: str) -> float:
+    words = re.findall(r"[A-Za-z']+", out or "")
+    marked = words[2::3]
+    return _fraction([len(words) == 12,
+                      bool(marked) and all(w[0].lower() == "s" for w in marked),
+                      len(marked) == 4])
+
+
+def _chk_steep_ordered(out: str) -> float:
+    o = (out or "").strip()
+    low = o.lower()
+    hits = [len(re.findall(r"\b%s\b" % w, low)) for w in ("toad", "pond", "moon")]
+    pos = [low.find(w) for w in ("toad", "pond", "moon")]
+    return _fraction([hits[0] == 1, hits[1] == 1, hits[2] == 1,
+                      all(p >= 0 for p in pos) and pos == sorted(pos),
+                      len(o) < 120])
+
+
+def _chk_steep_lipogram3(out: str) -> float:
+    lines = [ln.strip() for ln in (out or "").splitlines() if ln.strip()]
+    return _fraction([len(lines) == 3,
+                      "e" not in (out or "").lower(),
+                      bool(lines) and all(len(re.findall(r"[A-Za-z]", ln)) >= 15
+                                          for ln in lines)])
+
+
+def _chk_steep_sorted_json(out: str) -> float:
+    d = _g_json(out)
+    if not isinstance(d, list):
+        return 0.0
+    names = [x.get("name") for x in d if isinstance(x, dict)]
+    return _fraction([len(d) == 3, names == ["b", "c", "a"],
+                      all(isinstance(x, dict) and {"name", "v"} <= set(x) for x in d)])
+
+
+def _chk_steep_escaped_json(out: str) -> float:
+    d = _g_json(out)
+    if not isinstance(d, dict):
+        return 0.0
+    return _fraction([d.get("text") == 'she said "hi"', d.get("lines") == 2])
+
+
+def _chk_steep_checksum(out: str) -> float:
+    toks = _norm_ws(out).lower().split()
+    pairs = dict(t.split("=", 1) for t in toks if "=" in t)
+    return _fraction([pairs.get("a") == "3", pairs.get("b") == "4", pairs.get("sum") == "7",
+                      len(toks) == 3])
+
+
+STEEP_SUITE: list[BenchCase] = [
+    # --- qa: exact computation a 7B cannot hold in its head, a program can ---- #
+    BenchCase("steep-qa-modpow", "qa",
+              "Compute 2^128 mod 1000003. Reply with ONLY the integer.", _eq_int(3026)),
+    BenchCase("steep-qa-trailzeros", "qa",
+              "How many trailing zeros does 250! have? Reply with ONLY the integer.",
+              _eq_int(62)),
+    BenchCase("steep-qa-primesum", "qa",
+              "What is the sum of all prime numbers strictly below 500? Reply with ONLY the "
+              "integer.", _eq_int(21536)),
+    BenchCase("steep-qa-modpow2", "qa",
+              "What are the last three digits of 17^19? Reply with ONLY the integer.",
+              _eq_int(153)),
+
+    # --- research: multi-step, one exact answer ------------------------------ #
+    BenchCase("steep-research-anagrams", "research",
+              "How many distinct arrangements are there of the letters in MISSISSIPPI? Reply "
+              "with ONLY the integer.", _eq_int(34650)),
+    BenchCase("steep-research-prob", "research",
+              "A fair coin is flipped 5 times. What is the probability of exactly two heads? "
+              "Answer with ONLY a reduced fraction a/b.", _eq_norm("5/16")),
+    BenchCase("steep-research-lcm", "research",
+              "What is the smallest positive integer divisible by every integer from 1 to 10? "
+              "Reply with ONLY the integer.", _eq_int(2520)),
+    BenchCase("steep-research-schedule", "research",
+              "Four people A, B, C, D sit in seats 1 to 4. A sits somewhere before B. C sits in "
+              "seat 4. A and D sit in adjacent seats. Who sits in seat 3? Answer with ONLY the "
+              "letter.", _last_word("b")),
+
+    # --- code: edge cases a confident wrong answer fails ---------------------- #
+    BenchCase("steep-code-csv", "code_implementation",
+              "Write a Python function `parse_csv_line(s)` that splits one CSV line into a list "
+              "of fields, honouring double-quoted fields that may contain commas, and \"\" as "
+              "an escaped quote inside a quoted field. Return ONLY the function definition.",
+              _func("parse_csv_line", [(("a,b,c",), ["a", "b", "c"]),
+                                       (('"a,b",c',), ["a,b", "c"]),
+                                       (('x,"say ""hi""",z',), ["x", 'say "hi"', "z"]),
+                                       (("",), [""])])),
+    BenchCase("steep-code-roman", "code_implementation",
+              "Write a Python function `int_to_roman(n)` converting 1..3999 to a Roman numeral. "
+              "Return ONLY the function definition.",
+              _func("int_to_roman", [((1994,), "MCMXCIV"), ((58,), "LVIII"), ((9,), "IX"),
+                                     ((3999,), "MMMCMXCIX")])),
+    BenchCase("steep-code-topo", "code_implementation",
+              "Write a Python function `topo_sort(nodes, edges)` returning a topological order "
+              "of nodes, breaking ties by choosing the smallest available node. edges is a list "
+              "of (a, b) meaning a comes before b. Return ONLY the function definition.",
+              _func("topo_sort", [((["a", "b", "c", "d"],
+                                    [("a", "b"), ("a", "c"), ("b", "d"), ("c", "d")]),
+                                   ["a", "b", "c", "d"]),
+                                  ((["x", "y"], []), ["x", "y"])])),
+    BenchCase("steep-code-lru", "code_implementation",
+              "Write a Python function `lru(capacity, ops)` simulating an LRU cache. ops is a "
+              "list of tuples: ('put', key, value) or ('get', key). Return the list of results "
+              "of the get operations, using -1 for a miss. Both put and get count as a use. "
+              "Return ONLY the function definition.",
+              _func("lru", [((2, [("put", "a", 1), ("put", "b", 2), ("get", "a"),
+                                  ("put", "c", 3), ("get", "b"), ("get", "c")]), [1, -1, 3]),
+                            ((1, [("put", "a", 1), ("put", "b", 2), ("get", "a")]), [-1])])),
+
+    # --- content: several tight constraints at once, scored per constraint ---- #
+    BenchCase("steep-content-acrostic", "content",
+              "Write exactly 4 lines whose first letters spell G, A, M, A in that order, where "
+              "every line has exactly 5 words. Output ONLY the 4 lines.", _chk_steep_acrostic),
+    BenchCase("steep-content-every-third", "content",
+              "Write a sentence of exactly 12 words in which the 3rd, 6th, 9th and 12th words "
+              "each begin with the letter 's'. Output ONLY the sentence.", _chk_steep_every_third),
+    BenchCase("steep-content-ordered", "content",
+              "Write under 120 characters containing the words 'toad', 'pond' and 'moon' "
+              "exactly once each and in that order. Output ONLY the text.", _chk_steep_ordered),
+    BenchCase("steep-content-lipogram3", "content",
+              "Write exactly 3 lines, each of at least 15 letters, none of which contains the "
+              "letter 'e'. Output ONLY the lines.", _chk_steep_lipogram3),
+
+    # --- integration: computed and escaped structure -------------------------- #
+    BenchCase("steep-tool-computed", "integration",
+              'Output ONLY a JSON object with "n"=6, "factorial" set to 6 factorial, and '
+              '"squares" set to the squares of 1 through 6 as a list of integers.',
+              _json_eq({"n": 6, "factorial": 720, "squares": [1, 4, 9, 16, 25, 36]})),
+    BenchCase("steep-tool-sorted", "integration",
+              'Sort these by "v" ascending and output ONLY the resulting JSON array: '
+              '[{"name":"a","v":3},{"name":"b","v":1},{"name":"c","v":2}]',
+              _chk_steep_sorted_json),
+    BenchCase("steep-tool-escaped", "integration",
+              'Output ONLY a JSON object with "lines"=2 and "text" set to the exact characters: '
+              'she said "hi"', _chk_steep_escaped_json),
+    BenchCase("steep-tool-checksum", "integration",
+              "Output ONLY three key=value pairs on one line separated by single spaces: a=3, "
+              "b=4, and sum set to a plus b.", _chk_steep_checksum),
+]
+
+
+# Named suites — `gama bench --suite {default,hard,brutal,wide,graded,steep}`. DEFAULT_SUITE
 # stays the default so public behavior is unchanged; hard/brutal break the ceiling, wide
 # adds the breadth a three-way split (`gama grow`) needs, and graded adds partial credit
 # so a score can move by less than a whole case.
@@ -913,6 +1078,7 @@ SUITES: dict[str, list[BenchCase]] = {
     "brutal": BRUTAL_SUITE,
     "wide": WIDE_SUITE,
     "graded": GRADED_SUITE,
+    "steep": STEEP_SUITE,
 }
 
 

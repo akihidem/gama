@@ -181,6 +181,132 @@ def parse_range(s):
     return list(range(int(a), int(b) + 1))
 """
 
+_CSV = """
+def parse_csv_line(s):
+    out, cur, q, i = [], "", False, 0
+    while i < len(s):
+        c = s[i]
+        if q:
+            if c == '"' and i + 1 < len(s) and s[i + 1] == '"':
+                cur += '"'; i += 1
+            elif c == '"':
+                q = False
+            else:
+                cur += c
+        else:
+            if c == '"':
+                q = True
+            elif c == ",":
+                out.append(cur); cur = ""
+            else:
+                cur += c
+        i += 1
+    out.append(cur)
+    return out
+"""
+_CSV_NO_ESCAPE = """
+def parse_csv_line(s):
+    out, cur, q = [], "", False
+    for c in s:
+        if c == '"':
+            q = not q
+        elif c == "," and not q:
+            out.append(cur); cur = ""
+        else:
+            cur += c
+    out.append(cur)
+    return out
+"""
+_TOROMAN = """
+def int_to_roman(n):
+    vals = [(1000, "M"), (900, "CM"), (500, "D"), (400, "CD"), (100, "C"), (90, "XC"),
+            (50, "L"), (40, "XL"), (10, "X"), (9, "IX"), (5, "V"), (4, "IV"), (1, "I")]
+    out = ""
+    for v, sym in vals:
+        while n >= v:
+            out += sym; n -= v
+    return out
+"""
+_TOROMAN_NO_SUBTRACTIVE = """
+def int_to_roman(n):
+    vals = [(1000, "M"), (500, "D"), (100, "C"), (50, "L"), (10, "X"), (5, "V"), (1, "I")]
+    out = ""
+    for v, sym in vals:
+        while n >= v:
+            out += sym; n -= v
+    return out
+"""
+_TOPO = """
+def topo_sort(nodes, edges):
+    import heapq
+    indeg = {n: 0 for n in nodes}
+    adj = {n: [] for n in nodes}
+    for a, b in edges:
+        adj[a].append(b); indeg[b] += 1
+    h = [n for n in nodes if indeg[n] == 0]
+    heapq.heapify(h)
+    out = []
+    while h:
+        n = heapq.heappop(h)
+        out.append(n)
+        for m in adj[n]:
+            indeg[m] -= 1
+            if indeg[m] == 0:
+                heapq.heappush(h, m)
+    return out
+"""
+_TOPO_UNSORTED = """
+def topo_sort(nodes, edges):
+    indeg = {n: 0 for n in nodes}
+    adj = {n: [] for n in nodes}
+    for a, b in edges:
+        adj[a].append(b); indeg[b] += 1
+    stack = [n for n in nodes if indeg[n] == 0][::-1]
+    out = []
+    while stack:
+        n = stack.pop()
+        out.append(n)
+        for m in adj[n]:
+            indeg[m] -= 1
+            if indeg[m] == 0:
+                stack.append(m)
+    return out
+"""
+_LRU = """
+def lru(capacity, ops):
+    from collections import OrderedDict
+    d = OrderedDict()
+    out = []
+    for op in ops:
+        if op[0] == "put":
+            d[op[1]] = op[2]; d.move_to_end(op[1])
+        else:
+            if op[1] in d:
+                d.move_to_end(op[1]); out.append(d[op[1]])
+            else:
+                out.append(-1)
+        while len(d) > capacity:
+            d.popitem(last=False)
+    return out
+"""
+_LRU_FIFO = """
+def lru(capacity, ops):
+    d = {}
+    order = []
+    out = []
+    for op in ops:
+        if op[0] == "put":
+            if op[1] not in d:
+                order.append(op[1])
+            d[op[1]] = op[2]
+        else:
+            out.append(d.get(op[1], -1))
+        while len(d) > capacity:
+            oldest = order.pop(0)
+            d.pop(oldest, None)
+    return out
+"""
+
 REFERENCE: dict[str, str] = {
     # --- default ---------------------------------------------------------- #
     "code-palindrome": _PALINDROME,
@@ -282,6 +408,30 @@ REFERENCE: dict[str, str] = {
     "g-tool-jsonlist3": '[{"id": 1}, {"id": 2}, {"id": 3}]',
     "g-tool-csv2": "gama,toad,3\nyoriai,knot,5",
     "g-tool-kv4": "host=localhost port=11434 tls=off retries=2",
+    # --- steep -------------------------------------------------------------- #
+    "steep-qa-modpow": "3026",
+    "steep-qa-trailzeros": "62",
+    "steep-qa-primesum": "21536",
+    "steep-qa-modpow2": "153",
+    "steep-research-anagrams": "34650",
+    "steep-research-prob": "5/16",
+    "steep-research-lcm": "2520",
+    "steep-research-schedule": "B",
+    "steep-code-csv": _CSV,
+    "steep-code-roman": _TOROMAN,
+    "steep-code-topo": _TOPO,
+    "steep-code-lru": _LRU,
+    "steep-content-acrostic": ("Green toads watch the pond\nAnother toad hops away now\n"
+                               "Mossy stones keep the water\nAnd the night stays quiet"),
+    "steep-content-every-third": ("Cold rain slips over the stones while frogs sing under "
+                                  "bright skies"),
+    "steep-content-ordered": "A toad by the pond under a bright moon.",
+    "steep-content-lipogram3": ("A quick brown fox jumps high\nMy small dog naps all day long\n"
+                                "Windy nights bring rain and calm"),
+    "steep-tool-computed": '{"n": 6, "factorial": 720, "squares": [1, 4, 9, 16, 25, 36]}',
+    "steep-tool-sorted": '[{"name": "b", "v": 1}, {"name": "c", "v": 2}, {"name": "a", "v": 3}]',
+    "steep-tool-escaped": '{"text": "she said \\"hi\\"", "lines": 2}',
+    "steep-tool-checksum": "a=3 b=4 sum=7",
 }
 
 
@@ -309,6 +459,18 @@ PARTIAL: dict[str, str] = {
     "g-tool-jsonlist3": '[{"id": 1}, {"id": 2}]',
     "g-tool-csv2": "gama,toad,3\nyoriai,knot,9",
     "g-tool-kv4": "host=localhost port=11434 tls=on retries=2",
+    "steep-code-csv": _CSV_NO_ESCAPE,
+    "steep-code-roman": _TOROMAN_NO_SUBTRACTIVE,
+    "steep-code-topo": _TOPO_UNSORTED,
+    "steep-code-lru": _LRU_FIFO,
+    "steep-content-acrostic": "Green toads watch\nAnother toad hops\nMossy stones keep\nAnd night stays",
+    "steep-content-every-third": ("Cold rain slips across quiet stones while frogs sing "
+                                  "softly under trees"),
+    "steep-content-ordered": "A toad by the pond.",
+    "steep-content-lipogram3": "A quick brown fox jumps high\nMy small dog naps",
+    "steep-tool-sorted": '[{"name": "b", "v": 1}, {"name": "c", "v": 2}]',
+    "steep-tool-escaped": '{"text": "she said hi", "lines": 2}',
+    "steep-tool-checksum": "a=3 b=4 sum=8",
 }
 
 
@@ -339,7 +501,7 @@ class TestSuiteIntegrity(unittest.TestCase):
         # The point of the graded suite: a partially-correct answer must land strictly
         # between 0 and 1. Without this check, a pass/fail checker passes every other test
         # in this file while leaving the suite as coarse as the ones it refines.
-        graded = SUITES["graded"]
+        graded = SUITES["graded"] + [c for c in SUITES["steep"] if c.case_id in PARTIAL]
         missing = sorted(c.case_id for c in graded if c.case_id not in PARTIAL)
         self.assertEqual(missing, [], "graded cases with no partially-correct reference")
         for case in graded:
