@@ -29,6 +29,7 @@ from gama.cli import build_parser, main
 from gama.config import build_backend, system_from_config
 from gama.grow import (
     canonical,
+    load_checkpoint,
     code_stamp,
     shrink_band,
     simplify_gate,
@@ -595,6 +596,37 @@ class TestGrowLoop(ScriptedCase):
         one_back["kwargs"]["routing_table"]["research"] = "a"
         self.assertEqual(_structure_size(canonical(shared)), 2)
         self.assertEqual(_structure_size(canonical(one_back)), 1)
+
+    def test_an_interrupted_run_resumes_from_its_ledger(self):
+        # A real run died to the OOM killer right after measuring 43 cases x 4 candidates, and
+        # every one of those measurements was lost because nothing in the ledger carried the
+        # state a continuation needs.
+        Scripted.WINS = {"a": set(), "b": {"qa1", "qa2", "qa4"}}
+        pool = {"a": _lane("a"), "b": _lane("b")}
+        with tempfile.TemporaryDirectory() as d:
+            led = Path(d) / "run.jsonl"
+            first = grow(pool, cases=_cases(4), generations=1, width=2, patience=5,
+                         ledger_path=str(led), min_margin=0.05)
+            ck = load_checkpoint(led)
+            self.assertIsNotNone(ck)
+            self.assertEqual(ck["gen"], 0)
+
+            # a half-written line is what a kill actually leaves behind
+            with led.open("a", encoding="utf-8") as fh:
+                fh.write('{"event": "gener')
+            second = grow(pool, cases=_cases(4), generations=3, width=2, patience=5,
+                          resume_from=str(led), min_margin=0.05)
+        self.assertEqual(second["history"][0]["gen"], 1)          # continued, did not restart
+        self.assertEqual(second["seed_hash"], first["champion_hash"])
+
+    def test_resuming_across_a_different_split_is_refused(self):
+        Scripted.WINS = {"a": set()}
+        pool = {"a": _lane("a")}
+        with tempfile.TemporaryDirectory() as d:
+            led = Path(d) / "run.jsonl"
+            grow(pool, cases=_cases(4), generations=1, width=1, ledger_path=str(led))
+            with self.assertRaises(ValueError):    # sealed cases would not be sealed any more
+                grow(pool, cases=_cases(8), generations=2, width=1, resume_from=str(led))
 
     def test_patience_stops_a_loop_that_is_going_nowhere(self):
         Scripted.WINS = {"a": set(), "b": set()}

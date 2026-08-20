@@ -548,11 +548,47 @@ def simplify_gate(champion_confirm: float, challenger_confirm: float, band: floa
 # --------------------------------------------------------------------------- #
 # The loop
 # --------------------------------------------------------------------------- #
+def load_checkpoint(ledger_path) -> Optional[dict]:
+    """台帳の最後の checkpoint を返す(無ければ None)。
+
+    落ち方はこちらの都合を聞かないので、書きかけで切れた JSON 行が末尾に残ることがある。
+    壊れた行は黙って飛ばす —— そこで例外を投げると、再開できるはずの走行が再開できなくなる。
+    """
+    last = None
+    try:
+        lines = Path(ledger_path).read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    for line in lines:
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if row.get("event") == "checkpoint":
+            last = row
+    return last
+
+
+def _ledger_splits(ledger_path) -> Optional[dict]:
+    """再開先の台帳が使っていた split(case id)。分割が違えば再開してはいけない。"""
+    try:
+        for line in Path(ledger_path).read_text(encoding="utf-8").splitlines():
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if row.get("event") == "seed":
+                return row.get("splits")
+    except OSError:
+        return None
+    return None
+
+
 def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
          cases: Optional[list[BenchCase]] = None, suites=("wide", "hard", "brutal"),
          ratio: tuple[int, int, int] = (2, 1, 1), generations: int = 3, width: int = 6,
          repeats: int = 1, tier: ModelTier = ModelTier.LARGE,
-         min_margin: Optional[float] = None,
+         min_margin: Optional[float] = None, resume_from=None,
          patience: int = 2, seed_spec: Optional[dict] = None,
          ledger_path: Optional[str] = None, unit_cost: Optional[dict] = None,
          ensemble_strategy: str = "synthesize",
@@ -599,7 +635,21 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
     # **走り終わってから**分かるのでは遅いので、入口で粗さを申告する。
     coarse = one_case > 0.1
 
-    champion = canonical(seed_spec or seed_champion(pool))
+    resume = load_checkpoint(resume_from) if resume_from else None
+    if resume_from:
+        before = _ledger_splits(resume_from)
+        now = {k: [c.case_id for c in v] for k, v in splits.items()}
+        # 分割が違う台帳から再開したら、前半で sealed だった case が後半では search に居る、
+        # という混線が起きる。封印は「一度も判定に使っていない」が成り立って初めて意味を持つので、
+        # ここは断る一択。
+        if before is not None and before != now:
+            raise ValueError("cannot resume: the ledger was written with a different split "
+                             "(different --suites/--ratio); its sealed cases are not sealed "
+                             "under this one")
+        if resume is None:
+            raise ValueError(f"no checkpoint in {resume_from} — nothing to resume from")
+
+    champion = canonical(resume["champion"] if resume else (seed_spec or seed_champion(pool)))
     # 参照先の無いルートを持つ seed は、GamaBackend が既定レーンへ黙って落とすので
     # 「台帳に記録した spec」と「実際に測った backend」がずれる。記録が実態と一致することが
     # この loop の全部なので、入口で断る。
@@ -623,9 +673,17 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
         if on_event:
             on_event(row)
 
-    champ_search = measure(champion, splits["search"], tier, repeats, unit_cost, "champion")
-    champ_confirm = measure(champion, splits["confirm"], tier, repeats, unit_cost, "champion")
-    emit({"event": "seed", "hash": spec_hash(champion),
+    if resume:
+        champ_search = Measurement(**resume["champion_search"])
+        champ_confirm = Measurement(**resume["champion_confirm"])
+        archive.update(resume.get("archive") or {})
+        start_gen = resume["gen"] + 1
+    else:
+        champ_search = measure(champion, splits["search"], tier, repeats, unit_cost, "champion")
+        champ_confirm = measure(champion, splits["confirm"], tier, repeats, unit_cost, "champion")
+        start_gen = 0
+    emit({"event": "resumed" if resume else "seed", "hash": spec_hash(champion),
+          "resumed_from_gen": resume["gen"] if resume else None,
           "search": asdict(champ_search), "confirm": asdict(champ_confirm),
           "classes": classes, "classes_unconfirmable": dropped,
           "code": code_stamp(),
@@ -634,9 +692,10 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
           "margin_floor_coarse": coarse,
           "splits": {k: [c.case_id for c in v] for k, v in splits.items()}})
 
-    stale = 0
-    challenged: set = set()      # confirm で決着がついた設計(勝っても負けても二度は問わない)
-    for gen in range(generations):
+    stale = resume["stale"] if resume else 0
+    # confirm で決着がついた設計(勝っても負けても二度は問わない)
+    challenged: set = set(resume["challenged"]) if resume else set()
+    for gen in range(start_gen, generations):
         t0 = time.time()
         cands = propose(champion, pool, classes, width=width, exclude=challenged,
                         ensemble_strategy=ensemble_strategy, generation=gen)
@@ -726,6 +785,12 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
         row["elapsed_s"] = round(time.time() - t0, 2)     # 削減の測定まで含めた世代の実時間
         history.append(row)
         emit(row)
+        # 世代ごとの checkpoint。実走は数時間かかり、実際に OOM で 43 問 x 4 候補を測り終えた
+        # 直後に落ちて全部消えた。台帳に判定は残っていたのに再開できなかったのは、**再開に要る
+        # 状態(チャンピオンの spec・決着済み・archive)を残していなかった**ため。
+        emit({"event": "checkpoint", "gen": gen, "champion": champion,
+              "champion_search": asdict(champ_search), "champion_confirm": asdict(champ_confirm),
+              "challenged": sorted(challenged), "archive": archive, "stale": stale})
         if stale >= patience:
             emit({"event": "stop", "gen": gen, "reason": f"no-promotion-for-{patience}-gens"})
             break

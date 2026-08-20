@@ -302,7 +302,7 @@ def cmd_grow(args: argparse.Namespace) -> int:
                       repeats=args.repeats, tier=ModelTier(args.tier),
                       min_margin=args.min_margin, patience=args.patience, ledger_path=args.out,
                       ensemble_strategy=args.ensemble_strategy, seed_spec=seed_spec,
-                      on_event=on_event)
+                      resume_from=args.resume, on_event=on_event)
     except ValueError as e:      # too few cases to split honestly / bad lane names / bad suite
         sys.stderr.write(f"[gama] cannot grow: {e}\n")
         return 2
@@ -441,6 +441,11 @@ def build_parser() -> argparse.ArgumentParser:
                          "or any config with a 'system' spec) instead of from a bare model. "
                          "The pool from --models should contain the same models the config "
                          "references, or its lanes cannot be simplified back")
+    pg.add_argument("--resume", default=None, metavar="LEDGER",
+                    help="continue an interrupted run from its JSONL ledger (a long run that "
+                         "dies has already paid for its measurements). Refused if the ledger "
+                         "used a different split, since its sealed cases would not be sealed "
+                         "under this one")
     pg.add_argument("--out", default=None, help="write the JSONL grow ledger")
     pg.add_argument("--write-recipe", default=None,
                     help="write the champion to this recipe directory (config.json + recipe.md)")
