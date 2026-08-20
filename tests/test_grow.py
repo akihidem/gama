@@ -303,6 +303,30 @@ class TestPropose(ScriptedCase):
                 self.assertNotIn("aggregator", c.spec["kwargs"]["backends"][lane]["kwargs"])
                 build_backend(c.spec)
 
+    def test_an_excluded_candidate_does_not_consume_its_kind_s_slot(self):
+        # Third variant of the same starvation family, measured in run J: once `simplify:qa` was
+        # decided, popping it consumed the simplify slot every generation, so `simplify:research`
+        # was never proposed — the loop never once had to argue for keeping the research lane.
+        # `width` counts candidates EMITTED, not pops attempted.
+        champ = json.loads(json.dumps(self.champ))
+        champ["kwargs"]["backends"]["tool(a)"] = {
+            "backend": "tool", "_grow_base": "a", "kwargs": {"inner": _lane("a")}}
+        champ["kwargs"]["backends"]["mesh(a+b)"] = {
+            "backend": "meshflow", "_grow_base": "a",
+            "kwargs": {"tiers": [_lane("a"), _lane("b")], "mesh": "union"}}
+        champ["kwargs"]["routing_table"] = {"qa": "tool(a)", "research": "mesh(a+b)"}
+        champ = canonical(champ)
+        classes = ["code_implementation", "content", "integration", "qa", "research"]
+        first = propose(champ, self.pool, classes, width=4, generation=0)
+        decided = {spec_hash(c.spec) for c in first if c.kind == "simplify"}
+        self.assertTrue(decided, [c.label for c in first])
+        later = set()
+        for g in range(1, 5):
+            later |= {c.label for c in propose(champ, self.pool, classes, width=4,
+                                               exclude=decided, generation=g)
+                      if c.kind == "simplify"}
+        self.assertTrue(later, "the second simplification was never proposed")
+
     def test_never_proposes_the_champion_or_excluded(self):
         cands = propose(self.champ, self.pool, ["qa"], width=12)
         hashes = {spec_hash(c.spec) for c in cands}

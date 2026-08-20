@@ -395,14 +395,19 @@ def propose(champion: dict, pool: dict[str, dict], classes: list[str],
     while len(out) < width and any(queues[k] for k in order):
         kind = order[(i + generation) % len(order)]
         i += 1
-        if not queues[kind]:
-            continue
-        cand = queues[kind].pop(0)
-        h = spec_hash(cand.spec)
-        if h == champ_hash or h in exclude or h in emitted:   # 決着済み / 重複は出さない
-            continue
-        emitted.add(h)
-        out.append(cand)
+        # width が数えるのは「出した候補」であって「試した回数」ではない。除外(決着済み・重複)を
+        # 引いた時に枠を消費して次の種類へ進むと、**その除外の後ろに並んでいる候補が永久に出番を
+        # 失う**: 実測(run J)では gen0 で決着した `simplify:qa` がキュー先頭に残り続け、
+        # `simplify:research` が 3 世代とも一度も提案されなかった —— チャンピオンが research
+        # レーンを持ち続けている理由を、ループは一度も問われないまま終わった。
+        while queues[kind]:
+            cand = queues[kind].pop(0)
+            h = spec_hash(cand.spec)
+            if h == champ_hash or h in exclude or h in emitted:
+                continue                      # 除外は席を消費しない: 同じ種類から次を引く
+            emitted.add(h)
+            out.append(cand)
+            break
     return out
 
 
