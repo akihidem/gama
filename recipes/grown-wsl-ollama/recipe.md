@@ -20,46 +20,45 @@ from, so the question being answered is "did structure pay", not "is this model 
   The case ids of each split are in `config.json`, so "the sealed split decided nothing" is
   checkable rather than promised.
 
-## What this recipe ships, and why only half of what the loop found
+## What this recipe ships
 
-Nine runs proposed two structural changes. Their records are not comparable:
+Both lanes the loop found, each measured on the class it serves:
 
-| candidate | promoted | refused | shipped here? |
+| lane | its class, sealed, 3 reps | removal test | promotion record |
 |---|---|---|---|
-| `tool:qa(llama3.2:3b)` | **7** | 1 (a 5-case confirm split where one case = 0.2) + 1 run that never proposed it, due to a search bug | **yes** |
-| `meshflow:research(3b→coder7b)` | 3 | 6 | no — documented below |
+| `qa → tool(llama3.2:3b)` | **0.222 → 1.000** | refused (−0.18 to −0.21 confirm) | 7 promoted / 1 refused / 1 never proposed |
+| `research → mesh(3b→coder7b)` | **0.313 → 0.583** | refused (−0.142 confirm vs a 0.0217 band) | 3 promoted / 6 refused |
 
-`qa → tool` also has evidence no aggregate can give: measured per case with 3 repeats, the
-three sealed `qa` cases go **0.222 → 1.000**, including `wide-qa-seconds`, which no model in
-the pool solves unaided (they answer 15300 for 3h45m; asked for a program, the same 3B writes
-`3*3600+45*60`). That is a mechanism, not a score.
+An earlier version of this file shipped only the `qa` lane, on the strength of that last
+column. That was the wrong column to decide on, and the reason is worth carrying away:
 
-`research → meshflow` is marginal, and this file has been wrong about it **twice, in opposite
-directions**. First it was called noise, because across three runs it lost a *different* gate
-each time. Then a run on the 86-case pool promoted it at +0.197 and this file called the noise
-reading a mistake. Then another run on **the same 86-case pool** refused it (confirm went
-down, −0.026). Final record: 3 wins, 6 losses, winning once on the smallest pool and losing
-once on the largest — no clean relationship to split size at all. Each retraction came from
-reading a pattern into one or two runs. The honest statement needs nine:
+> **A promotion record measures whether a change could beat whatever champion existed that
+> day. It does not measure what the change contributes once it is in.**
 
-> On this box, escalating `research` to the 7B coder under external verification helps
-> sometimes. If your box reproduces it, add the lane; the loop will tell you.
+The two questions come apart badly here. `research → mesh` won 3 of 9 attempts as an addition
+— genuinely marginal. But seed a run from the champion that already contains it, and taking it
+out costs 0.142 confirm (3.3 cases) against a noise band of 0.0217; measured on the four sealed
+`research` cases directly, it goes 0.313 → 0.583, improving three of the four. It is easier to
+see the contribution of a lane by removing it than by proposing it, because the removal is
+measured against a stable high-scoring champion while the proposals were measured against
+whatever noisy thing the loop happened to be holding.
 
-## The refusals are most of what a loop does
+`qa → tool` earns its place the same way and more strongly, including a case no model in the
+pool solves unaided (asked for 3h45m in seconds they answer 15300; asked for a program, the
+same 3B writes `3*3600+45*60`).
 
-Across those runs the gate refused far more than it accepted, and the refusals came from every
-part of it:
+**What it costs.** The champion is roughly 3.7x slower per case than the bare model on the
+sealed split (2.02s vs 0.55s), and on the classes it touches the multiplier is about 10x
+(research: 6.09s vs 0.60s). Two of five classes now spend extra model calls. That is the
+price, and the loop has no opinion about it: it optimises score, and only the shrink gate ever
+pushes back on structure.
 
-| reason | example |
-|---|---|
-| never earned the challenge | `meshflow:research` scored below the champion on `search` twice |
-| no confirm gain | `ensemble:*` in six consecutive runs |
-| below the margin | `meshflow:content` +0.054 against a bar of 0.071 — a real improvement, smaller than the champion's own drift that generation |
-| the split could not certify it | `tool:qa` +0.075 on a 5-case confirm split where one case = 0.2 |
+## The loop was asked to defend this champion, and did
 
-Two of those refusals were later shown to be right for the wrong reason, and one (`tool:qa` on
-the coarse split) refused something independently known to be real. That is the cost of
-refusing to certify below the resolution you have.
+Two runs seeded from it (`--start-from`) produced **zero promotions in eight generations**, and
+both removals were refused. Every addition it tried was either not better on confirm or better
+by less than the champion's own drift that generation. On this box, with these five suites and
+this mutation set, the configuration below is a local optimum rather than a way-station.
 
 ## Reproduce
 ```bash

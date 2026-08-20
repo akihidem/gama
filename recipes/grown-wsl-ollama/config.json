@@ -1,5 +1,5 @@
 {
-  "_comment": "GROWN by `gama grow`. Ships only the change the record supports: `qa` through the tool lane (promoted in 7 of 8 runs that proposed it). The research->meshflow lane the loop also found is documented in recipe.md with its full 3-win / 6-loss record rather than shipped.",
+  "_comment": "GROWN by `gama grow`. Both lanes are shipped: each was measured on the class it serves (qa 0.222->1.000, research 0.313->0.583) and each survived a removal test on a run seeded from this champion. Sealed numbers never fed a decision.",
   "system": {
     "backend": "gama",
     "kwargs": {
@@ -13,6 +13,37 @@
               "medium": "llama3.2:3b",
               "large": "llama3.2:3b"
             }
+          }
+        },
+        "mesh(llama3.2:3b->qwen2.5-coder:7b)": {
+          "backend": "meshflow",
+          "_grow_base": "llama3.2:3b",
+          "kwargs": {
+            "tiers": [
+              {
+                "backend": "ollama",
+                "kwargs": {
+                  "host": "http://localhost:11434",
+                  "model_by_tier": {
+                    "small": "llama3.2:3b",
+                    "medium": "llama3.2:3b",
+                    "large": "llama3.2:3b"
+                  }
+                }
+              },
+              {
+                "backend": "ollama",
+                "kwargs": {
+                  "host": "http://localhost:11434",
+                  "model_by_tier": {
+                    "small": "qwen2.5-coder:7b",
+                    "medium": "qwen2.5-coder:7b",
+                    "large": "qwen2.5-coder:7b"
+                  }
+                }
+              }
+            ],
+            "mesh": "union"
           }
         },
         "tool(llama3.2:3b)": {
@@ -34,7 +65,8 @@
         }
       },
       "routing_table": {
-        "qa": "tool(llama3.2:3b)"
+        "qa": "tool(llama3.2:3b)",
+        "research": "mesh(llama3.2:3b->qwen2.5-coder:7b)"
       },
       "default": "llama3.2:3b"
     }
@@ -250,7 +282,16 @@
       "meshflow:research(3b->coder7b)": {
         "promoted": 3,
         "refused": 6,
-        "note": "won on the 26-case pool and twice on the 86-case pool, lost once on the same 86-case pool and on every mid-size pool — marginal, with no clean relationship to split size"
+        "removal_test": "refused: taking it out cost 0.142 confirm (3.3 cases) against a band of 0.0217",
+        "per_class_sealed_3reps": {
+          "with": 0.5833,
+          "without": 0.3125,
+          "latency_s": [
+            6.09,
+            0.6
+          ]
+        },
+        "note": "the promotion record measures whether it could beat whatever champion existed that day; the removal test and the per-class measurement measure what it contributes once qa is already handled. Those are different questions and they disagree."
       }
     }
   }

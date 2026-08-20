@@ -231,17 +231,21 @@ It pools `wide,hard,brutal` (56 cases) by default and splits them three ways:
 | `confirm` | the only thing that can promote: the challenger must beat the champion here by at least **max(one confirm case, the champion's own re-measurement drift)** — a win smaller than one whole case, or smaller than your setup's noise, is not a win |
 | `sealed` | nothing. Never touched until the run ends, then opened once — so the headline number is the one no decision was fitted to |
 
-Nine runs of it on a WSL2 box with CPU-only ollama (up to 86 cases, split 43 / 23 / 20) found
-two structural changes and settled only one of them. `qa → tool` was promoted in **7 of the 8
-runs that proposed it**, and measured per case it takes the sealed `qa` cases from 0.222 to
-1.000 — including one that no model in the pool solves unaided (they answer 15300 seconds for
-3h45m; asked for a program, the same 3B writes `3*3600+45*60`). `research → meshflow` went 3
-wins to 6 losses, winning once on the smallest pool and losing once on the largest.
+Twelve runs of it on a WSL2 box with CPU-only ollama (up to 86 cases, split 43 / 23 / 20)
+found two structural changes: send `qa` through the tool lane, and escalate `research` to the
+7B coder under external verification. Measured on the classes they serve, `qa` goes **0.222 →
+1.000** (including a case no model in the pool solves unaided — asked for 3h45m in seconds they
+answer 15300, asked for a program the same 3B writes `3*3600+45*60`) and `research` goes
+**0.313 → 0.583**.
 
-This project called that second candidate noise, then retracted it as real, then retracted
-that. Each reversal came from reading a pattern into one or two runs; the stable statement
-needed nine. So the recipe ships the lane that reproduced and documents the other one with its
-whole record: [`recipes/grown-wsl-ollama`](recipes/grown-wsl-ollama).
+Getting there took retracting two published conclusions, and the second retraction is the
+useful one. `research → meshflow` won only 3 of 9 attempts as an *addition*, so this project
+shipped a recipe without it. Then a run seeded from the champion that contains it tried to
+remove it, and removal cost 0.142 confirm against a 0.0217 noise band. **A promotion record
+measures whether a change could beat whatever champion existed that day; it does not measure
+what the change contributes once it is in.** Those two questions disagree, and the second one
+is the one a recipe is answering. Both lanes ship now, with all twelve runs recorded:
+[`recipes/grown-wsl-ollama`](recipes/grown-wsl-ollama).
 
 The refusals are the bulk of what the loop does, and they come from every part of the gate: a
 candidate that never earned its challenge, one whose confirm gain was real but smaller than the
