@@ -42,6 +42,7 @@ from .decorrelation import analyze as mesh_analyze
 from .grow import (
     Candidate,
     canonical,
+    code_stamp,
     grow,
     measure,
     ollama_pool,
@@ -88,6 +89,6 @@ __all__ = [
     "escalation_cost", "p_star", "dominates", "ladder", "market_over_records", "analyze",
     "mesh_gain", "mesh_correctness", "ignites", "failure_correlation", "mesh_analyze",
     "grow", "propose", "promote_gate", "simplify_gate", "shrink_band", "measure", "split_cases", "suite_pool",
-    "seed_champion", "ollama_pool", "canonical", "spec_hash", "Candidate", "write_recipe",
+    "seed_champion", "ollama_pool", "canonical", "spec_hash", "code_stamp", "Candidate", "write_recipe",
     "__version__",
 ]

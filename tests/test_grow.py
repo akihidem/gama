@@ -29,6 +29,7 @@ from gama.cli import build_parser, main
 from gama.config import build_backend, system_from_config
 from gama.grow import (
     canonical,
+    code_stamp,
     shrink_band,
     simplify_gate,
     measure,
@@ -450,6 +451,20 @@ class TestGrowLoop(ScriptedCase):
         self.assertEqual(r1["champion_hash"], r2["champion_hash"])
         self.assertEqual([(h["challenger"], h["verdict"]) for h in r1["history"]],
                          [(h["challenger"], h["verdict"]) for h in r2["history"]])
+
+    def test_the_ledger_records_which_code_produced_it(self):
+        # This loop has changed its own gates while running experiments (frontier rotation,
+        # ensemble aggregation, the shrink gate and its band). Conditions alone cannot tell two
+        # runs apart when the judging changed between them.
+        stamp = code_stamp()
+        self.assertIn("version", stamp)
+        self.assertIn("commit", stamp)
+        Scripted.WINS = {"a": set()}
+        events = []
+        res = self._grow({"a": _lane("a")}, generations=1, width=1, on_event=events.append)
+        seed = [e for e in events if e["event"] == "seed"][0]
+        self.assertEqual(seed["code"]["version"], stamp["version"])
+        self.assertEqual(res["params"]["code"], stamp)
 
     def test_margin_floor_defaults_to_one_confirm_case(self):
         Scripted.WINS = {"a": set()}

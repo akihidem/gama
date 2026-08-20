@@ -462,6 +462,30 @@ def promote_gate(champion_search: float, challenger_search: float,
 _COMPOSITES = ("tool", "ensemble", "meshflow", "trinity", "abmcts")
 
 
+def code_stamp() -> dict:
+    """どのコードがこの数字を出したかを台帳に残すための刻印。
+
+    この loop は稼働しながら**判定そのもの**を何度も変えてきた(探索の巡回・ensemble の集約・
+    削減の門・その許容幅)。台帳に走行条件(suites/ratio/repeats)しか無いと、同じ条件で取った
+    はずの数字が実は別の門で出ていた、という比較を後から検出できない。checkout から動いている
+    ときは git の短縮 SHA を、そうでなければ version だけを残す(取れないこと自体は異常でない)。
+    """
+    import subprocess
+
+    sha = None
+    try:
+        proc = subprocess.run(["git", "-C", str(Path(__file__).resolve().parent),
+                               "rev-parse", "--short", "HEAD"],
+                              capture_output=True, text=True, timeout=5)
+        if proc.returncode == 0:
+            sha = proc.stdout.strip() or None
+    except Exception:      # git が無い / インストール済みパッケージ / 何であれ致命ではない
+        sha = None
+    from . import __version__
+
+    return {"version": __version__, "commit": sha}
+
+
 def _structure_size(spec: dict) -> int:
     """How much structure the champion carries, counted **per routed class**.
 
@@ -599,6 +623,7 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
     emit({"event": "seed", "hash": spec_hash(champion),
           "search": asdict(champ_search), "confirm": asdict(champ_confirm),
           "classes": classes, "classes_unconfirmable": dropped,
+          "code": code_stamp(),
           "margin_floor": round(margin_floor, 4),
           "margin_floor_source": "auto(one confirm case)" if min_margin is None else "explicit",
           "margin_floor_coarse": coarse,
@@ -727,7 +752,7 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
                    "min_margin": round(margin_floor, 4),
                    "min_margin_source": "auto(one confirm case)" if min_margin is None
                                         else "explicit",
-                   "ensemble_strategy": ensemble_strategy},
+                   "ensemble_strategy": ensemble_strategy, "code": code_stamp()},
         "history": history, "archive_size": len(archive),
     }
     emit({"event": "final", **{k: v for k, v in result.items() if k != "history"}})
