@@ -662,6 +662,24 @@ class TestGrowLoop(ScriptedCase):
             with self.assertRaises(ValueError):    # sealed cases would not be sealed any more
                 grow(pool, cases=_cases(8), generations=2, width=1, resume_from=str(led))
 
+    def test_a_run_that_adds_then_removes_reports_net_zero(self):
+        # Measured in run L: `ensemble:integration` was promoted in generation 4 and the shrink
+        # gate took the same lane back out in generation 5 (removing it scored HIGHER). The run
+        # ended with the seed's champion and "promotions: 2". Counting promotions alone reads
+        # as two improvements.
+        Scripted.WINS = {"a": {"qa1", "qa2", "qa3", "qa4"}}
+        pool = {"a": _lane("a")}
+        champ = seed_champion(pool, "a")
+        champ["kwargs"]["backends"]["tool(a)"] = {
+            "backend": "tool", "_grow_base": "a", "kwargs": {"inner": _lane("a")}}
+        champ["kwargs"]["routing_table"]["qa"] = "tool(a)"
+        res = grow(pool, cases=_cases(4), seed_spec=canonical(champ), generations=1, width=6,
+                   patience=5, min_margin=0.05)
+        self.assertEqual(res["promotions"], 1)          # the shrink changed the champion
+        self.assertTrue(res["net_change"])              # ...and it differs from the seed
+        again = grow(pool, cases=_cases(4), generations=1, width=6, patience=5)
+        self.assertFalse(again["net_change"])           # nothing moved at all
+
     def test_patience_stops_a_loop_that_is_going_nowhere(self):
         Scripted.WINS = {"a": set(), "b": set()}
         res = self._grow({"a": _lane("a"), "b": _lane("b")}, generations=10, width=6, patience=2)

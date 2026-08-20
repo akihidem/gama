@@ -310,9 +310,12 @@ def cmd_grow(args: argparse.Namespace) -> int:
                      ensure_ascii=False, indent=2))
     sealed = result["sealed"]
     if sealed:
+        net = "" if result.get("net_change", True) else " — NET ZERO: the champion ended up " \
+                                                        "identical to the seed"
         sys.stderr.write(
             f"[gama] sealed (never used for a decision): seed={sealed['seed']['score']} "
-            f"-> champion={sealed['champion']['score']} ({result['promotions']} promotions)\n")
+            f"-> champion={sealed['champion']['score']} ({result['promotions']} promotions"
+            f"{net})\n")
     else:
         sys.stderr.write("[gama] WARNING: case pool too small for a sealed split — the reported "
                          "scores all fed decisions (optimistic). Widen --suites.\n")

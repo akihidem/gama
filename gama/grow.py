@@ -847,6 +847,10 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
         # 削減で入れ替わった世代が reject 扱いのまま promotions に乗らず、**台帳が実態と食い違う**
         # (しかも門を足すたび同じ穴が空く)。
         "promotions": sum(1 for h in history if h["champion_hash"] != h["champion_after"]),
+        # 昇格の回数と、走行の**正味の成果**は別物。実測(run L)では ensemble を足した次の世代に
+        # 同じレーンを外し、"promotions: 2" のままチャンピオンが種と同一に戻った。回数だけを
+        # 読むと「2 つ良くなった」と誤読する。
+        "net_change": spec_hash(champion) != spec_hash(seed),
         "generations_run": len(history),
         "search": asdict(champ_search), "confirm": asdict(champ_confirm),
         "sealed": sealed,
