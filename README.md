@@ -248,6 +248,14 @@ what the change contributes once it is in.** Those two questions disagree, and t
 is the one a recipe is answering. Both lanes ship now, with all twelve runs recorded:
 [`recipes/grown-wsl-ollama`](recipes/grown-wsl-ollama).
 
+Swapping the model pool entirely (`gemma4:e2b` + `qwen2.5:7b`, growing from bare) promoted
+nothing in five generations, because that seed already scored 0.959 on search — **the suite is
+saturated for it**. That run cannot say whether the structures transfer, and it says something
+sharper instead: on the same 20 sealed cases, the bare 7.2GB model scored **0.950 at 10.85s per
+case** against the structured 3B's **0.865 at 2.02s**. Structure bought a *cheap* model that
+works, not a better ceiling. If you can afford the latency, scale is simpler than structure —
+which is exactly the trade `gama market` exists to put a number on.
+
 The refusals are the bulk of what the loop does, and they come from every part of the gate: a
 candidate that never earned its challenge, one whose confirm gain was real but smaller than the
 champion's own re-measurement drift that generation (+0.054 against a bar of 0.071), one the

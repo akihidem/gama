@@ -60,6 +60,35 @@ both removals were refused. Every addition it tried was either not better on con
 by less than the champion's own drift that generation. On this box, with these five suites and
 this mutation set, the configuration below is a local optimum rather than a way-station.
 
+## Does this generalise? Measured, and no
+
+The obvious question about a grown recipe is whether the shapes it found are properties of the
+task suite or of the one model it grew from. Twelve runs all seeded `llama3.2:3b`, so run M
+swapped the pool for a different family entirely — `gemma4:e2b` + `qwen2.5:7b`, no llama, no
+coder — and grew from bare.
+
+Nothing was promoted in five generations, and the reason is not that the mutations failed:
+
+| | sealed (same 20 cases) | latency / case |
+|---|---|---|
+| structured `llama3.2:3b` (this recipe) | 0.865 | 2.02s |
+| **bare `gemma4:e2b`, no structure at all** | **0.950** | **10.85s** |
+
+The seed already scored 0.959 on search and 0.935 on confirm. With one case of headroom left on
+the sealed split, no mutation could clear a promotion bar of one confirm case — **the suite is
+saturated for that model**, so this run cannot say whether the structures transfer.
+
+It does say something else, and it cuts against the grain: on this box and this pool, **paying
+for the bigger model beat structuring the smaller one** — 1.7 sealed cases better for 5.4x the
+latency. "Structure, not scale" buys you a *cheap* model that works, not a better ceiling. If
+you can afford 10.85s per case, the simplest thing on this hardware is to stop reading and run
+gemma4:e2b.
+
+So this recipe is scoped, deliberately: **it is a prescription for a weak seed model on this
+case pool.** Do not port the two lanes to a stronger model on the strength of these numbers;
+run `gama grow` there and let it tell you, which takes an afternoon and is the entire point of
+the tool.
+
 ## Reproduce
 ```bash
 ollama pull llama3.2:3b qwen2.5-coder:7b
