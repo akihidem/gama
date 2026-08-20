@@ -255,6 +255,15 @@ def cmd_grow(args: argparse.Namespace) -> int:
         sys.stderr.write(f"[gama] --ratio must be three non-negative ints summing > 0, like "
                          f"2:1:1 (got {args.ratio!r})\n")
         return 2
+    seed_spec = None
+    if args.start_from:
+        try:                       # a grown recipe, or any {"system": <spec>} config
+            raw = json.loads(Path(args.start_from).read_text(encoding="utf-8"))
+            seed_spec = raw["system"] if isinstance(raw.get("system"), dict) else raw
+        except (OSError, ValueError, KeyError, TypeError) as e:
+            sys.stderr.write(f"[gama] --start-from {args.start_from!r} is not a usable config: "
+                             f"{e}\n")
+            return 2
     sys.stderr.write("[gama] NOTE: code/tool cases EXECUTE model-generated Python (opt-in, "
                      "like a sandbox). Only grow on trusted backends.\n")
 
@@ -292,7 +301,8 @@ def cmd_grow(args: argparse.Namespace) -> int:
                       ratio=ratio, generations=args.generations, width=args.width,
                       repeats=args.repeats, tier=ModelTier(args.tier),
                       min_margin=args.min_margin, patience=args.patience, ledger_path=args.out,
-                      ensemble_strategy=args.ensemble_strategy, on_event=on_event)
+                      ensemble_strategy=args.ensemble_strategy, seed_spec=seed_spec,
+                      on_event=on_event)
     except ValueError as e:      # too few cases to split honestly / bad lane names / bad suite
         sys.stderr.write(f"[gama] cannot grow: {e}\n")
         return 2
@@ -426,6 +436,11 @@ def build_parser() -> argparse.ArgumentParser:
                          "other member writes the final answer from both drafts (one extra "
                          "call per case). majority compares replies verbatim, so on free-text "
                          "answers it ties and falls back to the first member")
+    pg.add_argument("--start-from", default=None, metavar="CONFIG",
+                    help="grow onward from an existing champion (a grown recipe's config.json, "
+                         "or any config with a 'system' spec) instead of from a bare model. "
+                         "The pool from --models should contain the same models the config "
+                         "references, or its lanes cannot be simplified back")
     pg.add_argument("--out", default=None, help="write the JSONL grow ledger")
     pg.add_argument("--write-recipe", default=None,
                     help="write the champion to this recipe directory (config.json + recipe.md)")

@@ -642,6 +642,27 @@ class TestGrowCli(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 build_parser().parse_args(["grow", "--smoke", "--width", "0"])
 
+    def test_start_from_seeds_the_loop_with_an_existing_champion(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = Path(d) / "champ.json"
+            cfg.write_text(json.dumps({"system": {
+                "backend": "gama",
+                "kwargs": {"backends": {"echo": {"backend": "echo"}},
+                           "routing_table": {}, "default": "echo"}}}), encoding="utf-8")
+            out, err = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                rc = main(["grow", "--smoke", "--suites", "wide", "--generations", "1",
+                           "--width", "1", "--start-from", str(cfg)])
+            self.assertEqual(rc, 0)
+            self.assertEqual(json.loads(out.getvalue())["seed"]["kwargs"]["default"], "echo")
+
+    def test_start_from_a_broken_config_is_a_clean_error(self):
+        with tempfile.TemporaryDirectory() as d:
+            bad = Path(d) / "x.json"
+            bad.write_text("{nope", encoding="utf-8")
+            with contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(main(["grow", "--smoke", "--start-from", str(bad)]), 2)
+
     def test_grow_without_lanes_is_an_error(self):
         self.assertEqual(main(["grow", "--suites", "hard"]), 2)
 
