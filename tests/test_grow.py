@@ -29,6 +29,7 @@ from gama.cli import build_parser, main
 from gama.config import build_backend, system_from_config
 from gama.grow import (
     canonical,
+    shrink_band,
     simplify_gate,
     measure,
     validate_pool,
@@ -358,7 +359,7 @@ class TestPromoteGate(unittest.TestCase):
 # --------------------------------------------------------------------------- #
 class TestSimplifyGate(unittest.TestCase):
     def test_promotes_a_simpler_champion_that_is_not_measurably_worse(self):
-        ok, why = simplify_gate(0.80, 0.78, 0.05, 2, 1)
+        ok, why = simplify_gate(0.80, 0.79, 0.05, 2, 1)
         self.assertTrue(ok, why)
 
     def test_refuses_when_the_drop_is_measurable(self):
@@ -369,6 +370,22 @@ class TestSimplifyGate(unittest.TestCase):
     def test_refuses_when_nothing_got_simpler(self):
         # "no worse" alone would let the loop churn between equivalent designs forever.
         self.assertFalse(simplify_gate(0.80, 0.80, 0.05, 1, 1)[0])
+
+    def test_a_noisy_generation_does_not_licence_dropping_structure(self):
+        # Real numbers from run I gen0: drift 0.1141 on a 23-case confirm split. Reusing the
+        # additive delta there let a 0.065 drop (1.5 cases) through as "not measurable", and it
+        # removed `tool:qa` — the change with 7 promotions in 8 attempts and a per-case verified
+        # mechanism. Noise must not widen the licence to discard.
+        floor, drift = 0.0435, 0.1141
+        self.assertEqual(shrink_band(floor, drift), floor)
+        self.assertFalse(simplify_gate(0.913, 0.8478, shrink_band(floor, drift), 2, 1)[0])
+
+    def test_a_quiet_generation_narrows_the_band_too(self):
+        # And when the measurement is stable, a sub-case drop is still a drop: the band is the
+        # intersection of resolution and noise, not the maximum.
+        self.assertEqual(shrink_band(0.0435, 0.01), 0.01)
+        self.assertFalse(simplify_gate(0.90, 0.88, shrink_band(0.0435, 0.01), 2, 1)[0])
+        self.assertTrue(simplify_gate(0.90, 0.895, shrink_band(0.0435, 0.01), 2, 1)[0])
 
 
 class TestGrowLoop(ScriptedCase):
@@ -505,6 +522,8 @@ class TestGrowLoop(ScriptedCase):
         res = grow(pool, cases=_cases(4), seed_spec=canonical(champ), generations=2, width=6,
                    patience=5, min_margin=0.05)
         gen0 = res["history"][0]
+        # the tool lane wraps the same scripted model, so removing it costs exactly nothing —
+        # which is the only situation the tightened band allows a removal in
         self.assertEqual(gen0.get("simplify_challenger"), "simplify:qa->a")
         self.assertEqual(gen0.get("simplify_verdict"), "promote", gen0.get("simplify_reason"))
         self.assertEqual(res["champion"]["kwargs"]["routing_table"], {})

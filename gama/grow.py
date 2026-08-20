@@ -476,23 +476,43 @@ def _structure_size(spec: dict) -> int:
     return routed + (1 if kw.get("default") in composite else 0)
 
 
-def simplify_gate(champion_confirm: float, challenger_confirm: float, delta: float,
+def shrink_band(margin_floor: float, drift: float) -> float:
+    """削減を許す幅。**追加の δ を流用してはいけない。**
+
+    追加側の ``delta = max(床, drift)`` は「ノイズが大きい日は昇格しにくい」= 保守側に働く。
+    同じ式を削減に使うと**逆向き**に効く: ノイズが大きい日ほど「区別できない」幅が広がり、
+    構造を捨てやすくなる。実測(run I gen0)では drift 0.114 の世代に、confirm を 0.065
+    (1.5 問ぶん)下げる削減が「測って悪いとは言えない」で通り、**7/8 走で昇格し per-case で
+    機構まで確認済みの `tool:qa` が、1 世代のノイズを根拠に剥がされた**。
+
+    削減が許されるのは、低下が**分解能とノイズの両方の下**にあるときだけ: ``min(床, drift)``。
+    ``drift`` は測り直しの差の絶対値なので常に非負、したがって band も非負。
+    drift が 0 と出た世代は「低下が無いときだけ剥がせる」になる。厳しいが、根拠を持って
+    入れたものを外す側の基準としてはその厳しさが正しい。
+    """
+    return min(margin_floor, drift)
+
+
+def simplify_gate(champion_confirm: float, challenger_confirm: float, band: float,
                   champion_structure: int, challenger_structure: int) -> tuple[bool, str]:
     """削減の門。追加とは**違う問い**で裁く。
 
     追加は「測って良くなったか」だが、削減は「測って悪くなっていないか」。同じ門(厳密改善)で
-    裁くと、削減は原理的にほぼ通らない —— 実測でも全 6 走で simplify 候補は挑戦者にすらなれず
+    裁くと、削減は原理的にほぼ通らない —— 実測でも 6 走で simplify 候補は挑戦者にすらなれず
     (提案 4 回・挑戦 0 回)、その間チャンピオンのコストは 0.61s→1.73s/問 と単調に増えた。
     「足す方向にしか進めないループを作らない」と宣言しておきながら、非対称は変異の層ではなく
     門の層に残っていた。
 
-    条件: ①構造が厳密に減る ②confirm の低下が δ 未満(=測って悪いと言えない)。
+    条件: ①構造が厳密に減る ②confirm の低下が ``band``(= ``shrink_band``) **以下**
+    (追加側が「δ ちょうどで昇格」なのと対称。``band`` が 0 の世代は「低下ゼロなら可」)。
     差が測れないなら簡単な方を採る、という Occam の適用であって、「同点だから通す」ではない。
     """
     if not challenger_structure < champion_structure:
         return False, "not-simpler"
-    if (champion_confirm - challenger_confirm) >= delta:
-        return False, f"measurably-worse(delta={round(delta, 4)})"
+    # band ちょうどまでは通す(追加側が「δ ちょうどで昇格」なのと対称)。band が 0 の世代は
+    # 「低下がゼロなら剥がしてよい」になり、コストだけが減る削除は最後まで許される。
+    if (champion_confirm - challenger_confirm) > band + 1e-9:
+        return False, f"measurably-worse(band={round(band, 4)})"
     return True, "simplify"
 
 
@@ -658,14 +678,16 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
                 cand, cand_search = min(shrinks, key=lambda t: (-t[1].score, t[0].label))
                 cand_confirm = measure(cand.spec, splits["confirm"], tier, repeats, unit_cost,
                                        "simplifier")
+                band = shrink_band(margin_floor, drift)
                 s_ok, s_reason = simplify_gate(champ_confirm_now.score, cand_confirm.score,
-                                               delta, _structure_size(champion),
+                                               band, _structure_size(champion),
                                                _structure_size(cand.spec))
                 challenged.add(spec_hash(cand.spec))
                 row["simplify_challenger"] = cand.label
                 row["simplify_confirm"] = cand_confirm.score
                 row["simplify_verdict"] = "promote" if s_ok else "reject"
                 row["simplify_reason"] = s_reason
+                row["simplify_band"] = round(band, 4)
                 if s_ok:
                     champion, champ_search, champ_confirm = cand.spec, cand_search, cand_confirm
                     stale = 0
