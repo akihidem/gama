@@ -727,6 +727,15 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
           "margin_floor_coarse": coarse,
           "splits": {k: [c.case_id for c in v] for k, v in splits.items()}})
 
+    # 種の測定が終わった時点でも checkpoint を打つ。世代ごとの checkpoint だけだと、
+    # **最初の世代が終わるまでの区間が丸ごと空白**になる: 実測でその区間(search 40 + confirm 20
+    # を repeats 2 = 120 コール、gemma4 で約 20 分)にセッションごと落ちて、台帳 0 行で全損した。
+    # resume の守備範囲は、いちばん長い空白から埋める。
+    if not resume:
+        emit({"event": "checkpoint", "gen": -1, "champion": champion,
+              "champion_search": asdict(champ_search), "champion_confirm": asdict(champ_confirm),
+              "challenged": [], "archive": {}, "stale": 0})
+
     stale = resume["stale"] if resume else 0
     # confirm で決着がついた設計(勝っても負けても二度は問わない)
     challenged: set = set(resume["challenged"]) if resume else set()

@@ -653,6 +653,22 @@ class TestGrowLoop(ScriptedCase):
         self.assertEqual(second["history"][0]["gen"], 1)          # continued, did not restart
         self.assertEqual(second["seed_hash"], first["champion_hash"])
 
+    def test_a_run_that_dies_before_its_first_generation_still_resumes(self):
+        # The gap the per-generation checkpoints did not cover, and the one that actually cost a
+        # run: dying during the seed measurement left a zero-row ledger, so the 120 calls that
+        # had already been paid for were unrecoverable.
+        Scripted.WINS = {"a": set(), "b": {"qa1"}}
+        pool = {"a": _lane("a"), "b": _lane("b")}
+        with tempfile.TemporaryDirectory() as d:
+            led = Path(d) / "run.jsonl"
+            grow(pool, cases=_cases(4), generations=0, width=2, ledger_path=str(led))
+            ck = load_checkpoint(led)
+            self.assertIsNotNone(ck, "no checkpoint after the seed measurement")
+            self.assertEqual(ck["gen"], -1)
+            resumed = grow(pool, cases=_cases(4), generations=1, width=2,
+                           resume_from=str(led), min_margin=0.05)
+        self.assertEqual(resumed["history"][0]["gen"], 0)   # starts at the first generation
+
     def test_resuming_across_a_different_split_is_refused(self):
         Scripted.WINS = {"a": set()}
         pool = {"a": _lane("a")}
