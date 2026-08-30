@@ -696,6 +696,19 @@ class TestGrowLoop(ScriptedCase):
         again = grow(pool, cases=_cases(4), generations=1, width=6, patience=5)
         self.assertFalse(again["net_change"])           # nothing moved at all
 
+    def test_the_ledger_says_which_constraint_set_the_bar(self):
+        # Noise-bound and resolution-bound runs need OPPOSITE fixes (more repeats vs more
+        # cases), and "delta was 0.05" does not tell them apart. Measured on the AWS runs the
+        # drift went to exactly 0.0, so every bar was the floor — and nothing in the ledger
+        # said so.
+        Scripted.WINS = {"a": set(), "b": {"qa1"}}
+        res = self._grow({"a": _lane("a"), "b": _lane("b")}, generations=2, width=2)
+        for h in res["history"]:
+            self.assertIn(h["bound_by"], ("floor", "drift"))
+        self.assertEqual(sum(res["bound_by"].values()), len(res["history"]))
+        # a deterministic backend has no drift, so the floor is what binds
+        self.assertEqual(res["bound_by"]["drift"], 0, res["bound_by"])
+
     def test_patience_stops_a_loop_that_is_going_nowhere(self):
         Scripted.WINS = {"a": set(), "b": set()}
         res = self._grow({"a": _lane("a"), "b": _lane("b")}, generations=10, width=6, patience=2)

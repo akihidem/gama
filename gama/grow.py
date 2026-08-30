@@ -778,6 +778,10 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
                "champion_search": champ_search.score,
                "champion_confirm": champ_confirm_now.score,
                "drift": round(drift, 4), "delta": round(delta, 4),
+               # どちらが敷居を決めたか。ノイズ律速なら repeats を上げる/測定を安定させる、
+               # 分解能律速なら confirm の case を増やす —— 打つ手が正反対なので、台帳が
+               # 「δ=0.05 だった」しか言わないと、次に何を変えればいいか読み取れない。
+               "bound_by": "floor" if margin_floor >= drift else "drift",
                "candidates": len(cands)}
         ok, reason = False, "no-additive-candidate"
         if additive:
@@ -860,6 +864,10 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
         # 同じレーンを外し、"promotions: 2" のままチャンピオンが種と同一に戻った。回数だけを
         # 読むと「2 つ良くなった」と誤読する。
         "net_change": spec_hash(champion) != spec_hash(seed),
+        # 走行全体でどちらが律速だったか。分解能律速(floor)の走行で「もっと repeats を」と
+        # 言っても何も変わらない。逆も同じ。
+        "bound_by": {"floor": sum(1 for h in history if h.get("bound_by") == "floor"),
+                     "drift": sum(1 for h in history if h.get("bound_by") == "drift")},
         "generations_run": len(history),
         "search": asdict(champ_search), "confirm": asdict(champ_confirm),
         "sealed": sealed,

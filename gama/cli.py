@@ -328,6 +328,20 @@ def cmd_grow(args: argparse.Namespace) -> int:
     else:
         sys.stderr.write("[gama] WARNING: case pool too small for a sealed split — the reported "
                          "scores all fed decisions (optimistic). Widen --suites.\n")
+    bound = result.get("bound_by") or {}
+    if bound.get("floor", 0) and bound["floor"] >= bound.get("drift", 0):
+        n_confirm = len(result["splits"]["confirm"])
+        sys.stderr.write(
+            f"[gama] the bar was set by RESOLUTION, not noise, in {bound['floor']} of "
+            f"{sum(bound.values())} generations: with {n_confirm} confirm cases nothing smaller "
+            f"than {round(1 / n_confirm, 4)} can be certified. More confirm cases (a wider "
+            "--suites, or --ratio) is the lever; more --repeats is not.\n")
+    elif bound.get("drift", 0):
+        sys.stderr.write(
+            f"[gama] the bar was set by NOISE in {bound['drift']} of {sum(bound.values())} "
+            "generations: the champion's own re-measurement moved more than one case. Raising "
+            "--repeats is the lever here, not more cases.\n")
+
     if args.write_recipe:
         d = write_recipe(result, args.write_recipe, hardware=args.hardware)
         sys.stderr.write(f"[gama] recipe -> {d}/config.json + {d}/recipe.md\n")
