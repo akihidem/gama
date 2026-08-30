@@ -111,14 +111,35 @@ Zero promotions, sealed unchanged at 0.752, champion still the bare model. The c
 this recipe's most reproducible result — `qa → tool`, promoted in 7 of 8 attempts on
 `llama3.2:3b`, 0.222 → 1.000 on its sealed class — makes **every class worse** on the 48B.
 
-The mechanism is not mysterious. The tool lane buys arithmetic for a model that cannot do
-arithmetic. A model that can already do it gains nothing and inherits new ways to fail: code
-that does not run, output that misses the format. **The lane is a tax on a model that does not
-need it.**
+That reading was too strong, and run Q corrected it. Same model, same 80-case pool, one thing
+changed — `--ratio 1:2:1`, which moves the split to 20 search / **40 confirm** / 20 sealed and
+halves the promotion floor from 0.05 to 0.025:
 
-Note also the shape of the first two refusals: better on `search`, worse on `confirm`. That is
+| gen | challenger | confirm | verdict |
+|---|---|---|---|
+| 1 | `tool:qa(kimi-cold)` | **+0.0313** | **promoted** |
+| 2 | `tool:research(kimi-cold)` | **+0.0312** | **promoted** |
+| 4 | `tool:content(kimi-cold)` | +0.0267 | refused — lost on the (now thinner) search split |
+
+Sealed 0.833 → 0.850, and the bar was set by resolution rather than noise in all five
+generations (drift measured exactly 0.0000 throughout).
+
+So the tool lane **does** help this 48B, by about 0.03 — a little over one case in forty, and
+*below the floor of the earlier runs*, which is why they could not see it. Both measurements
+are exact; what disagrees is the aggregate, because the effect is **heterogeneous across
+cases**: the lane helps on some and hurts on others, and at this effect size the choice of
+which cases land in `confirm` decides the sign of the sum.
+
+The honest statement is therefore narrower than either run alone: on a model that can mostly do
+the arithmetic, a tool lane is worth roughly one case in forty, and a split coarser than that
+will report it as zero or as harm depending on the draw.
+
+Note also the shape of run O's first two refusals: better on `search`, worse on `confirm` —
 the overfit the three-way split exists to catch, showing up unprompted on a different machine,
-a different model family and a different transport.
+model family and transport. And run Q's generation 4 shows the cost of the re-split from the
+other side: `tool:content` improved confirm by +0.027 and was refused because the thinner
+20-case search split could not rank it. Resolution moved from one gate to the other; it did not
+appear from nowhere.
 
 ## Reproduce
 ```bash
