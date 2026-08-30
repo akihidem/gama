@@ -270,6 +270,24 @@ forty; a split coarser than that reports it as zero or as harm depending on the 
 is the third conclusion this project has had to retract, and all three retractions came from
 the same place: a confident reading of one split.
 
+Given enough cases in the class it acts on, the loop settles — on a *different* champion than
+the 3B got. With 32 `qa` cases (half of them deliberately non-computational) and 48 confirm
+cases, it promoted `qa → ensemble(two temperatures of the same weights)` at **+3.00 cases** and
+`research → tool` at **+1.37**, sealed 0.861 → 0.875. In the same run `tool:qa` — the 3B's
+signature win — was worth **exactly zero** and refused.
+
+That comparison is the whole argument for running the loop rather than copying a recipe:
+
+| box | champion |
+|---|---|
+| WSL2 CPU, `llama3.2:3b` | `qa → tool`, `research → mesh(3b→coder7b)` |
+| AWS L4, `Kimi-48B` | `qa → ensemble(temperatures)`, `research → tool` |
+
+Both classes changed hands. See [`recipes/grown-aws-kimi48b`](recipes/grown-aws-kimi48b), which
+also records why `tool:qa` fell from 1.25 cases to zero: the `qa` class stopped being purely
+arithmetic. A tool lane helps arithmetic; a routing table routes classes; **a benchmark whose
+class does not contain what the class is will bless the wrong granularity of decision.**
+
 One correction to the obvious lesson, because the arithmetic bites: **"use more cases" is not a
 general lever.** The floor is `1/n` and a gain is `S/n`, where `S` is the case-equivalents the
 change actually improves, so the two scale together and the ratio is just `S`. Adding cases in

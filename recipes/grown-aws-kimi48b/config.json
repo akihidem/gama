@@ -1,0 +1,351 @@
+{
+  "_comment": "GROWN by `gama grow` on a different box and a much larger model than recipes/grown-wsl-ollama, and it landed on a DIFFERENT champion. Lanes are two temperature settings of one llama.cpp server, reached over SSH; no second model was loaded. Sealed numbers never fed a decision.",
+  "system": {
+    "backend": "gama",
+    "kwargs": {
+      "backends": {
+        "ens(kimi-cold+kimi-hot)": {
+          "backend": "ensemble",
+          "_grow_base": "kimi-cold",
+          "kwargs": {
+            "members": [
+              {
+                "backend": "ssh-openai",
+                "kwargs": {
+                  "ssh_host": "aws-mf",
+                  "port": 8000,
+                  "path": "/v1/chat/completions",
+                  "model_by_tier": {
+                    "small": "kimi",
+                    "medium": "kimi",
+                    "large": "kimi"
+                  },
+                  "max_tokens": 1536,
+                  "temperature": 0.0,
+                  "ssh_opts": [
+                    "-o",
+                    "BatchMode=yes",
+                    "-o",
+                    "ConnectTimeout=15",
+                    "-o",
+                    "ControlMaster=auto",
+                    "-o",
+                    "ControlPath=/tmp/gama-ssh-%r@%h:%p",
+                    "-o",
+                    "ControlPersist=10m"
+                  ]
+                }
+              },
+              {
+                "backend": "ssh-openai",
+                "kwargs": {
+                  "ssh_host": "aws-mf",
+                  "port": 8000,
+                  "path": "/v1/chat/completions",
+                  "model_by_tier": {
+                    "small": "kimi",
+                    "medium": "kimi",
+                    "large": "kimi"
+                  },
+                  "max_tokens": 1536,
+                  "temperature": 0.8,
+                  "ssh_opts": [
+                    "-o",
+                    "BatchMode=yes",
+                    "-o",
+                    "ConnectTimeout=15",
+                    "-o",
+                    "ControlMaster=auto",
+                    "-o",
+                    "ControlPath=/tmp/gama-ssh-%r@%h:%p",
+                    "-o",
+                    "ControlPersist=10m"
+                  ]
+                }
+              }
+            ],
+            "strategy": "synthesize",
+            "aggregator": {
+              "backend": "ssh-openai",
+              "kwargs": {
+                "ssh_host": "aws-mf",
+                "port": 8000,
+                "path": "/v1/chat/completions",
+                "model_by_tier": {
+                  "small": "kimi",
+                  "medium": "kimi",
+                  "large": "kimi"
+                },
+                "max_tokens": 1536,
+                "temperature": 0.8,
+                "ssh_opts": [
+                  "-o",
+                  "BatchMode=yes",
+                  "-o",
+                  "ConnectTimeout=15",
+                  "-o",
+                  "ControlMaster=auto",
+                  "-o",
+                  "ControlPath=/tmp/gama-ssh-%r@%h:%p",
+                  "-o",
+                  "ControlPersist=10m"
+                ]
+              }
+            }
+          }
+        },
+        "kimi-cold": {
+          "backend": "ssh-openai",
+          "kwargs": {
+            "ssh_host": "aws-mf",
+            "port": 8000,
+            "path": "/v1/chat/completions",
+            "model_by_tier": {
+              "small": "kimi",
+              "medium": "kimi",
+              "large": "kimi"
+            },
+            "max_tokens": 1536,
+            "temperature": 0.0,
+            "ssh_opts": [
+              "-o",
+              "BatchMode=yes",
+              "-o",
+              "ConnectTimeout=15",
+              "-o",
+              "ControlMaster=auto",
+              "-o",
+              "ControlPath=/tmp/gama-ssh-%r@%h:%p",
+              "-o",
+              "ControlPersist=10m"
+            ]
+          }
+        },
+        "tool(kimi-cold)": {
+          "backend": "tool",
+          "_grow_base": "kimi-cold",
+          "kwargs": {
+            "inner": {
+              "backend": "ssh-openai",
+              "kwargs": {
+                "ssh_host": "aws-mf",
+                "port": 8000,
+                "path": "/v1/chat/completions",
+                "model_by_tier": {
+                  "small": "kimi",
+                  "medium": "kimi",
+                  "large": "kimi"
+                },
+                "max_tokens": 1536,
+                "temperature": 0.0,
+                "ssh_opts": [
+                  "-o",
+                  "BatchMode=yes",
+                  "-o",
+                  "ConnectTimeout=15",
+                  "-o",
+                  "ControlMaster=auto",
+                  "-o",
+                  "ControlPath=/tmp/gama-ssh-%r@%h:%p",
+                  "-o",
+                  "ControlPersist=10m"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "routing_table": {
+        "qa": "ens(kimi-cold+kimi-hot)",
+        "research": "tool(kimi-cold)"
+      },
+      "default": "kimi-cold"
+    }
+  },
+  "grow": {
+    "seed_hash": "bcf736853c27",
+    "promotions": 2,
+    "generations_run": 5,
+    "params": {
+      "suites": [
+        "wide",
+        "graded",
+        "steep",
+        "qadeep"
+      ],
+      "ratio": [
+        1,
+        2,
+        1
+      ],
+      "tier": "large",
+      "repeats": 2,
+      "width": 4,
+      "generations": 5,
+      "patience": 5,
+      "min_margin": 0.0208,
+      "min_margin_source": "auto(one confirm case)",
+      "ensemble_strategy": "synthesize",
+      "code": {
+        "version": "0.1.0",
+        "commit": "149a889"
+      }
+    },
+    "bound_by": {
+      "floor": 5,
+      "drift": 0
+    },
+    "splits": {
+      "search": [
+        "g-code-divide",
+        "steep-code-lru",
+        "wide-code-balanced",
+        "wide-code-rotate",
+        "g-content-lines",
+        "steep-content-every-third",
+        "wide-content-alliteration",
+        "wide-content-sevenwords",
+        "g-tool-json4",
+        "steep-tool-computed",
+        "wide-tool-csv",
+        "wide-tool-json-squares",
+        "g-qa-div60",
+        "qad-compute-choose",
+        "qad-compute-gcd",
+        "qad-recall-gold",
+        "qad-recall-shape",
+        "steep-qa-modpow2",
+        "wide-qa-divisors",
+        "wide-qa-pow2",
+        "g-research-geometric",
+        "steep-research-lcm",
+        "wide-research-arrangements",
+        "wide-research-knave"
+      ],
+      "confirm": [
+        "g-code-chunk",
+        "g-code-title",
+        "steep-code-csv",
+        "steep-code-topo",
+        "wide-code-anagram",
+        "wide-code-flatten",
+        "wide-code-roman",
+        "wide-code-twosum",
+        "g-content-b5",
+        "g-content-three-words",
+        "steep-content-acrostic",
+        "steep-content-ordered",
+        "wide-content-acrostic",
+        "wide-content-lipogram",
+        "wide-content-reverse",
+        "wide-content-weekdays",
+        "g-tool-csv2",
+        "g-tool-kv4",
+        "steep-tool-checksum",
+        "steep-tool-sorted",
+        "wide-tool-call",
+        "wide-tool-json-nested",
+        "wide-tool-json-null",
+        "wide-tool-kv",
+        "g-qa-bases",
+        "g-qa-powers",
+        "qad-compute-base7",
+        "qad-compute-digits",
+        "qad-compute-divisorsum",
+        "qad-compute-negative",
+        "qad-recall-continent",
+        "qad-recall-opposite",
+        "qad-recall-planet",
+        "qad-recall-water",
+        "steep-qa-modpow",
+        "steep-qa-trailzeros",
+        "wide-qa-binary",
+        "wide-qa-lcm",
+        "wide-qa-modpow",
+        "wide-qa-sum50",
+        "g-research-banana",
+        "g-research-primes",
+        "steep-research-anagrams",
+        "steep-research-schedule",
+        "wide-research-ages",
+        "wide-research-dice",
+        "wide-research-digitsum",
+        "wide-research-tallest"
+      ],
+      "sealed": [
+        "g-code-range",
+        "steep-code-roman",
+        "wide-code-bsearch",
+        "wide-code-topword",
+        "g-content-sun-moon",
+        "steep-content-lipogram3",
+        "wide-content-bullets",
+        "wide-content-toad",
+        "g-tool-jsonlist3",
+        "steep-tool-escaped",
+        "wide-tool-json-list",
+        "wide-tool-json-user",
+        "g-qa-gcdlcm",
+        "qad-compute-count",
+        "qad-compute-modpow",
+        "qad-recall-language",
+        "qad-recall-sides",
+        "steep-qa-primesum",
+        "wide-qa-gcd",
+        "wide-qa-seconds",
+        "g-research-order",
+        "steep-research-prob",
+        "wide-research-choose",
+        "wide-research-seq"
+      ]
+    },
+    "sealed": {
+      "seed": {
+        "score": 0.8611,
+        "success_rate": 0.875,
+        "latency_s": 2.4869,
+        "n": 48,
+        "cases": 24
+      },
+      "champion": {
+        "score": 0.875,
+        "success_rate": 0.875,
+        "latency_s": 4.3871,
+        "n": 48,
+        "cases": 24
+      }
+    },
+    "history": [
+      {
+        "gen": 0,
+        "challenger": "ensemble:qa(kimi-cold+kimi-hot)",
+        "gain_cases": 3.0,
+        "reason": "promote"
+      },
+      {
+        "gen": 1,
+        "challenger": "tool:qa(kimi-cold)",
+        "gain_cases": 0.0,
+        "reason": "confirm-not-better"
+      },
+      {
+        "gen": 2,
+        "challenger": "tool:research(kimi-cold)",
+        "gain_cases": 1.37,
+        "reason": "promote"
+      },
+      {
+        "gen": 3,
+        "challenger": "ensemble:content(kimi-cold+kimi-hot)",
+        "gain_cases": -0.12,
+        "reason": "confirm-not-better"
+      },
+      {
+        "gen": 4,
+        "challenger": "deepen:qa(tool inside ens)",
+        "gain_cases": 0.0,
+        "reason": "search-not-better"
+      }
+    ]
+  }
+}
