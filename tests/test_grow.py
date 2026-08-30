@@ -821,6 +821,23 @@ class TestGrowCli(unittest.TestCase):
             with contextlib.redirect_stderr(io.StringIO()):
                 self.assertEqual(main(["grow", "--smoke", "--start-from", str(bad)]), 2)
 
+    def test_a_ledger_that_will_not_survive_a_reboot_is_flagged(self):
+        # Fourteen runs wrote their ledgers into a /tmp scratch dir. A reboot took every one of
+        # them: the evidence behind every published number, and the only thing --resume can
+        # read. The tool knew the path and said nothing.
+        err = io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            main(["grow", "--smoke", "--suites", "wide", "--generations", "1", "--width", "1",
+                  "--out", "/tmp/gama-test-ledger.jsonl"])
+        self.assertIn("will not survive a reboot", err.getvalue())
+        Path("/tmp/gama-test-ledger.jsonl").unlink(missing_ok=True)
+
+    def test_no_ledger_at_all_is_flagged(self):
+        err = io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            main(["grow", "--smoke", "--suites", "wide", "--generations", "1", "--width", "1"])
+        self.assertIn("leaves no ledger", err.getvalue())
+
     def test_grow_without_lanes_is_an_error(self):
         self.assertEqual(main(["grow", "--suites", "hard"]), 2)
 

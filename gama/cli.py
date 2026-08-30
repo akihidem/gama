@@ -266,6 +266,15 @@ def cmd_grow(args: argparse.Namespace) -> int:
             return 2
     sys.stderr.write("[gama] NOTE: code/tool cases EXECUTE model-generated Python (opt-in, "
                      "like a sandbox). Only grow on trusted backends.\n")
+    # 台帳はこの走行の唯一の証拠で、--resume の入口でもある。それを再起動で消える場所に
+    # 置くのは、数時間の測定を「reboot 一回で全損」にする賭け(実際に /tmp のスクラッチに
+    # 置いた 14 走ぶんの台帳が、WSL の再起動で丸ごと消えた)。走る前に言う。
+    if not args.out:
+        sys.stderr.write("[gama] WARNING: no --out, so this run leaves no ledger: nothing to "
+                         "resume from and no record behind its numbers.\n")
+    elif str(Path(args.out).resolve()).startswith(("/tmp/", "/var/tmp/")):
+        sys.stderr.write(f"[gama] WARNING: ledger at {args.out} is under /tmp and will not "
+                         "survive a reboot — the evidence for this run dies with it.\n")
 
     def on_event(row: dict) -> None:
         ev = row.get("event")
