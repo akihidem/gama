@@ -169,11 +169,17 @@ exceeds the cost ratio `w/s`** (`p > w/s`). `gama market` runs the bench over yo
 ```bash
 gama market --backends gemma,haiku --suite hard --costs 1,10
 ```
-**`gama mesh` — does ensembling actually help?** An ensemble beats its best single member
-**only when members are decorrelated (`rho < 1`) and mutually complementary (not nested)** —
-`gain = (1−rho)·(1−p)·(1−(1−p)^(n−1))`. `gama mesh` measures the failure correlation `rho`
-and the union-vs-best gain from a bench, so you know *before* deploying whether combining
-ignites or just burns tokens:
+**`gama mesh` — does ensembling actually help?** Any policy that returns one member's answer
+(a vote, a router, a cascade, a verified union) scores at most **`1 − β`, where β is the
+co-failure rate: the share of cases *every* member gets wrong**. `gama mesh` counts β from a
+bench with an exact (Clopper–Pearson) 95% interval and reads the union-vs-best gain through it,
+so you know *before* deploying whether combining is **certified** to ignite (the union's 95%
+lower bound beats the best member's 95% upper bound), **undetermined** at this sample size (a
+gain that one fluke could explain — say so, don't ship it as emergence), or **dead** (nested
+members). The pairwise failure correlation `rho` of the analytic law
+`gain = (1−rho)·(1−p)·(1−(1−p)^(n−1))` is still printed, but last: with 3+ members, identical
+marginals and pairwise correlations can hide different β (Chen 2026, arXiv:2606.27288), so `rho`
+explains a verdict and never certifies one:
 ```bash
 gama mesh --backends gemma,qwen,llama --suite hard
 ```
@@ -207,9 +213,11 @@ organisation is sound before you run it**:
 - **is the consensus grounded?** an `EnsembleBackend` with no external `verify` anywhere has
   grounding *g* = 0 — and below the critical *g\* = 0.225* a unanimous vote can lock onto a
   wrong answer (souteni H2). The frontier models herd *hardest* here.
-- does the mesh actually ignite? `ignites()` is `mesh_gain > 1e-9`, i.e. **True for any ρ < 1** —
-  so yoriai reports the *size* of the gain, and calls anything at or below the once-retracted
-  +0.042 `marginal` rather than "it fired".
+- does the mesh actually ignite? the analytic `ignites()` is `mesh_gain > 1e-9`, i.e. **True for
+  any ρ < 1** — so yoriai reports the *size* of the gain, and calls anything at or below the
+  once-retracted +0.042 `marginal` rather than "it fired". (`gama mesh` itself now certifies from
+  the measured co-failure rate β and its exact interval, which is the same discipline without the
+  fixed constant.)
 
 Same round-trip both ways: every config in `examples/` and `recipes/` loads into the canvas and
 writes back byte-identical (that's yoriai's L0-1).
@@ -323,10 +331,12 @@ gama run "compute 47*53+89*17" --config recipes/mac-studio-mlx/config.json --tas
 
 ## Honest notes
 - Combining identical copies of one model does **nothing** — diversity (different blind
-  spots) is what helps. `gama mesh` quantifies this as the failure correlation `rho`:
-  identical/redundant members → `rho ≈ 1` → no ignition.
-- A small ensemble can't fix a gap **all members share** — a common hard core is high `rho`,
-  so `gama mesh` reports `gain 0`. There you need a tool, or the big model.
+  spots) is what helps. `gama mesh` counts this as the co-failure rate `β`: identical/redundant
+  members fail on the same cases → the union is the best member → verdict `dead`.
+- A small ensemble can't fix a gap **all members share** — a common hard core *is* β, and no
+  vote/router/cascade over those members can score above `1 − β`. There you need a tool, or the
+  big model. (Pairwise `rho` cannot see this tail once there are 3+ members; that is why β is
+  the number `gama mesh` prints first.)
 - Cross-architecture benchmarking needs fair answer-extraction + enough tokens, or you
   measure the harness, not the model.
 - The `tool` and code benchmark cases **execute model-generated Python** — only run on

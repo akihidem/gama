@@ -167,8 +167,10 @@ def cmd_market(args: argparse.Namespace) -> int:
 
 
 def cmd_mesh(args: argparse.Namespace) -> int:
-    """Run a bench over the given ensemble members and print the decorrelation verdict: does
-    combining them (union under external verification) beat the best single member? (rho < 1)."""
+    """Run a bench over the given ensemble members and print the ignition verdict: does combining
+    them (union under external verification) beat the best single member? Certified from the
+    co-failure rate β (every member wrong on the same case) and its exact interval — the pairwise
+    rho is printed last because it cannot see β once there are 3+ members."""
     names = [n.strip() for n in args.backends.split(",") if n.strip()]
     if len(names) < 2:
         sys.stderr.write("[gama] mesh needs >= 2 members, e.g. --backends a,b,c\n")
@@ -190,10 +192,15 @@ def cmd_mesh(args: argparse.Namespace) -> int:
         sys.stderr.write(f"[gama] {e}\n")
         return 2
     print(json.dumps(result, ensure_ascii=False, indent=2))
+    lo, hi = result["beta_interval"]
+    glo, ghi = result["gain_bounds"]
+    # β first: it is the quantity that caps every answer-selecting policy. The point gain alone
+    # once reported a one-case fluke (+0.042) as emergence; the interval is what stops that.
     sys.stderr.write(
-        f"[gama] union={result['union']} vs best-single({result['best_member']})="
-        f"{result['best_single']}  gain={result['mesh_gain']}  failure_rho={result['failure_rho']}  "
-        f"-> ensembling ignites={result['ignites']}\n")
+        f"[gama] co-failure beta={result['cofailure_k']}/{result['n_cases']}={result['cofailure_beta']} "
+        f"[{lo}, {hi}] -> ceiling 1-beta={result['ceiling']} vs best-single({result['best_member']})="
+        f"{result['best_single']}  gain={result['mesh_gain']} ({result['gain_cases']} cases; bounds [{glo}, {ghi}])  "
+        f"-> verdict={result['verdict']} (pairwise rho={result['failure_rho']}, secondary)\n")
     return 0
 
 
@@ -419,7 +426,7 @@ def build_parser() -> argparse.ArgumentParser:
     pm.set_defaults(func=cmd_market)
 
     pmesh = sub.add_parser(
-        "mesh", help="does ensembling help? the decorrelation (rho<1) verdict from your bench")
+        "mesh", help="does ensembling help? the co-failure (beta) ignition verdict from your bench")
     pmesh.add_argument("--backends", default="echo,null",
                        help="comma list of ensemble members (>=2), e.g. gemma,qwen,llama. "
                             "'echo,null' = free smoke")
