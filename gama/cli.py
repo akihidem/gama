@@ -24,7 +24,7 @@ from .config import (
     trinity_from_config,
 )
 from .decorrelation import analyze as mesh_analyze
-from .grow import grow, ollama_pool, write_recipe
+from .grow import MeasurementFailure, grow, ollama_pool, write_recipe
 from .logger import ExecutionLogger
 from .market import analyze as market_analyze
 from .models import ModelTier
@@ -240,9 +240,11 @@ def cmd_grow(args: argparse.Namespace) -> int:
         pool.update(ollama_pool([m.strip() for m in args.models.split(",") if m.strip()],
                                 host=args.host))
     if args.smoke and not pool:
-        # Free deterministic smoke: echo/null solve nothing, so the honest outcome is
-        # "nothing was promoted" — which is exactly the behaviour worth smoke-testing.
-        pool = {"echo": {"backend": "echo"}, "null": {"backend": "null"}}
+        # Free deterministic smoke: echo solves nothing, so the honest outcome is "nothing was
+        # promoted" — exactly the behaviour worth smoke-testing. Two echo lanes rather than
+        # echo+null, because NullBackend raises by design: that pool was a measurement where
+        # half the calls failed, and it only ever "passed" because the loop ignored errors.
+        pool = {"echo-a": {"backend": "echo"}, "echo-b": {"backend": "echo"}}
     if not pool:
         sys.stderr.write("[gama] grow needs lanes: --models m1,m2 (ollama) | --pool lanes.json "
                          "| --smoke\n")
@@ -322,6 +324,9 @@ def cmd_grow(args: argparse.Namespace) -> int:
                       min_margin=args.min_margin, patience=args.patience, ledger_path=args.out,
                       ensemble_strategy=args.ensemble_strategy, seed_spec=seed_spec,
                       resume_from=args.resume, on_event=on_event)
+    except MeasurementFailure as e:
+        sys.stderr.write(f"[gama] STOPPED: {e}\n")
+        return 3                 # 分けて返す: 設定ミスでなく実行環境の事故なので、再開が正しい対応
     except ValueError as e:      # too few cases to split honestly / bad lane names / bad suite
         sys.stderr.write(f"[gama] cannot grow: {e}\n")
         return 2
@@ -452,7 +457,7 @@ def build_parser() -> argparse.ArgumentParser:
                     help="JSON file mapping lane name -> backend spec (any backend, not just "
                          "ollama)")
     pg.add_argument("--smoke", action="store_true",
-                    help="free deterministic smoke with echo/null lanes (promotes nothing)")
+                    help="free deterministic smoke with two echo lanes (promotes nothing)")
     pg.add_argument("--suites", default="wide,hard,brutal",
                     help="comma list of case suites to pool and split. The default pools the "
                          "discriminating ones (56 cases); add 'default' for 10 easier cases, "

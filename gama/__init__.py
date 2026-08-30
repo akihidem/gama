@@ -44,6 +44,7 @@ from .config import (
 from .decorrelation import analyze as mesh_analyze
 from .grow import (
     Candidate,
+    MeasurementFailure,
     load_checkpoint,
     canonical,
     code_stamp,
@@ -96,7 +97,7 @@ __all__ = [
     "escalation_cost", "p_star", "dominates", "ladder", "market_over_records", "analyze",
     "mesh_gain", "mesh_correctness", "ignites", "failure_correlation", "mesh_analyze",
     "cofailure", "clopper_pearson", "verdict_from_counts",
-    "grow", "propose", "promote_gate", "simplify_gate", "shrink_band", "measure", "split_cases", "suite_pool",
+    "grow", "propose", "MeasurementFailure", "promote_gate", "simplify_gate", "shrink_band", "measure", "split_cases", "suite_pool",
     "seed_champion", "ollama_pool", "canonical", "spec_hash", "code_stamp", "load_checkpoint", "Candidate", "write_recipe",
     "__version__",
 ]

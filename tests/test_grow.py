@@ -28,6 +28,7 @@ from gama.benchmark import BenchCase
 from gama.cli import build_parser, main
 from gama.config import build_backend, system_from_config
 from gama.grow import (
+    MeasurementFailure,
     canonical,
     load_checkpoint,
     code_stamp,
@@ -722,6 +723,29 @@ class TestGrowLoop(ScriptedCase):
         n_confirm = len(res["splits"]["confirm"])
         expected = round((gen0["challenger_confirm"] - gen0["champion_confirm"]) * n_confirm, 2)
         self.assertEqual(gen0["gain_cases"], expected)
+
+    def test_a_broken_measurement_stops_the_run(self):
+        # Run S: the served model was swapped out mid-run, every later call returned 503, and
+        # `run_bench` turned each exception into a 0.0. To the loop that looked like a coherent
+        # measurement — champion 0.0, challenger 0.0, drift 0.0 — so every gate worked
+        # correctly and concluded that dropping a lane cost nothing. The champion and the
+        # sealed score were both artefacts of a dead backend, and the ledger looked normal.
+        class Broken(ModelBackend):
+            available = True
+
+            def __init__(self, tag="x"):
+                self.tag, self.last_usage = tag, None
+
+            def complete(self, prompt, tier, **kw):
+                raise RuntimeError("503 Loading model")
+
+        backends_mod._BACKENDS["broken"] = Broken
+        try:
+            with self.assertRaises(MeasurementFailure) as caught:
+                grow({"x": {"backend": "broken"}}, cases=_cases(4), generations=1, width=1)
+            self.assertIn("broken measurement", str(caught.exception))
+        finally:
+            backends_mod._BACKENDS.pop("broken", None)
 
     def test_patience_stops_a_loop_that_is_going_nowhere(self):
         Scripted.WINS = {"a": set(), "b": set()}

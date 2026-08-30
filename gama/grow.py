@@ -456,6 +456,8 @@ class Measurement:
     latency_s: float
     n: int
     cases: int
+    errors: int = 0            # 例外で 0 点になった call 数(モデルが間違えた 0 点とは別物)
+    error_rate: float = 0.0
 
 
 def measure(spec: dict, cases: list[BenchCase], tier: ModelTier = ModelTier.LARGE,
@@ -469,8 +471,13 @@ def measure(spec: dict, cases: list[BenchCase], tier: ModelTier = ModelTier.LARG
     records = run_bench({label: backend}, suite=cases, tier=tier, repeats=repeats,
                         unit_cost=unit_cost or {}, run_id="grow")
     agg = summarize(records)["overall"][label]
+    # `run_bench` は例外を握って 0 点にする(1 つの backend が掃引を止めないため)。その 0 点は
+    # 「モデルが間違えた」ではなく「**測れなかった**」で、区別を捨てると死んだ backend の
+    # 全ゼロが実測値として判定に入る。件数を持ち帰る。
+    errors = sum(1 for r in records if r.get("error"))
     return Measurement(score=agg["score"], success_rate=agg["success_rate"],
-                       latency_s=agg["latency_s"], n=agg["n"], cases=len(cases))
+                       latency_s=agg["latency_s"], n=agg["n"], cases=len(cases),
+                       errors=errors, error_rate=round(errors / len(records), 4) if records else 0.0)
 
 
 # --------------------------------------------------------------------------- #
@@ -619,6 +626,31 @@ def _ledger_splits(ledger_path) -> Optional[dict]:
     return None
 
 
+MAX_ERROR_RATE = 0.2
+
+
+class MeasurementFailure(RuntimeError):
+    """測定そのものが壊れているときに投げる。**スコアが低いのとは別の事故**。
+
+    実際に起きたこと(run S): 走行中に配信サーバが別モデルへ載せ替えられ、以降の全コールが
+    503 を返した。``run_bench`` は例外を握って 0 点にするので、loop から見ると「チャンピオンも
+    挑戦者も 0.0、drift も 0.0」という**整合の取れた実測値**に見え、門は全部正しく動いた上で
+    「レーンを外してもコストゼロ」と判断して構造を捨てた。最終チャンピオンも sealed も、
+    死んだ backend の産物だった。台帳は一見正常に見える。
+
+    低いスコアと測れないことは別なので、後者は走行を止める。checkpoint があるので、backend が
+    戻ってから ``--resume`` で続けられる。
+    """
+
+
+def _guard_measurement(m: "Measurement", what: str) -> None:
+    if m.error_rate > MAX_ERROR_RATE:
+        raise MeasurementFailure(
+            f"{what}: {m.errors} of {m.n} calls raised ({m.error_rate:.0%}). That is a broken "
+            "measurement, not a low score — refusing to decide on it. Fix the backend and "
+            "--resume from this ledger.")
+
+
 def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
          cases: Optional[list[BenchCase]] = None, suites=("wide", "hard", "brutal"),
          ratio: tuple[int, int, int] = (2, 1, 1), generations: int = 3, width: int = 6,
@@ -715,7 +747,9 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
         start_gen = resume["gen"] + 1
     else:
         champ_search = measure(champion, splits["search"], tier, repeats, unit_cost, "champion")
+        _guard_measurement(champ_search, "seed on the search split")
         champ_confirm = measure(champion, splits["confirm"], tier, repeats, unit_cost, "champion")
+        _guard_measurement(champ_confirm, "seed on the confirm split")
         start_gen = 0
     emit({"event": "resumed" if resume else "seed", "hash": spec_hash(champion),
           "resumed_from_gen": resume["gen"] if resume else None,
@@ -759,6 +793,7 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
                 m = Measurement(**cached["search"])
             else:
                 m = measure(c.spec, splits["search"], tier, repeats, unit_cost, "candidate")
+                _guard_measurement(m, f"candidate {c.label}")
                 archive[h] = {"label": c.label, "kind": c.kind, "search": asdict(m)}
                 emit({"event": "candidate", "gen": gen, "label": c.label, "kind": c.kind,
                       "hash": h, "search": asdict(m)})
@@ -768,6 +803,7 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
         # 揺れ」そのもの — 自分の揺れより小さい改善を採らないための実測アンカー。
         champ_confirm_now = measure(champion, splits["confirm"], tier, repeats, unit_cost,
                                     "champion")
+        _guard_measurement(champ_confirm_now, f"champion on confirm (gen {gen})")
         drift = abs(champ_confirm_now.score - champ_confirm.score)
         delta = max(margin_floor, drift)
 
@@ -795,6 +831,7 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
                                                                     t[0].label))
             chal_confirm = measure(challenger.spec, splits["confirm"], tier, repeats, unit_cost,
                                    "challenger")
+            _guard_measurement(chal_confirm, f"challenger {challenger.label}")
             ok, reason = promote_gate(champ_search.score, chal_search.score,
                                       champ_confirm_now.score, chal_confirm.score, delta)
             challenged.add(spec_hash(challenger.spec))
@@ -822,6 +859,7 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
                 cand, cand_search = min(shrinks, key=lambda t: (-t[1].score, t[0].label))
                 cand_confirm = measure(cand.spec, splits["confirm"], tier, repeats, unit_cost,
                                        "simplifier")
+                _guard_measurement(cand_confirm, f"simplification {cand.label}")
                 band = shrink_band(margin_floor, drift)
                 s_ok, s_reason = simplify_gate(champ_confirm_now.score, cand_confirm.score,
                                                band, _structure_size(champion),
@@ -855,6 +893,7 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
     # 数字」の欄に流用するのが、この設計でいちばんやってはいけないこと。
     if splits["sealed"]:
         sealed_seed = measure(seed, splits["sealed"], tier, repeats, unit_cost, "seed")
+        _guard_measurement(sealed_seed, "seed on the sealed split")
         sealed_champ = (sealed_seed if spec_hash(seed) == spec_hash(champion) else
                         measure(champion, splits["sealed"], tier, repeats, unit_cost, "champion"))
         sealed = {"seed": asdict(sealed_seed), "champion": asdict(sealed_champ)}
