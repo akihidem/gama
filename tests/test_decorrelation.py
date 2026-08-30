@@ -9,7 +9,7 @@ from gama.benchmark import BenchCase, run_bench
 from gama.cli import build_parser
 from gama.decorrelation import (
     analyze, clopper_pearson, cofailure, failure_correlation, ignites, mesh_correctness,
-    mesh_gain, solve_vectors_from_records, union_solve,
+    mesh_gain, solve_vectors_from_records, union_solve, verdict_from_counts,
 )
 from gama.models import ModelTier
 
@@ -264,6 +264,36 @@ class TestCofailure(unittest.TestCase):
                 for m in ("A", "B") for i in range(4)]
         self.assertEqual(analyze(recs, ["A", "B"])["best_member"], "A")
         self.assertEqual(analyze(recs, ["B", "A"])["best_member"], "B")
+
+    def test_verdict_from_counts_is_the_rule_analyze_uses(self):
+        # Same counts -> same verdict dict as analyze() (minus the member-specific keys).
+        r = analyze(self._recs_wide(), ["A", "B"])
+        v = verdict_from_counts(r["cofailure_k"], r["n_cases"], r["best_solved"], members=2)
+        for key in ("verdict", "gain_bounds", "beta_interval", "best_single_interval",
+                    "ceiling", "mesh_gain", "gain_cases", "ignites"):
+            self.assertEqual(v[key], r[key], key)
+        self.assertEqual(v["verdict"], "certified")
+
+    def test_verdict_from_counts_rejects_impossible_counts(self):
+        with self.assertRaises(ValueError):
+            verdict_from_counts(5, 4, 0, members=2)   # k > n
+        with self.assertRaises(ValueError):
+            verdict_from_counts(2, 10, 9, members=2)  # best solved a co-failure case
+        with self.assertRaises(ValueError):
+            verdict_from_counts(0, 10, 5, members=0)
+        with self.assertRaises(ValueError):
+            verdict_from_counts(1.0, 10, 5, members=2)      # counts are ints, not rates
+        with self.assertRaises(ValueError):
+            verdict_from_counts(True, 10, 5, members=2)
+        with self.assertRaises(ValueError):
+            verdict_from_counts(0, 10, 5, members=2, confidence=1.0)
+
+    def _recs_wide(self):
+        recs = []
+        for name, on in (("A", "A"), ("B", "B")):
+            recs += [{"case_id": c.case_id, "backend": name,
+                      "score": c.checker(on)} for c in WIDE_COMPLEMENT_SUITE]
+        return recs
 
     def test_one_case_fluke_is_undetermined_not_ignition(self):
         # The soshiki-genron shape: N=24, best member 12/24, union 13/24 (+0.042 = one case).

@@ -174,9 +174,9 @@ gama market --backends gemma,haiku --suite hard --costs 1,10
 co-failure rate: the share of cases *every* member gets wrong**. `gama mesh` counts β from a
 bench with an exact (Clopper–Pearson) 95% interval and reads the union-vs-best gain through it,
 so you know *before* deploying whether combining is **certified** to ignite (the union's 95%
-lower bound beats the best member's 95% upper bound), **undetermined** at this sample size (a
-gain that one fluke could explain — say so, don't ship it as emergence), or **dead** (nested
-members). The pairwise failure correlation `rho` of the analytic law
+lower bound beats the best member's 95% upper bound), **undetermined** (a gain was observed but
+the sample cannot separate it from 0 — a one-case fluke is the typical shape; say so, don't ship
+it as emergence), or **dead** (nested members). The pairwise failure correlation `rho` of the analytic law
 `gain = (1−rho)·(1−p)·(1−(1−p)^(n−1))` is still printed, but last: with 3+ members, identical
 marginals and pairwise correlations can hide different β (Chen 2026, arXiv:2606.27288), so `rho`
 explains a verdict and never certifies one:
@@ -213,11 +213,12 @@ organisation is sound before you run it**:
 - **is the consensus grounded?** an `EnsembleBackend` with no external `verify` anywhere has
   grounding *g* = 0 — and below the critical *g\* = 0.225* a unanimous vote can lock onto a
   wrong answer (souteni H2). The frontier models herd *hardest* here.
-- does the mesh actually ignite? the analytic `ignites()` is `mesh_gain > 1e-9`, i.e. **True for
-  any ρ < 1** — so yoriai reports the *size* of the gain, and calls anything at or below the
-  once-retracted +0.042 `marginal` rather than "it fired". (`gama mesh` itself now certifies from
-  the measured co-failure rate β and its exact interval, which is the same discipline without the
-  fixed constant.)
+- does the mesh actually ignite? yoriai reads the co-failure counts a `gama mesh` run produced
+  and applies the same `verdict_from_counts` rule: `certified` only when the union's lower bound
+  beats the best member's Bonferroni upper bound, `undetermined` when a gain exists but one fluke
+  could explain it (the once-retracted +0.042 lands here mechanically), `dead` for nested members.
+  Given only (p, ρ) it says `analytic` — a model prediction, never "it fired": the analytic
+  `ignites()` is `mesh_gain > 1e-9`, i.e. **True for any ρ < 1**, and pairwise ρ cannot see β.
 
 Same round-trip both ways: every config in `examples/` and `recipes/` loads into the canvas and
 writes back byte-identical (that's yoriai's L0-1).

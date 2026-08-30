@@ -207,6 +207,72 @@ def solve_vectors_from_records(records: list, members: list, pass_score: float =
     return [[1 if score.get((c, m), 0.0) >= pass_score else 0 for c in cases] for m in members]
 
 
+def verdict_from_counts(cofailure_k: int, n_cases: int, best_solved: int, members: int,
+                        confidence: float = 0.95) -> dict:
+    """The ignition verdict from three case counts and the member count; the one place the rule lives.
+
+    ``cofailure_k`` = cases every member failed, ``best_solved`` = cases the best member solved,
+    ``members`` = how many members the best was picked from. ``members`` has no default on
+    purpose: it sets the Bonferroni correction for the winner's curse, and a caller that forgot
+    it would silently get a weaker correction (and an easier ``certified``) for a 3+ member mesh.
+    Split out of :func:`analyze` so a caller that already has the counts (yoriai's L0-5 reads
+    them from a stored ``gama mesh`` run) applies exactly the same rule instead of a copy."""
+    for name, v in (("cofailure_k", cofailure_k), ("n_cases", n_cases),
+                    ("best_solved", best_solved), ("members", members)):
+        if isinstance(v, bool) or not isinstance(v, int):
+            # these are case counts: a float would be rounded into a different measurement
+            raise ValueError(f"{name} must be an int (got {v!r})")
+    if n_cases <= 0 or not 0 <= cofailure_k <= n_cases:
+        raise ValueError(f"need 0 <= cofailure_k <= n_cases, n_cases > 0 (got {cofailure_k}, {n_cases})")
+    if not 0 <= best_solved <= n_cases - cofailure_k:
+        # on a co-failure case nobody solved, so the best member cannot exceed n - k
+        raise ValueError(f"need 0 <= best_solved <= n_cases - cofailure_k (got {best_solved})")
+    if members < 1:
+        raise ValueError(f"members must be >= 1 (got {members})")
+    if not 0.0 < confidence < 1.0:
+        raise ValueError(f"confidence must be in (0, 1) (got {confidence})")
+    k, n = cofailure_k, n_cases
+    beta = k / n
+    beta_lo, beta_hi = clopper_pearson(k, n, confidence)
+    # The best member was picked as the max of m on this same sample, so its rate is biased up
+    # (winner's curse). Bonferroni over the m candidates (confidence 1 − α/m for that interval)
+    # is the cheap, always-conservative correction: the more members you fan out, the harder
+    # it gets to certify — the direction a pre-run gate must fail in.
+    best_conf = 1.0 - (1.0 - confidence) / members
+    best_lo, best_hi = clopper_pearson(best_solved, n, best_conf)
+    union_cases = n - k                        # union ⊇ best, so this never undercounts the best
+    gain_cases = union_cases - best_solved     # cases the best member failed but some member solved
+    gain_lo = (1.0 - beta_hi) - best_hi
+    gain_hi = (1.0 - beta_lo) - best_lo
+    if gain_cases == 0:
+        verdict = "dead"
+    elif gain_lo > 0.0:
+        verdict = "certified"
+    else:
+        verdict = "undetermined"
+    r6 = lambda x: round(x, 6)  # noqa: E731 — display rounding, applied after the verdict
+    return {
+        "cofailure_k": k,
+        "n_cases": n,
+        "members_count": members,
+        "confidence": confidence,
+        "best_solved": best_solved,
+        "best_single": round(best_solved / n, 4),
+        "best_single_interval": [r6(best_lo), r6(best_hi)],   # at 1-(1-confidence)/members
+        "best_interval_confidence": round(best_conf, 6),
+        "union": round(union_cases / n, 4),
+        "cofailure_beta": round(beta, 4),      # PRIMARY: share of cases every member failed
+        "beta_interval": [r6(beta_lo), r6(beta_hi)],   # exact Clopper–Pearson
+        "ceiling": round(1.0 - beta, 4),       # no answer-selecting policy scores above this
+        "mesh_gain": round(gain_cases / n, 4), # union − best_single (the oracle gain, point)
+        "gain_cases": gain_cases,              # the count behind it; 0 is what "dead" means
+        "gain_bounds": [r6(gain_lo), r6(gain_hi)],   # conservative, from the two marginal intervals
+        "gain_upper_bound": r6(gain_hi),       # certificate: max gain any such policy can deliver
+        "verdict": verdict,                    # dead | undetermined | certified
+        "ignites": verdict == "certified",     # binary view of the verdict; False while undetermined
+    }
+
+
 def analyze(records: list, members: list, pass_score: float = 1.0, confidence: float = 0.95) -> dict:
     """Measure whether ensembling ``members`` ignites, certified from the co-failure rate β.
 
@@ -240,47 +306,11 @@ def analyze(records: list, members: list, pass_score: float = 1.0, confidence: f
     # (nested). Likewise the best member is the one with the most solved cases, ties -> the
     # first listed (stable and documented, not whichever rounding happened to favour).
     best_i = max(range(len(solved)), key=lambda i: (solved[i], -i))
-    union_cases = n - k                        # union ⊇ best, so this never undercounts the best
-    gain_cases = union_cases - solved[best_i]  # cases the best member failed but some member solved
-    beta = k / n
-    beta_lo, beta_hi = clopper_pearson(k, n, confidence)
-    # The best member was picked as the max of m on this same sample, so its rate is biased up
-    # (winner's curse). Bonferroni over the m candidates (confidence 1 − α/m for that interval)
-    # is the cheap, always-conservative correction: the more members you fan out, the harder
-    # it gets to certify — the direction a pre-run gate must fail in.
-    m = len(vecs)
-    best_conf = 1.0 - (1.0 - confidence) / m
-    best_lo, best_hi = clopper_pearson(solved[best_i], n, best_conf)
-    gain_lo = (1.0 - beta_hi) - best_hi
-    gain_hi = (1.0 - beta_lo) - best_lo
-    if gain_cases == 0:
-        verdict = "dead"
-    elif gain_lo > 0.0:
-        verdict = "certified"
-    else:
-        verdict = "undetermined"
-    r6 = lambda x: round(x, 6)  # noqa: E731 — display rounding, applied after the verdict
-    per = [round(c / n, 4) for c in solved]
-    return {
+    out = verdict_from_counts(k, n, solved[best_i], members=len(vecs), confidence=confidence)
+    out.update({
         "members": list(members),
-        "per_member_solve_rate": per,          # empirical p_i (1=solved per case)
-        "best_single": per[best_i],
-        "best_single_interval": [r6(best_lo), r6(best_hi)],   # at 1-(1-confidence)/members
-        "best_interval_confidence": round(best_conf, 6),
+        "per_member_solve_rate": [round(c / n, 4) for c in solved],   # empirical p_i
         "best_member": members[best_i],
-        "union": round(union_cases / n, 4),
-        "cofailure_beta": round(beta, 4),      # PRIMARY: share of cases every member failed
-        "cofailure_k": k,
-        "n_cases": n,
-        "confidence": confidence,
-        "beta_interval": [r6(beta_lo), r6(beta_hi)],   # exact Clopper–Pearson
-        "ceiling": round(1.0 - beta, 4),       # no answer-selecting policy scores above this
-        "mesh_gain": round(gain_cases / n, 4), # union − best_single (the oracle gain, point)
-        "gain_cases": gain_cases,              # the count behind it; 0 is what "dead" means
-        "gain_bounds": [r6(gain_lo), r6(gain_hi)],   # conservative, from the two marginal intervals
-        "gain_upper_bound": r6(gain_hi),       # certificate: max gain any such policy can deliver
-        "verdict": verdict,                    # dead | undetermined | certified
-        "ignites": verdict == "certified",     # binary view of the verdict; False while undetermined
         "failure_rho": failure_correlation(vecs),   # SECONDARY: pairwise phi, cannot identify beta
         "thesis": ("Any policy that returns one member's answer scores at most 1 − β, β = the "
                    "co-failure rate (every member wrong on the same case). Ensembling ignites only "
@@ -288,4 +318,5 @@ def analyze(records: list, members: list, pass_score: float = 1.0, confidence: f
                    "failure correlation rho explains but cannot certify it (m>=3 non-identification, "
                    "Chen 2026 arXiv:2606.27288; soshiki-genron mesh, analytic gain="
                    "(1-rho)(1-p)(1-(1-p)^(n-1)))."),
-    }
+    })
+    return out
