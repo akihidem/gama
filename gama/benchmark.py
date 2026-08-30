@@ -1138,7 +1138,81 @@ QADEEP_SUITE: list[BenchCase] = [
 ]
 
 
-# Named suites — `gama bench --suite {default,hard,brutal,wide,graded,steep,qadeep}`. DEFAULT_SUITE
+# --------------------------------------------------------------------------- #
+# Research-deep suite — the same audit `qadeep` applied to `qa`, applied to
+# `research`.
+#
+# `qa` turned out to be 16 for 16 exact computation, so a tool lane routed to the
+# whole class looked like a win until non-computational cases were added and it
+# fell to exactly zero. `research` had the same smell: of the 22 cases that
+# existed, roughly three quarters are sequences, combinatorics, probability or
+# integer arithmetic — all things a program does — and `tool:research` was the
+# one mutation reproducing across splits.
+#
+# So: 16 more `research` cases, 8 computational (matching what is already there)
+# and 8 that no program can help with — temporal ordering, referent resolution,
+# odd-one-out, analogy, contradiction, deduction over categories, negation. Half
+# and half for the same reason as `qadeep`: choosing new cases to suit the
+# incumbent answer is how a benchmark ends up blessing it.
+# --------------------------------------------------------------------------- #
+RESEARCHDEEP_SUITE: list[BenchCase] = [
+    # --- computational multi-step (a program does these) --------------------- #
+    BenchCase("rd-compute-oddsum", "research",
+              "What is the sum of the first 20 odd positive integers? Reply with ONLY the "
+              "integer.", _eq_int(400)),
+    BenchCase("rd-compute-palindromes", "research",
+              "How many 4-digit numbers are palindromes? Reply with ONLY the integer.",
+              _eq_int(90)),
+    BenchCase("rd-compute-primeseq", "research",
+              "What number continues this sequence: 2, 3, 5, 7, 11, 13, ? Reply with ONLY the "
+              "integer.", _eq_int(17)),
+    BenchCase("rd-compute-atleastone", "research",
+              "A fair coin is flipped 3 times. What is the probability of at least one head? "
+              "Answer with ONLY a reduced fraction a/b.", _eq_norm("7/8")),
+    BenchCase("rd-compute-diagonals", "research",
+              "How many diagonals does a regular octagon have? Reply with ONLY the integer.",
+              _eq_int(20)),
+    BenchCase("rd-compute-banana", "research",
+              "How many distinct arrangements are there of the letters in BANANA? Reply with "
+              "ONLY the integer.", _eq_int(60)),
+    BenchCase("rd-compute-angles", "research",
+              "What is the sum of the interior angles of a heptagon, in degrees? Reply with "
+              "ONLY the integer.", _eq_int(900)),
+    BenchCase("rd-compute-handshakes", "research",
+              "Nine people each shake hands once with every other person. How many handshakes "
+              "happen in total? Reply with ONLY the integer.", _eq_int(36)),
+
+    # --- reasoning a program cannot do for you -------------------------------- #
+    BenchCase("rd-reason-order", "research",
+              "Ann left before Ben. Cid left after Ben. Who left second? Answer with ONLY the "
+              "name.", _last_word("ben")),
+    BenchCase("rd-reason-referent", "research",
+              "The trophy did not fit into the suitcase because it was too small. What was too "
+              "small? Answer with ONLY the single word.", _last_word("suitcase")),
+    BenchCase("rd-reason-oddoneout", "research",
+              "Which of these does not belong with the others: sparrow, eagle, penguin, "
+              "salmon? Answer with ONLY the word.", _last_word("salmon")),
+    BenchCase("rd-reason-analogy", "research",
+              "Hand is to glove as foot is to what? Answer with ONLY the single word.",
+              _last_word("sock")),
+    BenchCase("rd-reason-contradiction", "research",
+              "Consider: (1) All cats are mammals. (2) Some mammals are cats. (3) No cats are "
+              "mammals. Which numbered statement contradicts statement 1? Reply with ONLY the "
+              "number.", _eq_int(3)),
+    BenchCase("rd-reason-category", "research",
+              "Ken plays a string instrument that is neither the guitar nor the violin. His "
+              "instrument is one of: cello, flute, drum, guitar. Which does he play? Answer "
+              "with ONLY the instrument.", _last_word("cello")),
+    BenchCase("rd-reason-negation", "research",
+              "Every student who passed the exam had studied. Mika did not study. Did Mika "
+              "pass? Answer with ONLY 'yes' or 'no'.", _last_word("no")),
+    BenchCase("rd-reason-cause", "research",
+              "The road flooded, so the bus was cancelled, so Rin walked to work. What was "
+              "cancelled? Answer with ONLY the single word.", _last_word("bus")),
+]
+
+
+# Named suites — `gama bench --suite {default,hard,brutal,wide,graded,steep,qadeep,researchdeep}`. DEFAULT_SUITE
 # stays the default so public behavior is unchanged; hard/brutal break the ceiling, wide
 # adds the breadth a three-way split (`gama grow`) needs, and graded adds partial credit
 # so a score can move by less than a whole case.
@@ -1150,6 +1224,7 @@ SUITES: dict[str, list[BenchCase]] = {
     "graded": GRADED_SUITE,
     "steep": STEEP_SUITE,
     "qadeep": QADEEP_SUITE,
+    "researchdeep": RESEARCHDEEP_SUITE,
 }
 
 

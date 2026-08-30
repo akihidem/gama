@@ -449,6 +449,23 @@ REFERENCE: dict[str, str] = {
     "qad-recall-water": "100",
     "qad-recall-language": "Japanese",
     "qad-recall-shape": "cube",
+    # --- researchdeep: half computation, half reasoning a program cannot do ----- #
+    "rd-compute-oddsum": "400",
+    "rd-compute-palindromes": "90",
+    "rd-compute-primeseq": "17",
+    "rd-compute-atleastone": "7/8",
+    "rd-compute-diagonals": "20",
+    "rd-compute-banana": "60",
+    "rd-compute-angles": "900",
+    "rd-compute-handshakes": "36",
+    "rd-reason-order": "Ben",
+    "rd-reason-referent": "suitcase",
+    "rd-reason-oddoneout": "salmon",
+    "rd-reason-analogy": "sock",
+    "rd-reason-contradiction": "3",
+    "rd-reason-category": "cello",
+    "rd-reason-negation": "no",
+    "rd-reason-cause": "bus",
 }
 
 
