@@ -257,6 +257,14 @@ what the change contributes once it is in.** Those two questions disagree, and t
 is the one a recipe is answering. Both lanes ship now, with all twelve runs recorded:
 [`recipes/grown-wsl-ollama`](recipes/grown-wsl-ollama).
 
+Pointed at a 48B model on another machine (`Kimi-Linear-48B-A3B` served by llama.cpp on an AWS
+L4, reached over SSH), the loop proposed all five `tool:<class>` mutations and **refused every
+one — each lowered the confirm score.** The change that is this project's most reproducible
+result on a 3B (`qa → tool`, 7 promotions in 8 attempts, 0.222 → 1.000 on its sealed class)
+makes *every* class worse on the 48B. A tool lane buys arithmetic for a model that cannot do
+arithmetic; for one that can, it is a tax with new failure modes attached. Structure is not
+portable, and the loop is how you find out which structure your box wants.
+
 Swapping the model pool entirely (`gemma4:e2b` + `qwen2.5:7b`, growing from bare) promoted
 nothing in five generations, because that seed already scored 0.959 on search — **the suite is
 saturated for it**. That run cannot say whether the structures transfer, and it says something

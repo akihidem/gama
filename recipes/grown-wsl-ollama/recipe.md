@@ -89,6 +89,37 @@ case pool.** Do not port the two lanes to a stronger model on the strength of th
 run `gama grow` there and let it tell you, which takes an afternoon and is the entire point of
 the tool.
 
+### And when we did run it there, the answer was no
+
+Run O put the loop on a different machine and a much larger model: `Kimi-Linear-48B-A3B`
+(IQ2_M) served by llama.cpp on an AWS L4, reached with gama's `ssh-openai` backend, over the
+80-case `wide,graded,steep` pool split 40 / 20 / 20. A single-model pool leaves exactly one
+family of mutations reachable, `tool:<class>`, which is the family this recipe is built on.
+
+All five were proposed across five generations. **All five were refused, and every one of them
+lowered the confirm score:**
+
+| mutation | search | confirm |
+|---|---|---|
+| `tool:qa` | 0.775 → **0.818** | 0.781 → **0.744** |
+| `tool:content` | 0.775 → **0.830** | 0.788 → **0.742** |
+| `tool:research` | 0.775 → 0.790 | 0.683 → 0.675 |
+| `tool:code_implementation` | 0.775 → 0.749 | 0.750 → **0.652** |
+| `tool:integration` | 0.775 → 0.687 | 0.763 → **0.638** |
+
+Zero promotions, sealed unchanged at 0.752, champion still the bare model. The change that was
+this recipe's most reproducible result — `qa → tool`, promoted in 7 of 8 attempts on
+`llama3.2:3b`, 0.222 → 1.000 on its sealed class — makes **every class worse** on the 48B.
+
+The mechanism is not mysterious. The tool lane buys arithmetic for a model that cannot do
+arithmetic. A model that can already do it gains nothing and inherits new ways to fail: code
+that does not run, output that misses the format. **The lane is a tax on a model that does not
+need it.**
+
+Note also the shape of the first two refusals: better on `search`, worse on `confirm`. That is
+the overfit the three-way split exists to catch, showing up unprompted on a different machine,
+a different model family and a different transport.
+
 ## Reproduce
 ```bash
 ollama pull llama3.2:3b qwen2.5-coder:7b
