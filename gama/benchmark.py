@@ -1068,7 +1068,77 @@ STEEP_SUITE: list[BenchCase] = [
 ]
 
 
-# Named suites — `gama bench --suite {default,hard,brutal,wide,graded,steep}`. DEFAULT_SUITE
+# --------------------------------------------------------------------------- #
+# QA-deep suite — deliberately class-IMBALANCED: 16 `qa` cases and nothing else.
+#
+# The promotion floor is one confirm case, and a gain of S/n clears it exactly
+# when S >= 1, where S counts the case-equivalents a mutation actually improves.
+# Since the floor 1/n and the gain S/n scale together, adding cases in classes a
+# mutation never touches changes nothing at all — the only way to resolve a small
+# per-class effect is more cases OF THAT CLASS. Measured: `tool:qa` on a 48B was
+# worth 1.25 cases out of 40 confirm cases, i.e. barely over the bar, and the
+# same lane measured 0.25 cases on a 20-case split and was refused.
+#
+# Half of these are exact computation, matching the existing `qa` cases. The
+# other half deliberately are NOT: unambiguous short answers a program cannot
+# help with. Filling the class with calculator problems would have built a suite
+# that proves the tool lane right by construction; a routing decision is made per
+# CLASS, so the class has to contain what the class really is.
+# --------------------------------------------------------------------------- #
+QADEEP_SUITE: list[BenchCase] = [
+    # --- exact computation (a program does these trivially) ------------------ #
+    BenchCase("qad-compute-modpow", "qa",
+              "Compute 3^40 mod 100. Reply with ONLY the integer.", _eq_int(1)),
+    BenchCase("qad-compute-digits", "qa",
+              "How many decimal digits does 2^64 have? Reply with ONLY the integer.",
+              _eq_int(20)),
+    BenchCase("qad-compute-divisorsum", "qa",
+              "What is the sum of all positive divisors of 496, including 496 itself? Reply "
+              "with ONLY the integer.", _eq_int(992)),
+    BenchCase("qad-compute-choose", "qa",
+              "In how many ways can 5 items be chosen from 12 when order does not matter? "
+              "Reply with ONLY the integer.", _eq_int(792)),
+    BenchCase("qad-compute-count", "qa",
+              "How many integers from 1 to 30 inclusive are divisible by 3 or by 5? Reply with "
+              "ONLY the integer.", _eq_int(14)),
+    BenchCase("qad-compute-negative", "qa",
+              "Compute 7^3 - 5^4. Reply with ONLY the integer (it may be negative).",
+              _eq_int(-282)),
+    BenchCase("qad-compute-gcd", "qa",
+              "What is the greatest common divisor of 3213 and 1386? Reply with ONLY the "
+              "integer.", _eq_int(63)),
+    BenchCase("qad-compute-base7", "qa",
+              "Write the decimal number 255 in base 7. Reply with ONLY the digits, no prefix.",
+              _eq_norm("513")),
+
+    # --- short answers a program cannot supply ------------------------------- #
+    BenchCase("qad-recall-gold", "qa",
+              "What is the chemical symbol for gold? Reply with ONLY the symbol.",
+              _eq_norm("Au")),
+    BenchCase("qad-recall-planet", "qa",
+              "Which planet is closest to the Sun? Reply with ONLY the planet name.",
+              _last_word("mercury")),
+    BenchCase("qad-recall-sides", "qa",
+              "How many sides does a hexagon have? Reply with ONLY the integer.", _eq_int(6)),
+    BenchCase("qad-recall-continent", "qa",
+              "On which continent is the Sahara desert? Reply with ONLY the continent name.",
+              _last_word("africa")),
+    BenchCase("qad-recall-opposite", "qa",
+              "What is the antonym of 'ascend'? Reply with ONLY the single word.",
+              _last_word("descend")),
+    BenchCase("qad-recall-water", "qa",
+              "At what temperature in degrees Celsius does water boil at standard atmospheric "
+              "pressure? Reply with ONLY the integer.", _eq_int(100)),
+    BenchCase("qad-recall-language", "qa",
+              "In which language does the word 'tsunami' originate? Reply with ONLY the "
+              "language name.", _last_word("japanese")),
+    BenchCase("qad-recall-shape", "qa",
+              "What is the name of a three-dimensional shape with six identical square faces? "
+              "Reply with ONLY the single word.", _last_word("cube")),
+]
+
+
+# Named suites — `gama bench --suite {default,hard,brutal,wide,graded,steep,qadeep}`. DEFAULT_SUITE
 # stays the default so public behavior is unchanged; hard/brutal break the ceiling, wide
 # adds the breadth a three-way split (`gama grow`) needs, and graded adds partial credit
 # so a score can move by less than a whole case.
@@ -1079,6 +1149,7 @@ SUITES: dict[str, list[BenchCase]] = {
     "wide": WIDE_SUITE,
     "graded": GRADED_SUITE,
     "steep": STEEP_SUITE,
+    "qadeep": QADEEP_SUITE,
 }
 
 

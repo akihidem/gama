@@ -432,6 +432,23 @@ REFERENCE: dict[str, str] = {
     "steep-tool-sorted": '[{"name": "b", "v": 1}, {"name": "c", "v": 2}, {"name": "a", "v": 3}]',
     "steep-tool-escaped": '{"text": "she said \\"hi\\"", "lines": 2}',
     "steep-tool-checksum": "a=3 b=4 sum=7",
+    # --- qadeep: half exact computation, half recall a program cannot help with -- #
+    "qad-compute-modpow": "1",
+    "qad-compute-digits": "20",
+    "qad-compute-divisorsum": "992",
+    "qad-compute-choose": "792",
+    "qad-compute-count": "14",
+    "qad-compute-negative": "-282",
+    "qad-compute-gcd": "63",
+    "qad-compute-base7": "513",
+    "qad-recall-gold": "Au",
+    "qad-recall-planet": "Mercury",
+    "qad-recall-sides": "6",
+    "qad-recall-continent": "Africa",
+    "qad-recall-opposite": "descend",
+    "qad-recall-water": "100",
+    "qad-recall-language": "Japanese",
+    "qad-recall-shape": "cube",
 }
 
 
