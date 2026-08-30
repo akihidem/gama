@@ -297,11 +297,14 @@ def cmd_grow(args: argparse.Namespace) -> int:
             sys.stderr.write(f"[gama]  gen{row['gen']} {row['label']:<34} "
                              f"search={row['search']['score']}\n")
         elif ev == "generation":
+            gain = row.get("gain_cases")
             sys.stderr.write(
-                f"[gama] gen{row['gen']} challenger={row['challenger']} "
-                f"search {row['champion_search']}->{row['challenger_search']} "
-                f"confirm {row['champion_confirm']}->{row['challenger_confirm']} "
-                f"(delta={row['delta']}) -> {row['reason']}\n")
+                f"[gama] gen{row['gen']} challenger={row.get('challenger', '(none)')} "
+                f"search {row['champion_search']}->{row.get('challenger_search', '-')} "
+                f"confirm {row['champion_confirm']}->{row.get('challenger_confirm', '-')} "
+                + (f"({gain:+} cases of {len(row.get('splits', {}) or []) or ''}) "
+                   if gain is not None else "")
+                + f"(delta={row['delta']}) -> {row['reason']}\n")
         elif ev == "stop":
             sys.stderr.write(f"[gama] stop: {row['reason']}\n")
 
@@ -333,9 +336,11 @@ def cmd_grow(args: argparse.Namespace) -> int:
         n_confirm = len(result["splits"]["confirm"])
         sys.stderr.write(
             f"[gama] the bar was set by RESOLUTION, not noise, in {bound['floor']} of "
-            f"{sum(bound.values())} generations: with {n_confirm} confirm cases nothing smaller "
-            f"than {round(1 / n_confirm, 4)} can be certified. More confirm cases (a wider "
-            "--suites, or --ratio) is the lever; more --repeats is not.\n")
+            f"{sum(bound.values())} generations: on {n_confirm} confirm cases a change has to "
+            "be worth one whole case. Note that adding cases in classes a mutation does not "
+            "touch changes nothing — the floor 1/n and a gain S/n scale together — so the "
+            "lever is more cases IN THE CLASS being changed, not a bigger pool. More "
+            "--repeats does nothing here either.\n")
     elif bound.get("drift", 0):
         sys.stderr.write(
             f"[gama] the bar was set by NOISE in {bound['drift']} of {sum(bound.values())} "

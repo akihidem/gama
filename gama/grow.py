@@ -783,6 +783,11 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
                # 「δ=0.05 だった」しか言わないと、次に何を変えればいいか読み取れない。
                "bound_by": "floor" if margin_floor >= drift else "drift",
                "candidates": len(cands)}
+        # 分数のままだと大きさが読めない。床は「1 問ぶん」なので、**case 相当数**で出す。
+        # ここが効くのは、床 1/n と効果 S/n の比が **S そのもの**で n に依存しない点:
+        # 触っていないクラスの case を足しても比は 1 ミリも動かない。増やして意味があるのは
+        # **変異が作用するクラスの case** だけで、判定は結局「丸 1 問ぶん動いたか」に尽きる。
+        n_confirm = len(splits["confirm"])
         ok, reason = False, "no-additive-candidate"
         if additive:
             # 同点はコスト(=実測レイテンシ)の低い方、それも同じならラベル順。決定的に選ぶ。
@@ -796,7 +801,9 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
             row.update({"challenger": challenger.label, "kind": challenger.kind,
                         "challenger_hash": spec_hash(challenger.spec),
                         "challenger_search": chal_search.score,
-                        "challenger_confirm": chal_confirm.score})
+                        "challenger_confirm": chal_confirm.score,
+                        "gain_cases": round(
+                            (chal_confirm.score - champ_confirm_now.score) * n_confirm, 2)})
         row.update({"verdict": "promote" if ok else "reject", "reason": reason})
         if ok:
             champion, champ_search, champ_confirm = challenger.spec, chal_search, chal_confirm

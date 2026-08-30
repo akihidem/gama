@@ -270,6 +270,13 @@ forty; a split coarser than that reports it as zero or as harm depending on the 
 is the third conclusion this project has had to retract, and all three retractions came from
 the same place: a confident reading of one split.
 
+One correction to the obvious lesson, because the arithmetic bites: **"use more cases" is not a
+general lever.** The floor is `1/n` and a gain is `S/n`, where `S` is the case-equivalents the
+change actually improves, so the two scale together and the ratio is just `S`. Adding cases in
+classes a mutation never touches moves nothing. What has to be true is `S >= 1` — the change is
+worth *one whole case* — so the lever is more cases **in the class being changed**, and the
+loop now reports every gain in cases rather than in fractions.
+
 Swapping the model pool entirely (`gemma4:e2b` + `qwen2.5:7b`, growing from bare) promoted
 nothing in five generations, because that seed already scored 0.959 on search — **the suite is
 saturated for it**. That run cannot say whether the structures transfer, and it says something

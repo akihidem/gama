@@ -709,6 +709,20 @@ class TestGrowLoop(ScriptedCase):
         # a deterministic backend has no drift, so the floor is what binds
         self.assertEqual(res["bound_by"]["drift"], 0, res["bound_by"])
 
+    def test_the_gain_is_reported_in_whole_cases(self):
+        # The floor is one case, so the only interpretable unit for a gain is cases. It also
+        # corrects a mistake this project published: "more confirm cases" is NOT a general
+        # lever, because the floor 1/n and a gain S/n scale together — the ratio is S, the
+        # case-equivalents actually improved, and it does not move when you add cases the
+        # mutation never touches.
+        Scripted.WINS = {"a": set(), "b": {"qa1", "qa2", "qa3", "qa4"}}
+        res = self._grow({"a": _lane("a"), "b": _lane("b")}, generations=1, width=2)
+        gen0 = res["history"][0]
+        self.assertIn("gain_cases", gen0)
+        n_confirm = len(res["splits"]["confirm"])
+        expected = round((gen0["challenger_confirm"] - gen0["champion_confirm"]) * n_confirm, 2)
+        self.assertEqual(gen0["gain_cases"], expected)
+
     def test_patience_stops_a_loop_that_is_going_nowhere(self):
         Scripted.WINS = {"a": set(), "b": set()}
         res = self._grow({"a": _lane("a"), "b": _lane("b")}, generations=10, width=6, patience=2)
