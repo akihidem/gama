@@ -23,6 +23,45 @@ from abc import ABC, abstractmethod
 from .models import ModelTier
 
 
+# --------------------------------------------------------------------------- #
+# 供給されたモデルの同一性 — 「同じ相手を測り続けている」ことを証拠で言う
+# --------------------------------------------------------------------------- #
+# 実害(2026-08-30, run S): 走行の途中で共有 GPU の llama-server が別モデルに載せ替えられた。
+# あの時は 503 が返ったので error_rate の床に引っかかったが、**200 を返しながら中身だけ
+# 入れ替わる**なら何も鳴らない。世代 0 と世代 5 が別モデルの比較になっていても、台帳には
+# 一続きの改善として残る。OpenAI 互換のレスポンスは毎回 `model` を返すので、追加の呼び出し
+# ゼロで「要求した名前が同じ実体に解決され続けたか」を突き合わせられる。
+#
+# 集合の一致では見ない: 変異が新しいレーンを足せば新しいモデル名が正当に増える。見るのは
+# **要求名 -> 供給名の対応が途中で変わったか**だけで、これなら偽陽性が出ない。
+_SERVED: dict[str, set] = {}
+
+
+def note_served(requested, served) -> None:
+    """1 回の応答が名乗った実体を記録する。live backend から呼ばれる(測定の副産物)。"""
+    if not requested or not served:
+        return
+    _SERVED.setdefault(str(requested), set()).add(str(served))
+
+
+def served_conflicts() -> dict:
+    """同じ要求先が複数の実体に解決された箇所。空なら「相手は変わっていない」。"""
+    return {k: sorted(v) for k, v in _SERVED.items() if len(v) > 1}
+
+
+def served_map() -> dict:
+    """観測した 要求先 -> 実体 の対応。走行がどのファイルを測ったかの出所として台帳に残す。
+
+    「Kimi-48B で測った」だけでは再現できない(量子化違いは別物)。応答が名乗った実体を
+    そのまま控えることで、recipe の数字がどの重みのものかが後から言える。
+    """
+    return {k: sorted(v) for k, v in _SERVED.items()}
+
+
+def reset_served() -> None:
+    _SERVED.clear()
+
+
 class ModelBackend(ABC):
     """Minimal completion interface. Tier lets an adapter pick a concrete model."""
 
@@ -166,6 +205,9 @@ class OllamaBackend(ModelBackend):
              "total_tokens": (pt or 0) + (ct or 0)}
             if (pt is not None or ct is not None) else None
         )
+        # ollama も応答に model を載せる。tag 名しか名乗らないので ssh-openai ほど強い証拠には
+        # ならないが(同じ tag が別の重みに貼り替わると見えない)、記録の口は揃えておく。
+        note_served(f"{self.host}/{model}", data.get("model"))
         return data.get("response", "")
 
 
@@ -239,6 +281,8 @@ class SshOpenAIBackend(ModelBackend):
             pt, ct = usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0)
             self.last_usage = {"prompt_tokens": pt, "completion_tokens": ct,
                                "total_tokens": usage.get("total_tokens", pt + ct)}
+        # 応答が名乗った実体を控える。追加の呼び出しはしない(この 1 行が同一性の証拠)。
+        note_served(f"{self.ssh_host}:{int(self.port)}/{model}", data.get("model"))
         msg = data["choices"][0]["message"]
         # Reasoning models put the answer in `content`; fall back to `reasoning`
         # (or empty) so a thinking-only / truncated reply doesn't crash the call.

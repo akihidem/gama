@@ -27,8 +27,10 @@ from gama.backends import ModelBackend
 from gama.benchmark import BenchCase
 from gama.cli import build_parser, main
 from gama.config import build_backend, system_from_config
+from gama.backends import note_served, reset_served, served_conflicts, served_map
 from gama.grow import (
     MeasurementFailure,
+    _guard_measurement,
     Measurement,
     paired_gain,
     sign_test,
@@ -1019,3 +1021,51 @@ class TestPairedEvidenceSurvivesResume(ScriptedCase):
             self.assertGreater(sum(counts), 0,
                                "no shared cases after resume: the champion's per-case scores "
                                "were restored from a checkpoint instead of re-measured")
+
+
+class TestBackendIdentity(unittest.TestCase):
+    """run S は載せ替えが 503 を返したから捕まった。200 を返しながら中身だけ入れ替わる
+    載せ替えは何も鳴らさず、世代 0 と世代 5 が別モデルの比較になる。"""
+
+    def setUp(self):
+        reset_served()
+
+    def tearDown(self):
+        reset_served()
+
+    def test_a_stable_backend_reports_no_conflict(self):
+        for _ in range(3):
+            note_served("aws:8000/kimi", "/models/kimi-48b-IQ2_M.gguf")
+        self.assertEqual(served_conflicts(), {})
+
+    def test_a_swapped_backend_is_detected(self):
+        note_served("aws:8000/kimi", "/models/kimi-48b-IQ2_M.gguf")
+        note_served("aws:8000/kimi", "/models/qwen-7b.gguf")
+        self.assertIn("aws:8000/kimi", served_conflicts())
+
+    def test_the_same_model_name_on_two_hosts_is_not_a_conflict(self):
+        # 鍵が要求名だけだと、同じ名前を別ホストで出しているだけで偽陽性になる
+        note_served("hostA:8000/kimi", "/models/kimi.gguf")
+        note_served("hostB:8000/kimi", "/models/kimi-other.gguf")
+        self.assertEqual(served_conflicts(), {})
+
+    def test_a_new_lane_adding_a_model_is_not_a_conflict(self):
+        # 変異が新しいレーンを足せば新しいモデルが正当に増える。集合の一致で見てはいけない
+        note_served("aws:8000/kimi", "/models/kimi.gguf")
+        note_served("aws:8000/coder", "/models/coder.gguf")
+        self.assertEqual(served_conflicts(), {})
+
+    def test_the_guard_refuses_to_decide_after_a_swap(self):
+        m = Measurement(0.9, 0.9, 1.0, 10, 10)
+        _guard_measurement(m, "champion")           # 平常時は通る
+        note_served("aws:8000/kimi", "/models/a.gguf")
+        note_served("aws:8000/kimi", "/models/b.gguf")
+        with self.assertRaises(MeasurementFailure) as cm:
+            _guard_measurement(m, "champion on confirm")
+        self.assertIn("changed under the run", str(cm.exception))
+
+    def test_a_backend_that_cannot_identify_itself_records_nothing(self):
+        # echo/null は名乗らない。ここで嘘の保証を作らないこと(空 = 確認できなかった)
+        note_served("x", None)
+        note_served(None, "y")
+        self.assertEqual(served_map(), {})

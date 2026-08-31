@@ -47,6 +47,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from .benchmark import SUITES, BenchCase, run_bench, summarize
+from .backends import reset_served, served_conflicts, served_map
 from .config import build_backend
 from .models import ModelTier
 
@@ -314,6 +315,8 @@ def propose(champion: dict, pool: dict[str, dict], classes: list[str],
         (同じ走の gen1 で実際に消えた)。
     """
     validate_pool(pool)
+    # 前の走行が観測した実体を持ち越さない(同一プロセスで 2 回 grow すると混ざる)。
+    reset_served()
     exclude = exclude or set()
     lanes = sorted(pool)
     ordered_classes = sorted(classes)
@@ -733,6 +736,16 @@ def _guard_measurement(m: "Measurement", what: str) -> None:
             f"{what}: {m.errors} of {m.n} calls raised ({m.error_rate:.0%}). That is a broken "
             "measurement, not a low score — refusing to decide on it. Fix the backend and "
             "--resume from this ledger.")
+    # 相手が途中で入れ替わっていないか。run S は載せ替えが 503 を返したので error_rate の床に
+    # 引っかかったが、200 を返しながら中身が変わる載せ替えは何も鳴らさず、世代 0 と世代 5 が
+    # 別モデルの比較になる。要求名 -> 供給名の対応が割れた時点で走行を止める。
+    conflicts = served_conflicts()
+    if conflicts:
+        detail = "; ".join(f"{k} served as {' and '.join(v)}" for k, v in conflicts.items())
+        raise MeasurementFailure(
+            f"{what}: the backend changed under the run ({detail}). Generations measured before "
+            "and after that point are not comparable, so this run cannot be decided. Restart the "
+            "server on the intended model and --resume from this ledger.")
 
 
 def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
@@ -1023,6 +1036,9 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
                                         else "explicit",
                    "ensemble_strategy": ensemble_strategy,
                    "max_paired_p": max_paired_p, "code": code_stamp()},
+        # この走行が実際に測った相手。空なら同一性を名乗れない backend(echo 等)で、
+        # 「確認できなかった」ことがそのまま読める(黙って保証したことにしない)。
+        "served": served_map(),
         "history": history, "archive_size": len(archive),
         # 昇格した手の対応のある証拠。平均差だけ見ていると「confirm では伸びたが sealed では
         # しぼんだ/反転した」が説明できない。弱い証拠のまま通った手をここで名指しする。
@@ -1066,6 +1082,15 @@ def write_recipe(result: dict, directory, name: Optional[str] = None,
     lines = [
         f"# {name} (grown by `gama grow`)", "",
         f"Hardware: {hardware}", "",
+    ]
+    # 「Kimi-48B で測った」だけでは再現できない(量子化違いは別の相手)。応答が名乗った実体を
+    # そのまま載せる。名乗らない backend なら、その旨を書いて保証を作らない。
+    served = result.get("served") or {}
+    if served:
+        lines.append("Measured against (as reported by the server on every call):")
+        lines += [f"- `{k}` → `{', '.join(v)}`" for k, v in sorted(served.items())]
+        lines.append("")
+    lines += [
         "| | seed (no structure) | grown champion |",
         "|---|---|---|",
     ]
