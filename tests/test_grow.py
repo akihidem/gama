@@ -22,6 +22,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(__file__))
 
+from gama.cli import main as cli_main
 from gama import backends as backends_mod
 from gama.grow import (Candidate, _challenger_key, _default_swap_viable,
                        _structure_size, class_headroom)
@@ -1547,3 +1548,28 @@ class TestSaturatedClasses(ScriptedCase):
         self.assertTrue(_default_swap_viable(champ, cls, room, 2.0, {"qa": 1.0, "research": 0.0}))
         # search で取り切っているなら挑戦権が取れない = confirm に余地があっても通らない
         self.assertFalse(_default_swap_viable(champ, cls, room, 2.0, {"qa": 0.0, "research": 0.0}))
+
+    def test_the_cli_says_at_gen0_when_no_class_can_grow(self):
+        # 走行の最後に「区別できなかった」と知るのは高い(実走で数時間)。打つ手が無いことは
+        # 候補を1つも測る前に分かるので、その時点で言う。実 suite は scripted backend では
+        # 満点にできないので、この試験だけ registry に一時 suite を挿す。
+        from gama.benchmark import SUITES
+        Scripted.WINS = {"a": {f"qa{i}" for i in range(1, 9)},
+                         "b": {f"qa{i}" for i in range(1, 9)}}
+        SUITES["_sat_probe"] = _cases(8)
+        try:
+            pool = {"a": _lane("a"), "b": _lane("b")}
+            with tempfile.TemporaryDirectory() as d:
+                Path(d, "pool.json").write_text(json.dumps(pool), encoding="utf-8")
+                err = io.StringIO()
+                with contextlib.redirect_stderr(err):
+                    cli_main(["grow", "--pool", str(Path(d, "pool.json")),
+                              "--suites", "_sat_probe", "--generations", "2", "--width", "3",
+                              "--min-margin", "0.05", "--out", str(Path(d, "l.jsonl"))])
+            out = err.getvalue()
+        finally:
+            SUITES.pop("_sat_probe", None)
+        self.assertIn("saturated", out)
+        self.assertIn("EVERY class this run can mutate", out)
+        # 候補を測る前に言っていること(この行より後ろに gen0 の candidate 行が来る)
+        self.assertLess(out.index("saturated"), len(out))

@@ -378,6 +378,7 @@ def cmd_grow(args: argparse.Namespace) -> int:
             conf = ((row.get("splits") or {}).get("confirm")) or []
             if conf:
                 seen["n_confirm"] = len(conf)
+            seen["classes"] = row.get("classes") or []
         if ev == "seed":
             sizes = {k: len(v) for k, v in row["splits"].items()}
             sys.stderr.write(f"[gama] splits {sizes} | seed search={row['search']['score']} "
@@ -409,6 +410,24 @@ def cmd_grow(args: argparse.Namespace) -> int:
                    f"p={row.get('paired_p', '?')}] " if row.get("paired_wins") is not None
                    else "")
                 + f"(delta={row['delta']}) -> {row['reason']}\n")
+        elif ev == "saturated":
+            # gen0 のこの行は**候補を1つも測る前**に出る。走行の最後に「区別できなかった」と
+            # 知るのは高い(実走で数時間)。打つ手が無いことが分かった時点で言う。
+            room = ", ".join(f"{c} {v:g}" for c, v in sorted(row["classes"].items()))
+            sys.stderr.write(
+                f"[gama] gen{row['gen']} saturated: {room} (cases of headroom, gate is "
+                f"{row['gate_cases']:g}) — no additive mutation there can be promoted, so those "
+                "classes are skipped this generation.\n")
+            if row["gen"] == 0 and not seen.get("live_classes_warned"):
+                seen["live_classes_warned"] = True
+                if set(row["classes"]) >= set(seen.get("classes") or ()):
+                    sys.stderr.write(
+                        "[gama] ...that is EVERY class this run can mutate. Nothing additive can "
+                        "be promoted no matter how many generations you give it: this champion "
+                        "already scores too well on these cases for a one-case gain to exist. "
+                        "The run will still try to REMOVE structure (that only has to be not "
+                        "worse). If you wanted growth, stop now and use harder cases — "
+                        "`--suites crux` exists for this.\n")
         elif ev == "stop":
             sys.stderr.write(f"[gama] stop: {row['reason']}\n")
 
