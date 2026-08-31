@@ -992,3 +992,30 @@ class TestPairedEvidenceHardening(unittest.TestCase):
         chal = Measurement(0.5, 0.5, 1.0, 2, 2, per_case={"ok": 1.0, "boom": 0.0},
                            error_cases=frozenset({"boom"}))
         self.assertEqual(paired_gain(champ, chal), (0, 0, 1))
+
+
+class TestPairedEvidenceSurvivesResume(ScriptedCase):
+    """codex は「resume 後も champ_confirm_now を測り直すから壊れない」と読んだ。実際に
+    その通りだが、根拠は「毎世代 unconditional に測っている」1 行だけで、あとで測定を節約
+    しようとキャッシュした瞬間に**resume した走行でだけ**証拠が消える。しかも p=1.0 が
+    出るだけなので赤くならず、--max-paired-p を有効にした人の走行が黙って全却下になる。
+    推論でなく実測で固定する。"""
+
+    def test_resumed_run_still_produces_paired_counts(self):
+        Scripted.WINS = {"a": set(), "b": {"qa1", "qa2", "qa4"}}
+        pool = {"a": _lane("a"), "b": _lane("b")}
+        with tempfile.TemporaryDirectory() as d:
+            led = Path(d) / "run.jsonl"
+            grow(pool, cases=_cases(4), generations=1, width=2, patience=5,
+                 ledger_path=str(led), min_margin=0.05)
+            second = grow(pool, cases=_cases(4), generations=3, width=2, patience=5,
+                          resume_from=str(led), min_margin=0.05)
+        challenged = [h for h in second["history"] if h.get("challenger")]
+        self.assertTrue(challenged, "resumed run never challenged anything")
+        for h in challenged:
+            counts = (h.get("paired_wins"), h.get("paired_losses"), h.get("paired_ties"))
+            self.assertNotIn(None, counts, "paired evidence missing after resume")
+            # 共有 case が 1 つも見つからない = per_case が復元されていない証拠
+            self.assertGreater(sum(counts), 0,
+                               "no shared cases after resume: the champion's per-case scores "
+                               "were restored from a checkpoint instead of re-measured")
