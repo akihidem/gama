@@ -112,6 +112,62 @@ def cmd_run(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_calib(args: argparse.Namespace) -> int:
+    """Calibrate one verifier against one backend on a suite (v3a/T8): confusion counts,
+    I(verdict; correct) in bits, and the achievable selection ceiling. With --observed K,
+    run the budget check: a pipeline reporting more V-driven correct picks than the ceiling
+    is a measurement bug (DPI), not a discovery."""
+    from .calib import budget_check, calibrate_verifier
+    from .meshflow import resolve_verifier
+
+    backends, unavailable = _build_backend_map([args.backend], args.config)
+    be = backends.get(args.backend)
+    if be is None:
+        sys.stderr.write(f"[gama] backend {args.backend!r} not usable\n")
+        return 2
+    if unavailable:
+        sys.stderr.write(f"[gama] WARNING: {args.backend} reports unavailable; scores will be 0\n")
+    try:
+        verify = resolve_verifier(args.verify)
+    except (TypeError, ValueError) as e:
+        sys.stderr.write(f"[gama] {e}\n")
+        return 2
+    if verify is None:
+        sys.stderr.write("[gama] calib needs a verifier (name or callable); got none\n")
+        return 2
+    if not (0.0 < args.pass_score <= 1.0):
+        # verify のスコアは [0,1] に clamp される（meshflow._normalize_score）。範囲外の
+        # 閾値は「常に pass / 決して pass しない」の退化で、較正としては入力ミス。
+        sys.stderr.write(f"[gama] --pass-score must be in (0, 1]; got {args.pass_score}\n")
+        return 2
+    sys.stderr.write("[gama] NOTE: code cases EXECUTE model-generated Python "
+                     "(sandboxed subprocess with timeout). Only run on trusted backends.\n")
+    res = calibrate_verifier(be, verify, SUITES[args.suite], ModelTier(args.tier),
+                             pass_score=args.pass_score)
+    if args.observed is not None:
+        # --observed-n が無い呼び出しでは same-suite 照合が自己充足になる（calib 自身の
+        # n を渡すので必ず一致する）。その場合は「同一 suite は呼び手の申告」だと結果に
+        # 焼き込む。申告でなく検算にしたければ --observed-n で観測側の件数を渡す。
+        obs_n = args.observed_n if args.observed_n is not None else res["confusion"]["n"]
+        try:
+            res["budget"] = budget_check(args.observed, obs_n, res["confusion"])
+        except ValueError as e:
+            sys.stderr.write(f"[gama] {e}\n")
+            return 2
+        if args.observed_n is None:
+            res["budget"]["same_suite"] = "claimed (pass --observed-n to verify the count)"
+    print(json.dumps(res, ensure_ascii=False, indent=2))
+    cm, sel = res["confusion"], res["selection"]
+    line = (f"[gama] verify calib({args.verify}@{args.backend}): I={res['i_bits']} bits  "
+            f"confusion tp={cm['tp']} fp={cm['fp']} fn={cm['fn']} tn={cm['tn']}  "
+            f"selection ceiling {sel['ceiling_k']}/{sel['n']} "
+            f"(no-verdict base {sel['base_k']}, headroom {sel['headroom_k']})")
+    if "budget" in res:
+        line += f"  -> {res['budget']['verdict']}"
+    sys.stderr.write(line + "\n")
+    return 0
+
+
 def cmd_recipes(args: argparse.Namespace) -> int:
     root = Path(args.dir)
     if not root.exists():
@@ -470,6 +526,30 @@ def build_parser() -> argparse.ArgumentParser:
     pmesh.add_argument("--config", default=None,
                        help="per-backend kwargs + composites (ensemble/gama/meshflow)")
     pmesh.set_defaults(func=cmd_mesh)
+
+    pc = sub.add_parser(
+        "calib", help="how much does a verifier KNOW? confusion counts + I(verdict;correct) "
+                      "bits + the achievable selection ceiling (v3a/T8)")
+    pc.add_argument("--backend", default="echo",
+                    help="single backend whose outputs the verifier judges ('echo' = free smoke)")
+    pc.add_argument("--verify", required=True,
+                    help="verifier name (built-in, e.g. code_runs / nonempty)")
+    pc.add_argument("--suite", default="hard",
+                    choices=["default", "hard", "brutal", "wide", "graded", "steep",
+                             "qadeep", "researchdeep"])
+    pc.add_argument("--pass-score", type=float, default=1.0,
+                    help="verify score >= this counts as pass (same rule as the meshflow gate)")
+    pc.add_argument("--tier", default="large", choices=["small", "medium", "large"])
+    pc.add_argument("--observed", type=int, default=None,
+                    help="observed correct picks by any V-based accept/reject policy "
+                         "(count, SAME suite+tier) for the DPI budget check: observed > "
+                         "ceiling means the MEASUREMENT is wrong")
+    pc.add_argument("--observed-n", type=int, default=None,
+                    help="case count of the observed run; lets the check verify the "
+                         "same-suite premise instead of taking it on faith")
+    pc.add_argument("--config", default=None,
+                    help="per-backend kwargs + composites (ensemble/gama/meshflow)")
+    pc.set_defaults(func=cmd_calib)
 
     pg = sub.add_parser(
         "grow", help="self-improvement loop: mutate the config, measure, keep only "
