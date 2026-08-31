@@ -307,6 +307,39 @@ def lru(capacity, ops):
     return out
 """
 
+_EDITDIST = '''
+def edit_distance(a, b):
+    dp = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        prev, dp[0] = dp[0], i
+        for j, cb in enumerate(b, 1):
+            prev, dp[j] = dp[j], min(dp[j] + 1, dp[j - 1] + 1, prev + (ca != cb))
+    return dp[-1]
+'''
+_LATTICE = '''
+def lattice_paths(w, h, blocked):
+    grid = [[0] * (w + 1) for _ in range(h + 1)]
+    for r in range(h + 1):
+        for c in range(w + 1):
+            if (r, c) in blocked:
+                continue
+            if r == 0 and c == 0:
+                grid[r][c] = 1
+                continue
+            if r:
+                grid[r][c] += grid[r - 1][c]
+            if c:
+                grid[r][c] += grid[r][c - 1]
+    return grid[h][w]
+'''
+_JOSEPHUS = '''
+def josephus(n, k):
+    r = 0
+    for i in range(2, n + 1):
+        r = (r + k) % i
+    return r + 1
+'''
+
 REFERENCE: dict[str, str] = {
     # --- default ---------------------------------------------------------- #
     "code-palindrome": _PALINDROME,
@@ -466,6 +499,24 @@ REFERENCE: dict[str, str] = {
     "rd-reason-category": "cello",
     "rd-reason-negation": "no",
     "rd-reason-cause": "bus",
+    # --- crux: 飽和した suite への答え(答えはすべて計算して確かめた値) --------- #
+    "crux-qa-modpow": "286530",
+    "crux-qa-digitsum": "1366",
+    "crux-qa-nthprime": "104743",
+    "crux-qa-multiples": "233168",
+    "crux-research-derange": "176214841",
+    "crux-research-collatz": "77031",
+    "crux-research-josephus": "31",
+    "crux-research-amicable": "31626",
+    "crux-int-sundays": "171",
+    "crux-int-daycount": "36524",
+    "crux-int-base": "3530",
+    "crux-int-dijkstra": "20",
+    "crux-int-transform": "brown-jumps-lazy-over-quick",
+    "crux-code-editdist": _EDITDIST,
+    "crux-code-paths": _LATTICE,
+    "crux-code-josephus": _JOSEPHUS,
+    "crux-content-triples": "784",
 }
 
 

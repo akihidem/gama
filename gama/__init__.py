@@ -16,6 +16,7 @@ from .backends import (
 )
 from .benchmark import (
     BRUTAL_SUITE,
+    CRUX_SUITE,
     DEFAULT_SUITE,
     GRADED_SUITE,
     HARD_SUITE,
@@ -95,7 +96,7 @@ __all__ = [
     "trinity_from_config", "abmcts_from_config", "system_from_config",
     "load_config",
     "run_bench", "summarize", "propose_routing_table", "BenchCase",
-    "DEFAULT_SUITE", "HARD_SUITE", "BRUTAL_SUITE", "WIDE_SUITE", "GRADED_SUITE", "STEEP_SUITE", "QADEEP_SUITE", "RESEARCHDEEP_SUITE", "SUITES",
+    "DEFAULT_SUITE", "HARD_SUITE", "BRUTAL_SUITE", "CRUX_SUITE", "WIDE_SUITE", "GRADED_SUITE", "STEEP_SUITE", "QADEEP_SUITE", "RESEARCHDEEP_SUITE", "SUITES",
     "score_output",
     "escalation_cost", "p_star", "dominates", "ladder", "market_over_records", "analyze",
     "mesh_gain", "mesh_correctness", "ignites", "failure_correlation", "mesh_analyze",

@@ -1420,6 +1420,98 @@ RESEARCHDEEP_SUITE: list[BenchCase] = [
 # stays the default so public behavior is unchanged; hard/brutal break the ceiling, wide
 # adds the breadth a three-way split (`gama grow`) needs, and graded adds partial credit
 # so a score can move by less than a whole case.
+
+# --------------------------------------------------------------------------- #
+# crux — 飽和した suite では構造の差が測れない、という実測への答え
+# --------------------------------------------------------------------------- #
+# run U の confirm 56 問の伸びしろは合計 7.48 問しかなく(46/56 が満点)、integration に至っては
+# 8/8 で 0.00 だった。昇格には 1 問ぶんの価値が要るので、この上でどんな構造を試しても
+# sealed が種と区別できない —— 6 走連続の NOT SEPARABLE の機構がこれ。
+#
+# だから「問題を増やす」のではなく**難しくする**。狙いは 48B が単体では落とすが、コードを
+# 実行できれば取れる帯で、そこなら `tool` レーンや段階委譲の差が問数として現れる。
+# 答えはすべて実際に計算して確かめてある(暗記でなく算出)。
+CRUX_SUITE: list[BenchCase] = [
+    # --- qa: 桁が頭に収まらない厳密計算 -------------------------------------- #
+    BenchCase("crux-qa-modpow", "qa",
+              "Compute 7^333 mod 999983. Reply with ONLY the integer.", _eq_int(286530)),
+    BenchCase("crux-qa-digitsum", "qa",
+              "What is the sum of the decimal digits of 2^1000? Reply with ONLY the integer.",
+              _eq_int(1366)),
+    BenchCase("crux-qa-nthprime", "qa",
+              "What is the 10001st prime number? Reply with ONLY the integer.",
+              _eq_int(104743)),
+    BenchCase("crux-qa-multiples", "qa",
+              "What is the sum of all natural numbers below 1000 that are multiples of 3 or 5? "
+              "Reply with ONLY the integer.", _eq_int(233168)),
+
+    # --- research: 多段だが答えは 1 つ ---------------------------------------- #
+    BenchCase("crux-research-derange", "research",
+              "In how many ways can 12 distinct letters be placed into 12 distinct envelopes so "
+              "that NO letter goes into its own envelope? Reply with ONLY the integer.",
+              _eq_int(176214841)),
+    BenchCase("crux-research-collatz", "research",
+              "Which starting number below 100000 produces the longest Collatz chain (n -> n/2 "
+              "if even, 3n+1 if odd, ending at 1)? Reply with ONLY the starting number.",
+              _eq_int(77031)),
+    BenchCase("crux-research-josephus", "research",
+              "41 people stand in a circle numbered 1 to 41. Counting around the circle every "
+              "3rd person is removed, starting the count at person 1 (so person 3 goes first). "
+              "Which position is the last one remaining? Reply with ONLY the integer.",
+              _eq_int(31)),
+    BenchCase("crux-research-amicable", "research",
+              "The sum of the proper divisors of a is b, and of b is a, with a != b; such a and "
+              "b are amicable. What is the sum of all amicable numbers under 10000? Reply with "
+              "ONLY the integer.", _eq_int(31626)),
+
+    # --- integration: 8/8 で伸びしろ 0 だったクラス。制約を重ねて厳密出力を要求 --- #
+    BenchCase("crux-int-sundays", "integration",
+              "How many Sundays fell on the first of the month between 1 Jan 1901 and 31 Dec "
+              "2000 inclusive? Reply with ONLY the integer.", _eq_int(171)),
+    BenchCase("crux-int-daycount", "integration",
+              "How many days are there from 1900-01-01 to 2000-01-01 inclusive of the start and "
+              "exclusive of the end? Reply with ONLY the integer.", _eq_int(36524)),
+    BenchCase("crux-int-base", "integration",
+              "Interpret the string zz as a base-36 number, then write that value in base 7. "
+              "Reply with ONLY the base-7 digits.", _eq_nospace("3530")),
+    BenchCase("crux-int-dijkstra", "integration",
+              "A directed weighted graph has edges A->B 4, A->C 2, B->C 5, B->D 10, C->E 3, "
+              "E->D 4, D->F 11. What is the length of the shortest path from A to F? Reply "
+              "with ONLY the integer.", _eq_int(20)),
+    BenchCase("crux-int-transform", "integration",
+              "Take the sentence: The quick brown Fox jumps over the lazy Dog. Keep only the "
+              "words longer than 3 characters, lowercase them, remove duplicates, sort them "
+              "alphabetically, and join them with a single hyphen. Reply with ONLY the "
+              "resulting string.", _eq_nospace("brown-jumps-lazy-over-quick")),
+
+    # --- code_implementation: 実装が要る(暗記では出ない) ---------------------- #
+    BenchCase("crux-code-editdist", "code_implementation",
+              "Write a Python function `edit_distance(a, b)` returning the Levenshtein distance "
+              "between two strings. Return ONLY the function definition, no prose.",
+              _func("edit_distance", [(("kitten", "sitting"), 3),
+                                      (("intention", "execution"), 5),
+                                      (("", "abc"), 3), (("same", "same"), 0)])),
+    BenchCase("crux-code-paths", "code_implementation",
+              "Write a Python function `lattice_paths(w, h, blocked)` returning the number of "
+              "monotone lattice paths from (0,0) to (h,w) moving only down or right, where "
+              "`blocked` is a set of (row, col) tuples that may not be entered. Return ONLY the "
+              "function definition, no prose.",
+              _func("lattice_paths", [((10, 10, set()), 184756),
+                                      ((10, 10, {(5, 5)}), 121252),
+                                      ((1, 1, set()), 2)])),
+    BenchCase("crux-code-josephus", "code_implementation",
+              "Write a Python function `josephus(n, k)` returning the 1-indexed position of the "
+              "survivor when every k-th person is removed from a circle of n people. Return "
+              "ONLY the function definition, no prose.",
+              _func("josephus", [((41, 3), 31), ((7, 3), 4), ((1, 5), 1)])),
+
+    # --- content: すでに伸びしろのあるクラス。厳密な形式で上積み ---------------- #
+    BenchCase("crux-content-triples", "content",
+              "How many ordered triples of integers (a, b, c) satisfy a + b + c = 100 with "
+              "0 < a < b < c? Reply with ONLY the integer.", _eq_int(784)),
+]
+
+
 SUITES: dict[str, list[BenchCase]] = {
     "default": DEFAULT_SUITE,
     "hard": HARD_SUITE,
@@ -1427,6 +1519,7 @@ SUITES: dict[str, list[BenchCase]] = {
     "wide": WIDE_SUITE,
     "graded": GRADED_SUITE,
     "steep": STEEP_SUITE,
+    "crux": CRUX_SUITE,
     "qadeep": QADEEP_SUITE,
     "researchdeep": RESEARCHDEEP_SUITE,
 }
