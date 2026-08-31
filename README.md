@@ -320,6 +320,74 @@ the best-known change was never proposed because a narrow search width parked it
 candidate — absence in a ledger reads exactly like a verdict, which is the argument for keeping
 one.
 
+#### What the sealed split says about the run itself
+
+Every gate above decides on `confirm`. `confirm` is also selected against in *every* generation,
+so it reads high for the same reason `search` does — one level further in. The `sealed` split is
+opened once, after the last generation, and feeds no decision, which makes it the only thing
+entitled to judge the run as a whole. Across the runs where the loop promoted something:
+
+| run | confirm says | sealed says |
+|---|---|---|
+| Q | +6.25% | +1.65% |
+| R | +8.85% | +1.39% |
+| T | +0.45% | **−1.79%** |
+
+Four to six times overstated, and at small gains the sign flips. Run T shipped a champion,
+reported `promotions: 1`, and its held-out cases said the champion was *worse* than the seed —
+the number was in the ledger and nothing looked at it. A run now ends with a three-valued
+verdict banded by sealed's own resolution of one case: **improved**, **regressed**, or **not
+separable**. Refusing to round "cannot tell" up to "improved" is the whole point, and it changes
+what this repo can claim: of the seven completed runs, **six come back NOT SEPARABLE**. Only the
+WSL/`llama3.2:3b` run clears the band (0.6375 → 0.8542 on 20 sealed cases, +4.33).
+
+So the honest headline is narrower than "the loop grows better combinations". On a small model
+with a saturated-nothing suite it demonstrably did. On a 48B, seven runs of promotions have not
+produced a champion its held-out cases can tell apart from where it started.
+
+#### Where the headroom actually is
+
+That result has a measurable cause, and it is not the gates. Counting the score still unearned
+in each class on one run's 56 confirm cases:
+
+| class | cases | score | headroom (cases left to win) |
+|---|---|---|---|
+| integration | 8 | 1.000 | **0.00** |
+| code_implementation | 8 | 0.938 | 0.50 |
+| qa | 16 | 0.922 | 1.25 |
+| content | 8 | 0.658 | 2.73 |
+| research | 16 | 0.812 | 3.00 |
+| **total** | **56** | **0.866** | **7.48** |
+
+Forty-six of the 56 cases are already perfect. A promotion has to be worth one whole case, so
+there are at most seven promotions' worth of room in the entire suite, and any single lane
+change moves one to three cases — inside the sealed split's resolution. That is the mechanism
+behind six NOT SEPARABLE verdicts, and it means **the lever is harder cases, not more of them**.
+
+It also gives the loop a proof rather than a heuristic. An additive lane mutation only touches
+cases of its own class, so a class with less headroom than the gate cannot produce a promotable
+gain whatever you try there — and `integration` at 8/8 was being handed real GPU time anyway.
+Those are skipped now. Shrink mutations are *not* skipped there: the gates are asymmetric
+(additions must be better, removals need only be not worse), so a saturated class is the best
+place to show a structure is buying nothing, not a place to stop looking.
+
+#### Two things the loop was doing wrong and could not see
+
+**It was not deterministic.** Among candidates tied on `search`, the challenger was picked by
+measured latency — wall clock, which moves with someone else's load on a shared box. Two runs
+over identical inputs could take different paths. The determinism test had existed all along and
+passed every time anyone ran it; it fails 4 times in 80. Ties break on structural size now, which
+is a pure function of the spec and is the thing actually generating the extra calls.
+
+**It assumed the backend stayed the same.** One run was decided against a server that its owner
+restarted onto a different model mid-run; it was caught only because the swap returned 503s and
+tripped the error-rate guard. A swap that keeps returning 200s would have compared generation 0
+and generation 5 across two different models and reported one smooth improvement. Responses
+already name the model they came from, so the loop now checks that each destination keeps
+resolving to the same weights, at zero extra calls, and records what it measured into the recipe
+— "Kimi-48B" was never enough to reproduce a number when a different quantisation is a different
+model.
+
 ## Recipes — grow it together 🌱
 `recipes/` is a community library: each recipe is a `config.json` (a combination) +
 `recipe.md` (the models, the hardware, the `gama bench` numbers). Found a small-model combo
@@ -342,6 +410,13 @@ gama run "compute 47*53+89*17" --config recipes/mac-studio-mlx/config.json --tas
   measure the harness, not the model.
 - The `tool` and code benchmark cases **execute model-generated Python** — only run on
   trusted backends (opt-in, like a sandbox).
+- A gain measured on the split that selected it is not an estimate of the gain. If you quote a
+  `grow` number, quote the **sealed** one, and quote the verdict with it.
+- `grow` records per-case wins and losses for every challenge and prints the sign-test p-value,
+  but does **not** gate on it by default: at these case counts significance demands a near-sweep
+  (5–0, or 8–1), so switching it on would freeze the loop. `--max-paired-p` is there if you want
+  it. The number is worth reading either way — it is usually 1w–2l out of 56, which is the whole
+  story about why these suites cannot separate structures.
 
 ## License
 MIT. Built out of the [`tehai`](https://github.com/akihidem/tehai-core) delegation layer,
