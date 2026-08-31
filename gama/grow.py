@@ -866,6 +866,12 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
             # (名前で判定すると新しい backend が黙って検査対象から漏れる)。走ってみて実体を
             # 1 つでも観測したなら、名乗れる相手なのに突き合わせられなかった、と後で分かる。
             resumed_blind = True
+        # 未検証の境界は**系統に属する**。blind な再開のあと落ちてもう一度再開すると、その
+        # checkpoint には(以降の世代で観測した)served が載っているので、何もしなければ
+        # 「突き合わせる相手が居た」ことになり、未検証だった事実がすすがれて消える。
+        # 一度開いた穴は、その系統の台帳が続くかぎり引き継ぐ。
+        if resume.get("identity_blind"):
+            resumed_blind = True
     else:
         champ_search = measure(champion, splits["search"], tier, repeats, unit_cost, "champion")
         _guard_measurement(champ_search, "seed on the search split")
@@ -876,6 +882,9 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
           "resumed_from_gen": resume["gen"] if resume else None,
           "search": _meas(champ_search), "confirm": _meas(champ_confirm),
           "classes": classes, "classes_unconfirmable": dropped,
+          # 台帳をイベントログとして読む人が、復元後の実体を row だけで読めるようにする
+          # (global state を覗きに行かないと分からない、という形にしない)。
+          "served": served_map(), "identity_blind": resumed_blind,
           "code": code_stamp(),
           "margin_floor": round(margin_floor, 4),
           "margin_floor_source": "auto(one confirm case)" if min_margin is None else "explicit",
@@ -889,7 +898,8 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
     if not resume:
         emit({"event": "checkpoint", "gen": -1, "champion": champion,
               "champion_search": _meas(champ_search), "champion_confirm": _meas(champ_confirm),
-              "challenged": [], "archive": {}, "stale": 0, "served": served_map()})
+              "challenged": [], "archive": {}, "stale": 0, "served": served_map(),
+              "identity_blind": resumed_blind})
 
     stale = resume["stale"] if resume else 0
     # confirm で決着がついた設計(勝っても負けても二度は問わない)
@@ -1013,7 +1023,7 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
         emit({"event": "checkpoint", "gen": gen, "champion": champion,
               "champion_search": _meas(champ_search), "champion_confirm": _meas(champ_confirm),
               "challenged": sorted(challenged), "archive": archive, "stale": stale,
-              "served": served_map()})
+              "served": served_map(), "identity_blind": resumed_blind})
         if stale >= patience:
             emit({"event": "stop", "gen": gen, "reason": f"no-promotion-for-{patience}-gens"})
             break

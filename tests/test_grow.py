@@ -1179,3 +1179,28 @@ class TestBackendIdentityThroughTheLoop(ScriptedCase):
             out = grow(pool, cases=_cases(4), generations=2, width=2, patience=3,
                        resume_from=str(led), min_margin=0.05)
         self.assertTrue(out["identity_verified"])
+
+    def test_a_crash_after_a_blind_resume_does_not_launder_it_into_verified(self):
+        # 未検証の境界は系統に属する。blind な再開のあと落ちて再々開すると、その checkpoint
+        # には以降の世代の served が載っているので、引き継がないと「確かめた」ことにされる。
+        pool = {"a": {"backend": "swapping", "kwargs": {"tag": "a"}},
+                "b": {"backend": "swapping", "kwargs": {"tag": "b"}}}
+        with tempfile.TemporaryDirectory() as d:
+            old_led = Path(d) / "old.jsonl"
+            grow(pool, cases=_cases(4), generations=1, width=2, patience=3,
+                 ledger_path=str(old_led), min_margin=0.05)
+            rows = [json.loads(l) for l in old_led.read_text(encoding="utf-8").splitlines() if l.strip()]
+            for r in rows:                                    # 古い形式(served 無し)にする
+                r.pop("served", None)
+            old_led.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in rows) + "\n",
+                               encoding="utf-8")
+            reset_served()
+            mid = Path(d) / "mid.jsonl"                       # blind な再開。ここで落ちたとする
+            out1 = grow(pool, cases=_cases(4), generations=2, width=2, patience=3,
+                        resume_from=str(old_led), ledger_path=str(mid), min_margin=0.05)
+            self.assertFalse(out1["identity_verified"])
+            reset_served()
+            out2 = grow(pool, cases=_cases(4), generations=3, width=2, patience=3,
+                        resume_from=str(mid), min_margin=0.05)
+        self.assertFalse(out2["identity_verified"],
+                         "an unverified boundary was laundered away by a second resume")
