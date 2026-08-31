@@ -1468,8 +1468,11 @@ class TestSaturatedClasses(ScriptedCase):
             grow(pool, cases=_cases(8), generations=3, width=4, patience=3,
                  ledger_path=str(led), min_margin=0.05)
             rows = [json.loads(l) for l in led.read_text(encoding="utf-8").splitlines() if l.strip()]
+        # 前提そのものを assert する。条件付き assert は、条件に入らなかった走行で**何も
+        # 確かめずに緑**になる(赤くならずに黙って死ぬ試験になる)。
         stops = [r for r in rows if r["event"] == "stop"]
-        if stops and stops[0]["reason"] == "no-new-candidates":
-            gens = [r["gen"] for r in rows if r["event"] == "checkpoint"]
-            self.assertIn(stops[0]["gen"], gens,
-                          "stopped without checkpointing the confirm measurement it paid for")
+        self.assertTrue(stops, "the run never stopped, so this test checked nothing")
+        self.assertEqual(stops[0]["reason"], "no-new-candidates")
+        gens = [r["gen"] for r in rows if r["event"] == "checkpoint"]
+        self.assertIn(stops[0]["gen"], gens,
+                      "stopped without checkpointing the confirm measurement it paid for")
