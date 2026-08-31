@@ -293,7 +293,8 @@ def _by_class_rotation(items: list, classes: list[str], offset: int) -> list:
 def propose(champion: dict, pool: dict[str, dict], classes: list[str],
             width: int = 6, exclude: Optional[set] = None,
             ensemble_strategy: str = "synthesize",
-            generation: int = 0) -> list[Candidate]:
+            generation: int = 0,
+            additive_classes: Optional[list[str]] = None) -> list[Candidate]:
     """チャンピオンから 1 手だけ動かした候補を、種類を混ぜて ``width`` 本返す。
 
     1 手だけなのは、勝因を測定に帰属させるため(2 手同時だとどちらが効いたか台帳から読めない)。
@@ -318,6 +319,11 @@ def propose(champion: dict, pool: dict[str, dict], classes: list[str],
     exclude = exclude or set()
     lanes = sorted(pool)
     ordered_classes = sorted(classes)
+    # 「足す変異」と「削る変異」で対象クラスを分ける。門が非対称だから対象も非対称になる:
+    # 足す側は**良くなること**を要求されるので伸びしろの無いクラスでは通りようがないが、
+    # 削る側は**悪くならないこと**しか要求しない。むしろ満点のクラスこそ「その構造は
+    # 何も買っていない」ことが言える場所で、そこを削れなくするのは逆向き。
+    additive = sorted(additive_classes) if additive_classes is not None else ordered_classes
     # 種類ごとに (task_type, Candidate) で貯める。task_type を保つのは、最後に**クラスも跨いで**
     # 巡回させるため — クラス順に詰めたまま width で切ると、辞書順で先頭のクラスだけが延々
     # 探索され、残りのクラスは一度も触られない(小さい width ほど効く偏り)。
@@ -422,6 +428,16 @@ def propose(champion: dict, pool: dict[str, dict], classes: list[str],
             _with_lane(champion, task_type, name, spec))))
 
     order = ["simplify", "route", "tool", "ensemble", "meshflow", "default", "deepen"]
+    # 足す変異だけを additive なクラスに絞る(削る変異 ⑤ はそのまま全クラスに残す)。
+    # ここで一括して落とすのは、①〜④⑦ の生成側に条件を撒くと足し忘れた種類から穴が開くため。
+    add_set = set(additive)
+    for kind in ("route", "tool", "ensemble", "meshflow", "deepen"):
+        buckets[kind] = [(tt, c) for (tt, c) in buckets[kind] if tt in add_set]
+    if not add_set:
+        # ⑥ 既定レーンの差し替えはどれか 1 クラス経由でしか効かない。どのクラスにも
+        # 伸びしろが無いなら、これも通りようがない。
+        buckets["default"] = []
+
     queues = {k: _by_class_rotation(buckets[k], ordered_classes, offset + generation)
               for offset, k in enumerate(order)}
 
@@ -808,6 +824,24 @@ def sealed_verdict(sealed: Optional[dict]) -> dict:
     return {"verdict": v, "delta_cases": round(delta * s_n, 2), "band_cases": 1.0, "note": note}
 
 
+def class_headroom(m: "Measurement", cases: list) -> dict:
+    """クラスごとに「まだ取れていない点」を問数で返す。per_case が無ければ空(=判定しない)。
+
+    ここが 1 問未満のクラスは、**どんな変異を当てても昇格の床を越えられない**。床は
+    「confirm 1 問ぶん」で、変異が触れるのはそのクラスの case だけだから、取りうる最大の
+    伸びが 1 問に満たないなら証明として通らない。推定ではなく算術で言える。
+    """
+    if not m.per_case:
+        return {}
+    out: dict = {}
+    for c in cases:
+        got = m.per_case.get(c.case_id)
+        if got is None:
+            continue
+        out[c.task_type] = out.get(c.task_type, 0.0) + (1.0 - got)
+    return out
+
+
 def _challenger_key(cand: "Candidate", m: "Measurement") -> tuple:
     """同点の候補をどう並べるか。**再現しない量を読まない**ことがこの関数の要件。
 
@@ -983,10 +1017,29 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
     stale = resume["stale"] if resume else 0
     # confirm で決着がついた設計(勝っても負けても二度は問わない)
     challenged: set = set(resume["challenged"]) if resume else set()
+    floor_cases = margin_floor * len(splits["confirm"])
     for gen in range(start_gen, generations):
         t0 = time.time()
+        # 伸びしろの尽きたクラスは変異させない。実測(run U seed): integration は 8/8 満点で
+        # 伸びしろ 0.00 問なのに `tool:integration` が候補に出て、確実に無駄と分かっている
+        # 測定に実モデルを焚いていた。取りうる最大の伸びが床(1 問)に満たないクラスは、
+        # **どの変異でも昇格しえない**ので、除外は推定ではなく算術。
+        # per_case が無い(古い checkpoint からの再開など)ときは何も除外しない —— 飽和を
+        # 証明できないなら除外しない、という向きに倒す。
+        headroom = class_headroom(champ_confirm, splits["confirm"])
+        saturated = sorted(c for c in classes
+                           if c in headroom and headroom[c] < floor_cases)
+        if saturated:
+            emit({"event": "saturated", "gen": gen,
+                  "classes": {c: round(headroom[c], 2) for c in saturated},
+                  "floor_cases": round(floor_cases, 2),
+                  "note": "no mutation on these classes can clear the promotion floor; "
+                          "the suite has nothing left to win there"})
+        # 飽和したクラスも propose には渡す。削る変異は「悪くならないこと」しか要求しないので、
+        # むしろ満点のクラスこそ「その構造は何も買っていない」と言える場所になる。
         cands = propose(champion, pool, classes, width=width, exclude=challenged,
-                        ensemble_strategy=ensemble_strategy, generation=gen)
+                        ensemble_strategy=ensemble_strategy, generation=gen,
+                        additive_classes=[c for c in classes if c not in saturated])
         if not cands:
             emit({"event": "stop", "gen": gen, "reason": "no-new-candidates"})
             break

@@ -23,7 +23,7 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(__file__))
 
 from gama import backends as backends_mod
-from gama.grow import Candidate, _challenger_key, _structure_size
+from gama.grow import Candidate, _challenger_key, _structure_size, class_headroom
 from gama.backends import ModelBackend
 from gama.benchmark import BenchCase
 from gama.cli import build_parser, main
@@ -1091,7 +1091,10 @@ class SwappingBackend(ModelBackend):
         # レーンごとに別の要求先を名乗る。要求先が 1 つしかない模型だと、複数レーンが
         # 混ざったときに鍵の取り違えで起きる偽陽性/偽陰性を一切踏まない。
         note_served(f"box:8000/{self.tag}", served if self.tag == "a" else "/models/other.gguf")
-        return "GOOD"
+        # わざと外す。全問正解だと**伸びしろ 0 でクラスが飽和し**、足す変異が提案されなく
+        # なって lane b が一度も測られない(= 同一性の試験そのものが空回りする)。ここで
+        # 見たいのは載せ替え検知であって精度ではないので、常に伸びしろのある側に置く。
+        return "BAD"
 
 
 class TestBackendIdentityThroughTheLoop(ScriptedCase):
@@ -1329,3 +1332,62 @@ class TestSelectionIsDeterministic(unittest.TestCase):
 
     def test_structure_size_ranks_a_bare_lane_below_a_composite_one(self):
         self.assertLess(_structure_size(_lane_spec("b")), _structure_size(_tool_spec("b")))
+
+
+class TestSaturatedClasses(ScriptedCase):
+    """伸びしろの尽きたクラスに変異を当てるのは、確実に無駄と分かっている測定に実モデルを
+    焚くこと。実測(run U seed): integration は 8/8 満点=伸びしろ 0.00 問なのに
+    `tool:integration` が候補に出ていた。床(1 問)を越えられないことは算術で言える。"""
+
+    def test_headroom_is_counted_per_class_in_cases(self):
+        cases = _cases(4, "qa", "qa") + _cases(4, "research", "re")
+        m = Measurement(0.5, 0.5, 1.0, 8, 8,
+                        per_case={**{f"qa{i}": 1.0 for i in range(1, 5)},
+                                  **{f"re{i}": 0.5 for i in range(1, 5)}})
+        h = class_headroom(m, cases)
+        self.assertAlmostEqual(h["qa"], 0.0)          # 満点 = 伸びしろ無し
+        self.assertAlmostEqual(h["research"], 2.0)    # 0.5 x 4 問
+
+    def test_no_per_case_means_no_exclusion(self):
+        # 飽和を**証明できない**ときは除外しない(古い checkpoint からの再開など)
+        self.assertEqual(class_headroom(Measurement(0.9, 0.9, 1.0, 4, 4), _cases(4)), {})
+
+    def test_a_saturated_class_is_not_mutated(self):
+        # qa 全問正解 = 伸びしろ 0。qa への変異は 1 問の床を越えようがないので提案しない
+        Scripted.WINS = {"a": {f"qa{i}" for i in range(1, 9)},
+                         "b": {f"qa{i}" for i in range(1, 9)}}
+        pool = {"a": _lane("a"), "b": _lane("b")}
+        seen = []
+        grow(pool, cases=_cases(8), generations=2, width=4, patience=3, min_margin=0.05,
+             on_event=lambda r: seen.append(r))
+        kinds = {r["kind"] for r in seen if r["event"] == "candidate"}
+        self.assertNotIn("route", kinds, "measured an additive mutation on a saturated class")
+        self.assertNotIn("tool", kinds)
+        self.assertNotIn("ensemble", kinds)
+        self.assertTrue([r for r in seen if r["event"] == "saturated"])
+
+    def test_a_saturated_class_can_still_be_shrunk(self):
+        # 門が非対称なので対象も非対称。削る側は「悪くならないこと」しか要求せず、満点の
+        # クラスこそ「その構造は何も買っていない」と言える場所になる。ここを塞ぐと、
+        # 一度足した構造が二度と外れなくなる。
+        champ = {"backend": "gama", "kwargs": {
+            "backends": {"a": _lane("a"),
+                         "tool(a)": {"backend": "tool", "kwargs": {"inner": _lane("a")},
+                                     "_grow_base": "a"}},
+            "routing_table": {"qa": "tool(a)"}, "default": "a"}}
+        cands = propose(champ, {"a": _lane("a"), "b": _lane("b")}, ["qa"], width=6,
+                        additive_classes=[])          # qa は飽和している
+        kinds = {c.kind for c in cands}
+        self.assertIn("simplify", kinds, "a saturated class could not be shrunk")
+        self.assertFalse(kinds & {"route", "tool", "ensemble", "meshflow", "deepen"},
+                         f"additive mutation proposed for a saturated class: {kinds}")
+
+    def test_a_class_with_room_is_still_mutated(self):
+        # 床が「止める対象自身」を巻き込んでいないことを確かめる(偽陽性ゼロ)
+        Scripted.WINS = {"a": set(), "b": {"qa1", "qa2"}}
+        pool = {"a": _lane("a"), "b": _lane("b")}
+        seen = []
+        grow(pool, cases=_cases(8), generations=1, width=4, patience=3, min_margin=0.05,
+             on_event=lambda r: seen.append(r))
+        self.assertTrue([r for r in seen if r["event"] == "candidate"],
+                        "a class with headroom was skipped")
