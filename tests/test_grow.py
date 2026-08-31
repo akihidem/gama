@@ -1069,3 +1069,73 @@ class TestBackendIdentity(unittest.TestCase):
         note_served("x", None)
         note_served(None, "y")
         self.assertEqual(served_map(), {})
+
+
+class SwappingBackend(ModelBackend):
+    """途中で中身が入れ替わるサーバの模型。200 を返し続けるので error_rate では鳴らない。"""
+    name = "swapping"
+    available = True
+    CALLS = 0
+    SWAP_AFTER = 10_000
+
+    def __init__(self, tag: str = "a"):
+        self.tag = tag
+        self.last_usage = None
+
+    def complete(self, prompt, tier, **kw):
+        SwappingBackend.CALLS += 1
+        served = ("/models/first.gguf" if SwappingBackend.CALLS <= SwappingBackend.SWAP_AFTER
+                  else "/models/second.gguf")
+        note_served("box:8000/m", served)
+        return "GOOD"
+
+
+class TestBackendIdentityThroughTheLoop(ScriptedCase):
+    """helper を直接叩く単体試験は、**検査が呼ばれる場所**の間違いを一切捕まえない。
+
+    実際 `reset_served()` を `grow()` ではなく `propose()` に置いてしまい、世代ごとに観測が
+    消えて検査が空回りしていたが、単体試験は全部緑のままだった(codex review が発見)。
+    ここでは載せ替えを起こしたうえで **grow() を通して** 止まることを確かめる。
+    """
+
+    def setUp(self):
+        super().setUp()
+        backends_mod._BACKENDS["swapping"] = SwappingBackend
+        SwappingBackend.CALLS = 0
+        reset_served()
+
+    def tearDown(self):
+        backends_mod._BACKENDS.pop("swapping", None)
+        SwappingBackend.SWAP_AFTER = 10_000
+        reset_served()
+        super().tearDown()
+
+    def test_a_mid_run_swap_stops_the_run(self):
+        SwappingBackend.SWAP_AFTER = 6        # seed 測定のあと、世代の途中で入れ替わる
+        pool = {"a": {"backend": "swapping", "kwargs": {"tag": "a"}},
+                "b": {"backend": "swapping", "kwargs": {"tag": "b"}}}
+        with self.assertRaises(MeasurementFailure) as cm:
+            grow(pool, cases=_cases(4), generations=3, width=2, patience=3, min_margin=0.05)
+        self.assertIn("changed under the run", str(cm.exception))
+
+    def test_a_stable_backend_runs_to_completion_and_records_what_it_measured(self):
+        # 床が「止める対象自身」を巻き込んでいないことを同時に確かめる(偽陽性ゼロ)
+        pool = {"a": {"backend": "swapping", "kwargs": {"tag": "a"}},
+                "b": {"backend": "swapping", "kwargs": {"tag": "b"}}}
+        result = grow(pool, cases=_cases(4), generations=2, width=2, patience=3, min_margin=0.05)
+        self.assertEqual(result["served"], {"box:8000/m": ["/models/first.gguf"]})
+
+    def test_observations_survive_a_resume(self):
+        # resume を跨いだ載せ替えが見えなければ、長い走行ほど検査の抜け道になる
+        pool = {"a": {"backend": "swapping", "kwargs": {"tag": "a"}},
+                "b": {"backend": "swapping", "kwargs": {"tag": "b"}}}
+        with tempfile.TemporaryDirectory() as d:
+            led = Path(d) / "run.jsonl"
+            grow(pool, cases=_cases(4), generations=1, width=2, patience=3,
+                 ledger_path=str(led), min_margin=0.05)
+            ck = load_checkpoint(led)
+            self.assertEqual(ck["served"], {"box:8000/m": ["/models/first.gguf"]})
+            SwappingBackend.SWAP_AFTER = 0        # 再開後は別モデルが応える
+            with self.assertRaises(MeasurementFailure):
+                grow(pool, cases=_cases(4), generations=3, width=2, patience=3,
+                     resume_from=str(led), min_margin=0.05)

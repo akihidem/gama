@@ -47,7 +47,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from .benchmark import SUITES, BenchCase, run_bench, summarize
-from .backends import reset_served, served_conflicts, served_map
+from .backends import note_served, reset_served, served_conflicts, served_map
 from .config import build_backend
 from .models import ModelTier
 
@@ -315,8 +315,6 @@ def propose(champion: dict, pool: dict[str, dict], classes: list[str],
         (同じ走の gen1 で実際に消えた)。
     """
     validate_pool(pool)
-    # 前の走行が観測した実体を持ち越さない(同一プロセスで 2 回 grow すると混ざる)。
-    reset_served()
     exclude = exclude or set()
     lanes = sorted(pool)
     ordered_classes = sorted(classes)
@@ -769,6 +767,9 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
     ことも要求する(符号検定の片側 p)。既定は None = 無効。有効にすると門は大幅に厳しくなる
     ので、まず無効のまま台帳の ``paired_p`` を読み、自分の case 数で何が通るかを見てから使う。
     """
+    # 観測履歴は走行に属する。同一プロセスで 2 回 grow すると前回の実体が
+    # 混ざり、seed の直後に偽陽性を出す。測定を 1 回もしないうちに落とす。
+    reset_served()
     validate_pool(pool)
     pool_cases = cases if cases is not None else suite_pool(suites)
     splits = split_cases(pool_cases, ratio=ratio)
@@ -870,8 +871,15 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
     if not resume:
         emit({"event": "checkpoint", "gen": -1, "champion": champion,
               "champion_search": _meas(champ_search), "champion_confirm": _meas(champ_confirm),
-              "challenged": [], "archive": {}, "stale": 0})
+              "challenged": [], "archive": {}, "stale": 0, "served": served_map()})
 
+    if resume:
+        # 中断前に「どの実体を測っていたか」を復元する。ここを空のまま再開すると、再開の
+        # 前後で相手が入れ替わっていても突き合わせる相手が無く、resume が同一性検査の
+        # 抜け道になる(長い走行ほど resume を挟むので、そこが一番通したくない穴)。
+        for dest, seen in (resume.get("served") or {}).items():
+            for one in seen:
+                note_served(dest, one)
     stale = resume["stale"] if resume else 0
     # confirm で決着がついた設計(勝っても負けても二度は問わない)
     challenged: set = set(resume["challenged"]) if resume else set()
@@ -993,7 +1001,8 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
         # 状態(チャンピオンの spec・決着済み・archive)を残していなかった**ため。
         emit({"event": "checkpoint", "gen": gen, "champion": champion,
               "champion_search": _meas(champ_search), "champion_confirm": _meas(champ_confirm),
-              "challenged": sorted(challenged), "archive": archive, "stale": stale})
+              "challenged": sorted(challenged), "archive": archive, "stale": stale,
+              "served": served_map()})
         if stale >= patience:
             emit({"event": "stop", "gen": gen, "reason": f"no-promotion-for-{patience}-gens"})
             break
