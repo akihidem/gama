@@ -746,6 +746,38 @@ def _guard_measurement(m: "Measurement", what: str) -> None:
             "server on the intended model and --resume from this ledger.")
 
 
+def sealed_verdict(sealed: Optional[dict]) -> dict:
+    """封をした split が、この走行そのものについて何と言っているか。
+
+    ここまでのゲートはすべて confirm の上で判定していて、confirm は世代をまたいで**繰り返し
+    選択に使われる**から上振れする(実測 3 走で confirm +6.25/+8.85/+0.45% に対し sealed は
+    +1.65/+1.39/-1.79%)。sealed は一度しか開けないので、走行全体に対する唯一の外部の目になる。
+
+    判定の帯は sealed 自身の分解能(1 問)。sealed も 28 問しかなく、0.5 問の下落は害の証明に
+    ならない。だから 3 値で返す: 効いた / 分からない / 悪くなった。**「分からない」を
+    「効いた」に丸めない**ことがこの関数の全部で、run T はまさにそこを黙って通していた
+    (sealed 0.8393 -> 0.8214 なのに「昇格 1・成功」として champion を出した)。
+    """
+    if not sealed:
+        return {"verdict": "unsealed", "delta_cases": None,
+                "note": "no sealed split: every number fed a decision, so read them as optimistic"}
+    n = sealed["seed"]["cases"] or 1
+    delta = sealed["champion"]["score"] - sealed["seed"]["score"]
+    band = 1.0 / n
+    if delta > band:
+        v, note = "improved", "the held-out split agrees the champion is better than the seed"
+    elif delta < -band:
+        v, note = ("regressed",
+                   "the held-out split says the champion is WORSE than the seed it started "
+                   "from: the gains measured on confirm did not survive contact with cases "
+                   "that never fed a decision. Do not adopt this champion")
+    else:
+        v, note = ("not-separable",
+                   "the held-out split cannot tell the champion from the seed at this case "
+                   "count. The run neither proved nor disproved an improvement")
+    return {"verdict": v, "delta_cases": round(delta * n, 2), "band_cases": 1.0, "note": note}
+
+
 def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
          cases: Optional[list[BenchCase]] = None, suites=("wide", "hard", "brutal"),
          ratio: tuple[int, int, int] = (2, 1, 1), generations: int = 3, width: int = 6,
@@ -1057,6 +1089,9 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
         "generations_run": len(history),
         "search": _meas(champ_search), "confirm": _meas(champ_confirm),
         "sealed": sealed,
+        # 走行そのものの合否。confirm 上の昇格数は「何手通したか」であって「良くなったか」
+        # ではない。封をした split に一度だけ言わせる。
+        "sealed_verdict": sealed_verdict(sealed),
         "splits": {k: [c.case_id for c in v] for k, v in splits.items()},
         "params": {"suites": list(suites) if cases is None else "custom", "ratio": list(ratio),
                    "tier": tier.value, "repeats": repeats, "width": width,
@@ -1126,7 +1161,16 @@ def write_recipe(result: dict, directory, name: Optional[str] = None,
         lines.append("Measured against (as reported by the server on every call):")
         lines += [f"- `{k}` → `{', '.join(v)}`" for k, v in sorted(served.items())]
         lines.append("")
+    verdict = result.get("sealed_verdict") or sealed_verdict(result.get("sealed"))
+    _label = {"improved": "IMPROVED", "regressed": "REGRESSED — do not adopt",
+              "not-separable": "NOT SEPARABLE", "unsealed": "UNSEALED"}
     lines += [
+        f"**Held-out verdict: {_label.get(verdict['verdict'], verdict['verdict'])}** "
+        + (f"({verdict['delta_cases']:+} cases on the sealed split, which resolves "
+           f"{verdict['band_cases']:g})" if verdict.get("delta_cases") is not None else ""),
+        "",
+        verdict["note"] + ".",
+        "",
         "| | seed (no structure) | grown champion |",
         "|---|---|---|",
     ]

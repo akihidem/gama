@@ -459,6 +459,24 @@ def cmd_grow(args: argparse.Namespace) -> int:
             "needs a near-sweep, so this is a limit of the evidence, not proof the change is "
             "bad — read the sealed line as the check, and treat these lanes as provisional.\n")
 
+    # 走行の合否は昇格数ではなく、封をした split が言う。run T は sealed が下がっているのに
+    # 「昇格 1・成功」として champion を出していた。数字は出ていたが、誰も判定していなかった。
+    sv = result.get("sealed_verdict") or {}
+    if sv.get("verdict") == "regressed":
+        sys.stderr.write(
+            f"[gama] HELD-OUT VERDICT: REGRESSED ({sv['delta_cases']:+} cases). {sv['note']}. "
+            "The promotions were measured on `confirm`, which is selected against every "
+            "generation and therefore reads high; `sealed` is the only split that was not.\n")
+    elif sv.get("verdict") == "not-separable":
+        sys.stderr.write(
+            f"[gama] HELD-OUT VERDICT: NOT SEPARABLE ({sv['delta_cases']:+} cases, and the "
+            "sealed split resolves 1). The run promoted changes that its held-out cases cannot "
+            "tell apart from the seed. That is not a failure, but it is not an improvement "
+            "either — say so when quoting these numbers.\n")
+    elif sv.get("verdict") == "improved":
+        sys.stderr.write(f"[gama] HELD-OUT VERDICT: IMPROVED ({sv['delta_cases']:+} cases on "
+                         "cases that never fed a decision).\n")
+
     if result.get("identity_verified") is False:
         sys.stderr.write(
             "[gama] this run resumed from a ledger written before served-model identity was "

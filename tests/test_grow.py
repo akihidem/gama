@@ -30,6 +30,7 @@ from gama.config import build_backend, system_from_config
 from gama.backends import note_served, reset_served, served_conflicts, served_map
 from gama.grow import (
     MeasurementFailure,
+    sealed_verdict,
     _guard_measurement,
     Measurement,
     paired_gain,
@@ -1204,3 +1205,47 @@ class TestBackendIdentityThroughTheLoop(ScriptedCase):
                         resume_from=str(mid), min_margin=0.05)
         self.assertFalse(out2["identity_verified"],
                          "an unverified boundary was laundered away by a second resume")
+
+
+class TestSealedVerdict(unittest.TestCase):
+    """昇格数は「何手通したか」であって「良くなったか」ではない。run T は sealed が下がって
+    いるのに『昇格 1・成功』として champion を出した。数字は台帳に在ったが誰も判定していない。"""
+
+    def _s(self, seed, champ, n=28):
+        return {"seed": {"score": seed, "cases": n}, "champion": {"score": champ, "cases": n}}
+
+    def test_a_real_gain_is_called_improved(self):
+        # 実測(WSL llama3.2:3b): 0.6375 -> 0.8542 on 20 = +4.33 問
+        v = sealed_verdict(self._s(0.6375, 0.8542, n=20))
+        self.assertEqual(v["verdict"], "improved")
+        self.assertAlmostEqual(v["delta_cases"], 4.33, places=1)
+
+    def test_a_drop_beyond_resolution_is_called_regressed(self):
+        v = sealed_verdict(self._s(0.90, 0.80))
+        self.assertEqual(v["verdict"], "regressed")
+        self.assertIn("Do not adopt", v["note"])
+
+    def test_a_sub_case_move_is_not_separable_in_either_direction(self):
+        # run T: -0.5 問。run R: +0.33 問。どちらも「分からない」であって成功でも失敗でもない
+        self.assertEqual(sealed_verdict(self._s(0.8393, 0.8214))["verdict"], "not-separable")
+        self.assertEqual(sealed_verdict(self._s(0.8611, 0.8750, n=24))["verdict"], "not-separable")
+
+    def test_no_sealed_split_is_reported_as_unsealed_not_as_success(self):
+        v = sealed_verdict(None)
+        self.assertEqual(v["verdict"], "unsealed")
+        self.assertIsNone(v["delta_cases"])
+
+    def test_the_verdict_reaches_the_recipe(self):
+        with tempfile.TemporaryDirectory() as d:
+            result = {"champion": {"backend": "echo", "kwargs": {}},
+                      "seed": {"backend": "echo", "kwargs": {}},
+                      "champion_hash": "deadbeef", "seed_hash": "cafe",
+                      "promotions": 0, "net_change": False, "bound_by": {},
+                      "generations_run": 0, "archive_size": 0,
+                      "sealed": self._s(0.90, 0.80), "sealed_verdict": sealed_verdict(self._s(0.90, 0.80)),
+                      "splits": {"search": [], "confirm": [], "sealed": []},
+                      "search": {"score": 0.9}, "confirm": {"score": 0.9}, "params": {}}
+            out = write_recipe(result, Path(d) / "r")
+            text = (out / "recipe.md").read_text(encoding="utf-8")
+        self.assertIn("REGRESSED", text)
+        self.assertIn("do not adopt", text.lower())
