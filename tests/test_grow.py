@@ -969,3 +969,26 @@ class TestPairedEvidence(unittest.TestCase):
         self.assertEqual(set(m.per_case), {c.case_id for c in cases})
         for v in m.per_case.values():
             self.assertIsInstance(v, float)
+
+
+class TestPairedEvidenceHardening(unittest.TestCase):
+    """codex review 由来。検定を要求したのに材料が無い経路と、測定失敗が証拠に化ける経路。"""
+
+    def test_gate_refuses_to_silently_skip_the_paired_condition(self):
+        # max_paired_p を渡したのに paired が無いのは fail-open。素通りさせず落とす
+        with self.assertRaises(ValueError):
+            promote_gate(0.5, 0.6, 0.5, 0.6, 0.05, paired=None, max_paired_p=0.05)
+
+    def test_reason_names_the_most_basic_failure_first(self):
+        # 平均差の床も割っている候補は below-margin と記録する(paired が根本原因を隠さない)
+        _, reason = promote_gate(0.5, 0.6, 0.5, 0.51, 0.05,
+                                 paired=(0, 8, 0), max_paired_p=0.05)
+        self.assertIn("below-margin", reason)
+
+    def test_unmeasurable_cases_are_not_counted_as_losses(self):
+        champ = Measurement(0.5, 0.5, 1.0, 2, 2, per_case={"ok": 1.0, "boom": 1.0},
+                            error_cases=frozenset())
+        # challenger は "boom" で例外 -> 0.0。これは負けではなく「測れなかった」
+        chal = Measurement(0.5, 0.5, 1.0, 2, 2, per_case={"ok": 1.0, "boom": 0.0},
+                           error_cases=frozenset({"boom"}))
+        self.assertEqual(paired_gain(champ, chal), (0, 0, 1))

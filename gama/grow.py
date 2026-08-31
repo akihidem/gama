@@ -450,6 +450,19 @@ def propose(champion: dict, pool: dict[str, dict], classes: list[str],
 # --------------------------------------------------------------------------- #
 # Measurement — 決定的チェッカだけを信じる
 # --------------------------------------------------------------------------- #
+def _meas(m: "Measurement") -> dict:
+    """台帳に出す形。``per_case`` と ``error_cases`` は落とす。
+
+    生の case 別得点は「対応のある比較」を **その場で** するための素材で、台帳に毎回
+    112 個並べると走行記録が読めなくなり、O〜T 走との形も変わって比較できなくなる。
+    判定に使った要約(勝敗数と p 値)は generation 行に別途残るので、監査経路は切れない。
+    """
+    d = asdict(m)
+    d.pop("per_case", None)
+    d.pop("error_cases", None)
+    return d
+
+
 @dataclass
 class Measurement:
     score: float
@@ -464,6 +477,9 @@ class Measurement:
     # 支配的な誤差である「どの問題がその split に入ったか」を見ていないので、対応のある比較
     # (同一 case で champion と challenger を突き合わせる)ができる素材をここで残す。
     per_case: dict = field(default_factory=dict)
+    # 例外で 0 点になった case。0 点は「モデルが間違えた」ではないので、対応のある比較で
+    # 「負け」と数えると測定失敗が証拠に化ける。除外できるように id を持ち帰る。
+    error_cases: frozenset = frozenset()
 
 
 def measure(spec: dict, cases: list[BenchCase], tier: ModelTier = ModelTier.LARGE,
@@ -485,10 +501,11 @@ def measure(spec: dict, cases: list[BenchCase], tier: ModelTier = ModelTier.LARG
     for r in records:
         by_case.setdefault(r["case_id"], []).append(r["score"])
     per_case = {cid: sum(v) / len(v) for cid, v in by_case.items()}
+    error_cases = frozenset(r["case_id"] for r in records if r.get("error"))
     return Measurement(score=agg["score"], success_rate=agg["success_rate"],
                        latency_s=agg["latency_s"], n=agg["n"], cases=len(cases),
                        errors=errors, error_rate=round(errors / len(records), 4) if records else 0.0,
-                       per_case=per_case)
+                       per_case=per_case, error_cases=error_cases)
 
 
 # --------------------------------------------------------------------------- #
@@ -502,7 +519,10 @@ def paired_gain(champion: Measurement, challenger: Measurement,
     その依存を打ち消す(対応のある比較)。ここで返す数は次の sign test の素材で、
     この関数自体は何も判定しない。
     """
-    shared = set(champion.per_case) & set(challenger.per_case)
+    # 片方でも測れなかった case は落とす。0 点は「測れなかった」の印であって負けではなく、
+    # 混ぜると死んだ backend ほど「相手の勝ち」を大量生産する。
+    shared = ((set(champion.per_case) & set(challenger.per_case))
+              - champion.error_cases - challenger.error_cases)
     wins = losses = ties = 0
     for cid in shared:
         d = challenger.per_case[cid] - champion.per_case[cid]
@@ -550,17 +570,23 @@ def promote_gate(champion_search: float, challenger_search: float,
     # summarize が 4 桁に丸めた値、delta は 1/n の生の値なので、素の >= だと 0.0666 >= 0.066667
     # が偽になり、**丸め方次第で同じ 1 問ぶんの改善が通ったり落ちたりする**。1e-9 は 4 桁丸めの
     # 世界では絶対に効いてこない幅。
-    # ④(任意) 対応のある証拠: 同一 case での勝敗が偶然に見えないか。既定は無効で、
-    #    有効にすると門が一気に厳しくなる(実測: alpha=0.05 は 5勝0敗級を要求し、過去の
-    #    昇格はほぼ全部止まる)。既定を変えないのは、止めるのが正しいかを決める材料が
-    #    まだ 3 走ぶんしかないから。判断は運用者に置き、p 値は常に台帳へ出す。
-    if max_paired_p is not None and paired is not None:
-        w, l, _ = paired
-        p = sign_test(w, l)
-        if p > max_paired_p:
-            return False, f"paired-not-significant(p={p:.3f},{w}w-{l}l)"
     if (challenger_confirm - champion_confirm) < delta - 1e-9:
         return False, f"below-margin(delta={round(delta, 4)})"
+    # ④(任意) 対応のある証拠: 同一 case での勝敗が偶然に見えないか。既定は無効で、
+    #    有効にすると門が一気に厳しくなる(実測: alpha=0.05 は 5勝0敗級を要求し、過去の
+    #    昇格はほぼ全部止まる)。判断は運用者に置き、p 値は常に台帳へ出す。
+    #    ①〜③ より**後**に見る: 平均差の床も割っている候補を "paired-not-significant" と
+    #    記録すると、台帳の理由が根本原因を隠す。理由は常に最も基本的な落ち方を名指しする。
+    if max_paired_p is not None:
+        # 検定を要求されたのに材料が無いのは fail-open。肯定形で止める(「有意だと証明
+        # できた」ときだけ通す)。黙って素通りする経路を作らない。
+        if paired is None:
+            raise ValueError("promote_gate(max_paired_p=...) requires `paired` win/loss counts; "
+                             "without them the condition would silently pass")
+        w, l, _ = paired
+        pv = sign_test(w, l)
+        if pv > max_paired_p:
+            return False, f"paired-not-significant(p={pv:.3f},{w}w-{l}l)"
     return True, "promote"
 
 
@@ -816,7 +842,7 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
         start_gen = 0
     emit({"event": "resumed" if resume else "seed", "hash": spec_hash(champion),
           "resumed_from_gen": resume["gen"] if resume else None,
-          "search": asdict(champ_search), "confirm": asdict(champ_confirm),
+          "search": _meas(champ_search), "confirm": _meas(champ_confirm),
           "classes": classes, "classes_unconfirmable": dropped,
           "code": code_stamp(),
           "margin_floor": round(margin_floor, 4),
@@ -830,7 +856,7 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
     # resume の守備範囲は、いちばん長い空白から埋める。
     if not resume:
         emit({"event": "checkpoint", "gen": -1, "champion": champion,
-              "champion_search": asdict(champ_search), "champion_confirm": asdict(champ_confirm),
+              "champion_search": _meas(champ_search), "champion_confirm": _meas(champ_confirm),
               "challenged": [], "archive": {}, "stale": 0})
 
     stale = resume["stale"] if resume else 0
@@ -857,9 +883,9 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
             else:
                 m = measure(c.spec, splits["search"], tier, repeats, unit_cost, "candidate")
                 _guard_measurement(m, f"candidate {c.label}")
-                archive[h] = {"label": c.label, "kind": c.kind, "search": asdict(m)}
+                archive[h] = {"label": c.label, "kind": c.kind, "search": _meas(m)}
                 emit({"event": "candidate", "gen": gen, "label": c.label, "kind": c.kind,
-                      "hash": h, "search": asdict(m)})
+                      "hash": h, "search": _meas(m)})
             scored.append((c, m))
 
         # チャンピオンを毎世代 confirm で測り直す。差 δ の下限は「同じ config を測り直したときの
@@ -953,7 +979,7 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
         # 直後に落ちて全部消えた。台帳に判定は残っていたのに再開できなかったのは、**再開に要る
         # 状態(チャンピオンの spec・決着済み・archive)を残していなかった**ため。
         emit({"event": "checkpoint", "gen": gen, "champion": champion,
-              "champion_search": asdict(champ_search), "champion_confirm": asdict(champ_confirm),
+              "champion_search": _meas(champ_search), "champion_confirm": _meas(champ_confirm),
               "challenged": sorted(challenged), "archive": archive, "stale": stale})
         if stale >= patience:
             emit({"event": "stop", "gen": gen, "reason": f"no-promotion-for-{patience}-gens"})
@@ -967,7 +993,7 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
         _guard_measurement(sealed_seed, "seed on the sealed split")
         sealed_champ = (sealed_seed if spec_hash(seed) == spec_hash(champion) else
                         measure(champion, splits["sealed"], tier, repeats, unit_cost, "champion"))
-        sealed = {"seed": asdict(sealed_seed), "champion": asdict(sealed_champ)}
+        sealed = {"seed": _meas(sealed_seed), "champion": _meas(sealed_champ)}
     else:
         sealed = None
     result = {
@@ -986,7 +1012,7 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
         "bound_by": {"floor": sum(1 for h in history if h.get("bound_by") == "floor"),
                      "drift": sum(1 for h in history if h.get("bound_by") == "drift")},
         "generations_run": len(history),
-        "search": asdict(champ_search), "confirm": asdict(champ_confirm),
+        "search": _meas(champ_search), "confirm": _meas(champ_confirm),
         "sealed": sealed,
         "splits": {k: [c.case_id for c in v] for k, v in splits.items()},
         "params": {"suites": list(suites) if cases is None else "custom", "ratio": list(ratio),

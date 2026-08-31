@@ -444,14 +444,18 @@ def cmd_grow(args: argparse.Namespace) -> int:
     # 昇格の**証拠の強さ**を最後に必ず言う。平均差の床だけを通った手は、held-out で
     # しぼむ/反転することが実測で出ている(confirm 比 4〜6 倍、小さい伸びでは符号反転)。
     # 台帳を読まない人にも、どの手が弱い証拠で通ったかがその場で見えるようにする。
+    # 閾値は運用者が指定したものを使う。--max-paired-p を渡しているのに警告だけ 0.05 だと、
+    # 「弱い」の定義が門と表示で食い違う。指定が無いときだけ 0.05 を目安に使う。
+    weak_at = args.max_paired_p if args.max_paired_p is not None else 0.05
     weak = [e for e in (result.get("promotion_evidence") or [])
-            if e.get("p") is not None and e["p"] > 0.05]
+            if e.get("p") is not None and e["p"] > weak_at]
     if weak:
         detail = ", ".join(f"{e['challenger']} ({e['wins']}w-{e['losses']}l, p={e['p']})"
                            for e in weak)
         sys.stderr.write(
             f"[gama] {len(weak)} of {len(result['promotion_evidence'])} promotions cleared the "
-            f"mean floor but NOT a per-case sign test: {detail}. At this case count that test "
+            f"mean floor but NOT a per-case sign test (p>{weak_at}): {detail}. At this case "
+            f"count that test "
             "needs a near-sweep, so this is a limit of the evidence, not proof the change is "
             "bad — read the sealed line as the check, and treat these lanes as provisional.\n")
 
