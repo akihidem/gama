@@ -396,3 +396,33 @@ class TestBenchCli(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestSuiteChoicesTrackTheRegistry(unittest.TestCase):
+    """suite を足したのに CLI から選べない、が起きないようにする。
+
+    実害: `crux` を SUITES に足したが、`--suite` の choices が 4 箇所ベタ書きだったので
+    `gama bench --suite crux` が「invalid choice」で弾かれた。足す側が 4 箇所を思い出す設計に
+    なっていたのが原因なので、**選択肢は registry から引く**ことを試験で固定する。
+    """
+
+    def test_every_registered_suite_is_selectable_from_the_cli(self):
+        from gama.cli import build_parser
+        parser = build_parser()
+        found = 0
+        for action in _walk_actions(parser):
+            if action.dest == "suite" and action.choices is not None:
+                found += 1
+                self.assertEqual(set(action.choices), set(SUITES),
+                                 f"--suite choices drifted from the registry: "
+                                 f"{sorted(set(SUITES) ^ set(action.choices))}")
+        self.assertGreater(found, 0, "no --suite argument found to check")
+
+
+def _walk_actions(parser):
+    for action in parser._actions:
+        if hasattr(action, "choices") and isinstance(action.choices, dict):
+            for sub in action.choices.values():          # subparsers
+                yield from _walk_actions(sub)
+        else:
+            yield action
