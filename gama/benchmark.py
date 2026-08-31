@@ -16,7 +16,10 @@ Honesty notes:
 
 from __future__ import annotations
 
+import multiprocessing
+import pickle
 import re
+import sys
 import time
 from dataclasses import dataclass
 from typing import Callable, Optional
@@ -75,26 +78,196 @@ def _norm_ws(s: str) -> str:
     return re.sub(r"\s+", " ", s or "").strip()
 
 
-def _check_func(code: str, func_name: str, cases) -> float:
-    """Exec model code in a fresh namespace and check a function against cases.
+# 生成コードの実行は必ず子プロセスに隔離する。理由は cancellation の一点:
+# in-process exec だと非停止コード 1 件で採点側(bench sweep / yoriai measure)全体が
+# 止まり、SIGALRM は main thread 限定な上に生成コード側の except Exception に飲まれる
+# (2026-08-31 実測: TinyLlama の wide-code-twosum 生成物はガード無しで 10 分待っても
+# 返らなかった。gama-runs/kl-vs-beta の逸脱1)。真に打ち切れるのは kill できる境界だけ。
+_CHECK_TIMEOUT_S = 10.0
 
-    SECURITY: executes model output. Only used by the opt-in live benchmark.
+
+# 子が返してよい 1 件あたりの戻り値サイズ。正解値は常に小さな plain data なので、
+# これを超える戻り値はどのみち不正解。キャップが無いと生成コードが巨大 bytes を
+# 返すだけで親側の受信/unpickle がメモリ爆発する(kill できる境界にしても、戻り値
+# サイズ経由の穴は子側で塞ぐしかない)。
+_RESULT_BYTES_CAP = 1_000_000
+
+# sandbox が環境要因で立たないとき、全 code ケースの沈黙 0 点化と区別する為の一度きり警告
+_SANDBOX_START_WARNED = False
+
+
+class _PlainUnpickler(pickle.Unpickler):
+    """find_class(GLOBAL/STACK_GLOBAL)を全拒否: plain data だけが復元できる。
+
+    REDUCE opcode 自体は残るが、REDUCE が呼べる callable は untrusted バイト列では
+    GLOBAL 経由でしか積めないため、拒否点はここ 1 箇所で実行経路が閉じる。
+
+    親側の unpickle は生成コード由来のバイト列に触れる唯一の場所で、素の pickle だと
+    __reduce__ を持つ戻り値が親プロセスで任意コードを実行できる(隔離の自己矛盾)。
+    find_class を全拒否すると None/bool/int/float/str/bytes/list/tuple/dict/set しか
+    復元できず、実行経路が消える。正解値は常に plain data なので採点意味論は保たれる
+    (カスタム __eq__ で正解に化けるオブジェクトだけは err に落ちるが、それを得点に
+    しない方が採点として正しい)。
     """
+
+    def find_class(self, module, name):  # noqa: D102
+        raise pickle.UnpicklingError(f"non-plain data refused: {module}.{name}")
+
+
+def _plain_loads(blob: bytes):
+    import io as _io
+    return _PlainUnpickler(_io.BytesIO(blob)).load()
+
+
+def _sandbox_apply(code: str, func_name: str, argss: list, conn) -> None:
+    """Child-process side: exec untrusted code, apply fn to each args tuple.
+
+    合否判定は意図的に親側へ残す(判定則は checker ごとに違う。ここへ複製すると
+    _chk_longest_pal 型の特殊判定が二重化して drift する)。結果は 1 件ずつ
+    ("cell", i, ...) で送る: 途中の 1 件が非停止でも、そこまでの正解は親に届いて
+    いて部分点が生きる(summarize/routing は平均 score を使うので、まとめて最後に
+    送る形だと hang 1 件が全テストの点を消す)。転送は send_bytes(生バイト)のみ:
+    Queue だと транспорト層が親側で無条件に unpickle するため、乗っ取られた子が
+    仕込んだオブジェクトをそのまま実行してしまう。バイト列なら親が制限付き
+    unpickler で選んで復元できる。
+    """
+    def _send(msg) -> None:
+        conn.send_bytes(pickle.dumps(msg))
+
     ns: dict = {}
     try:
         exec(compile(_extract_code(code), "<bench>", "exec"), ns)  # noqa: S102
-    except Exception:
-        return 0.0
+    except BaseException:  # 生成コードは SystemExit/KeyboardInterrupt も投げうる
+        _send(("exec_error", None, None))
+        return
     fn = ns.get(func_name)
     if not callable(fn):
+        _send(("no_func", None, None))
+        return
+    for i, args in enumerate(argss):
+        try:
+            v = fn(*args)
+            # 渡せない/大きすぎる値は、この子ごと落ちて timeout に化ける前に
+            # 「その 1 件の失敗」へ縮めておく(正解値は常に小さな plain data)。
+            # pickle は 1 回だけ: サイズ判定も送信も同じ blob を使う。
+            blob = pickle.dumps(("cell", i, ("ok", v)))
+            if len(blob) > _RESULT_BYTES_CAP:
+                raise ValueError("result too large")
+            conn.send_bytes(blob)
+        except BaseException:
+            _send(("cell", i, ("err", None)))
+    _send(("done", None, None))
+
+
+def _apply_func_sandboxed(code: str, func_name: str, argss: list,
+                          timeout: Optional[float] = None):
+    """Run _sandbox_apply in a killable subprocess; None means timeout.
+
+    待ち方は q.get(timeout) を先にする。p.join(timeout) を先にすると、戻り値が
+    pipe バッファを超えたとき子が put でブロックしたまま「生きている」ので、
+    正常な結果を timeout と誤判定して kill してしまう。
+    """
+    if timeout is None:
+        # def 時でなく呼び出し時に読む: テスト・運用が module 定数の差し替えで
+        # 上限を変えられるように(既定束縛だと差し替えが効かない)。
+        timeout = _CHECK_TIMEOUT_S
+    # 締切は子の起動より前から数える: forkserver/spawn の起動が詰まる環境でも
+    # 「採点側を止めない」の上限に含める(start() 自体のブロックだけは残余リスク)。
+    deadline = time.monotonic() + timeout
+    try:
+        # start method は fork を使わない。多スレッド親(yoriai server の measure)
+        # からの fork は他スレッドが握った lock を子が継承して deadlock し、正解
+        # コードまで 0.0 に化ける(3.12 が警告する既知の罠)。しかも Python から
+        # 見えない native thread は検出できないので「単スレッドなら fork」という
+        # 分岐自体が脆い。forkserver の server はインタプリタ単位で 1 度立って
+        # 再利用されるため呼び出しごとのコストは小さい。無い環境(Windows 等)は
+        # spawn。転送は Pipe.recv_bytes: Queue は受信側で無条件 unpickle が走る。
+        try:
+            ctx = multiprocessing.get_context("forkserver")
+        except ValueError:
+            ctx = multiprocessing.get_context("spawn")
+        rx, tx = ctx.Pipe(duplex=False)
+        p = ctx.Process(target=_sandbox_apply, args=(code, func_name, argss, tx),
+                        daemon=True)
+        p.start()
+    except Exception as e:
+        # 環境要因(daemon プロセス配下・start method 不成立など)で sandbox 自体が
+        # 立たない場合、例外を伝播させると 1 ケースでなく sweep 全体が落ちる。
+        # 0.0 に折るが、全 code ケースが静かに 0 点化する事故と区別できるように
+        # プロセスあたり 1 回だけ stderr へ出す(測定は赤くならず沈黙で死ぬ、への保険)。
+        global _SANDBOX_START_WARNED
+        if not _SANDBOX_START_WARNED:
+            _SANDBOX_START_WARNED = True
+            print(f"[gama.bench] sandbox unavailable, code checks score 0: {e}",
+                  file=sys.stderr)
+        return None
+    tx.close()  # 親側の書き端を閉じる: 子の死で rx.poll が確実に EOF を見るため
+    # 待ちは「done or 子の死 or 締切」の三条件で、届いた cell を逐次拾う。
+    # 一本待ちだと、生成コードが os._exit() やハードクラッシュで何も送らずに
+    # 死んだとき毎回満額 timeout を待つ。逆に子の死だけ見ると送信直後の正常終了と
+    # 競合するので、死や EOF を見た後も読める分は飲み干してから確定する。
+    results = [("err", None)] * len(argss)
+    fatal = None  # exec_error / no_func: 部分点の対象外(関数が存在しない)
+
+    def _absorb() -> str:
+        nonlocal fatal
+        try:
+            blob = rx.recv_bytes(_RESULT_BYTES_CAP + 65536)
+        except EOFError:
+            return "eof"
+        except OSError:
+            return "eof"  # 上限超過などで接続が読めなくなった: 以後は打ち切り
+        try:
+            kind, i, payload = _plain_loads(blob)
+        except Exception:
+            return "cont"  # 復元を拒否した cell は err のまま(実行はしない)
+        if kind == "cell":
+            if isinstance(i, int) and 0 <= i < len(results):
+                results[i] = payload
+            return "cont"
+        if kind == "done":
+            return "done"
+        fatal = kind
+        return "done"
+
+    state = "cont"
+    while state == "cont":
+        if rx.poll(0.1):
+            state = _absorb()
+            continue
+        if not p.is_alive():
+            while rx.poll(0.2) and state == "cont":
+                state = _absorb()
+            break
+        if time.monotonic() >= deadline:
+            break
+    if p.is_alive():
+        p.kill()
+    p.join(1.0)
+    rx.close()
+    if fatal is not None:
+        return None
+    # timeout / died でも、届いた分の部分点は返す(未着は err のまま)。
+    return results
+
+
+def _check_func(code: str, func_name: str, cases) -> float:
+    """Exec model code in a sandboxed subprocess and check a function against cases.
+
+    SECURITY: executes model output (in a killable child; see _CHECK_TIMEOUT_S).
+    Only used by the opt-in live benchmark. タイムアウト/即死は「結果が届かなかった
+    テストだけ不合格」(hang より前に完走したテストの部分点は保持される。summarize/
+    routing が平均 score を使うため)。exec 不能・関数不在は従来どおり 0.0。どの経路
+    でもタイムアウトが score を上げる方向は無い。
+    """
+    argss = [args for args, _ in cases]
+    results = _apply_func_sandboxed(code, func_name, argss)
+    if results is None:
         return 0.0
     ok = 0
-    for args, expected in cases:
-        try:
-            if fn(*args) == expected:
-                ok += 1
-        except Exception:
-            pass
+    for (st, v), (_, expected) in zip(results, cases):
+        if st == "ok" and v == expected:
+            ok += 1
     return ok / len(cases)
 
 
@@ -210,23 +383,19 @@ DEFAULT_SUITE: list[BenchCase] = [
 # keys slot straight into a config.
 # --------------------------------------------------------------------------- #
 def _chk_longest_pal(out: str) -> float:
-    ns: dict = {}
-    try:
-        exec(compile(_extract_code(out), "<bench>", "exec"), ns)  # noqa: S102
-    except Exception:
-        return 0.0
-    fn = ns.get("longest_palindrome")
-    if not callable(fn):
-        return 0.0
+    # 実行は _apply_func_sandboxed に寄せ、判定(回文性・部分文字列・長さ)だけを
+    # ここに残す。等値比較でない checker なので _check_func には畳めない。
     tests = {"babad": 3, "cbbd": 2, "a": 1, "forgeeksskeegfor": 10, "racecarx": 7}
+    items = list(tests.items())
+    results = _apply_func_sandboxed(out, "longest_palindrome",
+                                    [(s,) for s, _ in items])
+    if results is None:
+        return 0.0
     ok = 0
-    for s, length in tests.items():
-        try:
-            r = fn(s)
-            if isinstance(r, str) and r in s and r == r[::-1] and len(r) == length:
-                ok += 1
-        except Exception:
-            pass
+    for (st, r), (s, length) in zip(results, items):
+        if (st == "ok" and isinstance(r, str) and r in s and r == r[::-1]
+                and len(r) == length):
+            ok += 1
     return ok / len(tests)
 
 

@@ -116,6 +116,98 @@ class TestCodeExtraction(unittest.TestCase):
         self.assertEqual(_check_func(reply, "g", [((5,), 10)]), 1.0)
 
 
+class TestSandboxedCheck(unittest.TestCase):
+    """Cancellation floor: 生成コード 1 件が採点側を止められないこと。
+
+    2026-08-31 の実験1で TinyLlama の非停止コードが in-process exec の採点を
+    実運用時間内に返さなくした(gama-runs/kl-vs-beta 逸脱1)。この床は
+    「タイムアウト⇒不正解(0.0)・壁時計が上限で切れる」を機械判定する。
+    """
+
+    def _short_timeout(self, seconds):
+        import gama.benchmark as bm
+        orig = bm._CHECK_TIMEOUT_S
+        bm._CHECK_TIMEOUT_S = seconds
+        self.addCleanup(setattr, bm, "_CHECK_TIMEOUT_S", orig)
+
+    def test_nonterminating_function_scores_zero_within_budget(self):
+        self._short_timeout(1.0)
+        import time as _t
+        t0 = _t.monotonic()
+        score = _check_func("def f(x):\n    while True:\n        pass\n",
+                            "f", [((1,), 1)])
+        self.assertEqual(score, 0.0)
+        # 上限 1.0s + 子の起動/後始末。5s を超えたら打ち切りが機能していない。
+        self.assertLess(_t.monotonic() - t0, 5.0)
+
+    def test_nonterminating_toplevel_scores_zero(self):
+        self._short_timeout(1.0)
+        score = _check_func("while True:\n    pass\n", "f", [((1,), 1)])
+        self.assertEqual(score, 0.0)
+
+    def test_hang_mid_suite_keeps_earlier_partial_credit(self):
+        # summarize/routing は平均 score(部分点)で勝者を決めるので、hang した
+        # 1 件が「そこまでに完走した正解」まで消してはいけない。子は cell を
+        # 逐次送る設計なので、hang の前は生き、hang 以降だけ不合格になる。
+        self._short_timeout(1.0)
+        code = ("def f(x):\n"
+                "    if x == 0:\n"
+                "        while True:\n"
+                "            pass\n"
+                "    return x\n")
+        # hang が先頭: 何も完走していないので 0.0
+        self.assertEqual(_check_func(code, "f", [((0,), 0), ((2,), 2)]), 0.0)
+        # hang が 2 件目: 1 件目の正解は保持され 0.5
+        self.assertEqual(_check_func(code, "f", [((2,), 2), ((0,), 0)]), 0.5)
+
+    def test_works_from_non_main_thread(self):
+        # yoriai server の measure はワーカスレッドから採点を呼ぶ。SIGALRM 案が
+        # 使えない理由がこれで、subprocess 案が守るべき性質。
+        import threading
+        out = {}
+
+        def run():
+            out["score"] = _check_func(
+                "def h(a):\n    return a + 1\n", "h", [((1,), 2)])
+
+        t = threading.Thread(target=run)
+        t.start()
+        t.join(30)
+        self.assertEqual(out.get("score"), 1.0)
+
+    def test_unpicklable_return_is_wrong_not_hang(self):
+        self._short_timeout(2.0)
+        code = ("def f(x):\n"
+                "    return lambda: x\n")
+        score = _check_func(code, "f", [((1,), 1)])
+        self.assertEqual(score, 0.0)
+
+    def test_reduce_payload_is_rejected_not_executed(self):
+        # __reduce__ を持つ戻り値は素の unpickle だと親プロセスで任意コードを
+        # 実行できる(隔離の自己矛盾)。親は find_class 全拒否の unpickler で
+        # 復元するので、reduce が無害な (list, ((1,2),)) であっても GLOBAL 参照の
+        # 時点で拒否され、その 1 件は err(=不正解)になる。実行されていれば
+        # [1,2] == [1,2] で 1.0 になるはずなので、0.0 がそのまま非実行の証拠。
+        self._short_timeout(5.0)
+        code = ("class E:\n"
+                "    def __reduce__(self):\n"
+                "        return (list, ((1, 2),))\n"
+                "def f(x):\n"
+                "    return E()\n")
+        self.assertEqual(_check_func(code, "f", [((0,), [1, 2])]), 0.0)
+
+    def test_child_hard_exit_returns_fast(self):
+        # 生成コードが q.put 無しで即死する経路(os._exit / ハードクラッシュ)。
+        # queue 待ち一本だと満額 timeout を待つ回帰があったので、死の検知で
+        # 早期に 0.0 へ折れることを壁時計で判定する。
+        self._short_timeout(10.0)
+        import time as _t
+        t0 = _t.monotonic()
+        score = _check_func("import os\nos._exit(0)\n", "f", [((1,), 1)])
+        self.assertEqual(score, 0.0)
+        self.assertLess(_t.monotonic() - t0, 5.0)
+
+
 class TestNamedSuites(unittest.TestCase):
     def test_registry_keys(self):
         self.assertEqual(set(SUITES), {"default", "hard", "brutal", "wide", "graded", "steep", "qadeep", "researchdeep"})
