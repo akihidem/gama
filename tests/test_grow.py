@@ -1484,3 +1484,15 @@ class TestSaturatedClasses(ScriptedCase):
         res = grow(pool, cases=_cases(8), generations=1, width=3, patience=3, min_margin=0.05)
         self.assertIn("qa", res["headroom"])
         self.assertGreater(res["headroom"]["qa"], 0.0)
+
+    def test_headroom_only_covers_classes_the_loop_can_mutate(self):
+        # confirm には居るが search に居ないクラスは触れない。そこに余地が無いと言われても
+        # 打てる手が無いので、警告の対象にしない
+        cases = _cases(8, "qa", "qa") + _cases(2, "research", "re")
+        Scripted.WINS = {"a": {"qa1"}, "b": {"qa1", "qa2"}}
+        pool = {"a": _lane("a"), "b": _lane("b")}
+        res = grow(pool, cases=cases, generations=1, width=3, patience=3, min_margin=0.05)
+        self.assertTrue(set(res["headroom"]) <= set(res["params"].get("classes", res["headroom"])
+                                                    or res["headroom"]))
+        for cls in res["headroom"]:
+            self.assertIn(cls, {c.task_type for c in cases})

@@ -1242,10 +1242,14 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
         # ではない。封をした split に一度だけ言わせる。
         "sealed_verdict": sealed_verdict(sealed),
         # クラスごとの伸びしろ(問)。「どこに case を足すべきか」を一般論でなく実測で言う。
-        # 空なら per_case が取れなかった走行(古い checkpoint からの再開など)。
-        "headroom": {c: round(v, 2)
+        # **変異できるクラスだけ**に絞る(confirm には居るが search に居ないクラスは
+        # そもそも触れないので、そこに余地が無いと警告しても打てる手が無い)。
+        # 丸めは 2 桁でなく 4 桁: 表示の丸めを判定に持ち込むと、0.995 問が「1 問ある」に
+        # 化けて「1 問未満」の警告から漏れる。表示の丸めは呼び側の仕事。
+        "headroom": {c: round(v, 4)
                      for c, v in sorted(class_headroom(champ_confirm,
-                                                       splits["confirm"]).items())},
+                                                       splits["confirm"]).items())
+                     if c in classes},
         "splits": {k: [c.case_id for c in v] for k, v in splits.items()},
         "params": {"suites": list(suites) if cases is None else "custom", "ratio": list(ratio),
                    "tier": tier.value, "repeats": repeats, "width": width,

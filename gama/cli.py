@@ -439,7 +439,7 @@ def cmd_grow(args: argparse.Namespace) -> int:
         # どれだけ余地が残っているかは走行が知っているので、推測させない。
         room = result.get("headroom") or {}
         if room:
-            dry = [c for c, v in room.items() if v < 1.0]
+            dry = sorted(c for c, v in room.items() if v < 1.0)
             listing = ", ".join(f"{c} {v:g}" for c, v in sorted(room.items(), key=lambda kv: kv[1]))
             sys.stderr.write(f"[gama] headroom left, in cases: {listing}.\n")
             if dry:
