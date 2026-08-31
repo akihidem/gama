@@ -371,9 +371,13 @@ def cmd_grow(args: argparse.Namespace) -> int:
     def on_event(row: dict) -> None:
         ev = row.get("event")
         if ev in ("seed", "resumed"):
-            # confirm の問数は seed 行にしか無い。世代行は持たないので、ここで控えておかないと
-            # 「+1.25 問 / 全何問中」が出せない(出せないまま書式だけ残ると "cases of " になる)。
-            seen["n_confirm"] = len(row["splits"]["confirm"])
+            # confirm の問数は seed/resumed 行にしか無い(同じ emit で出るので両方持っている)。
+            # 世代行は持たないので、ここで控えておかないと「+1.25 問 / 全何問中」が出せない
+            # (出せないまま書式だけ残ると "cases of " という尻切れになる)。
+            # 台帳は古い版のものも読まされうるので、無ければ黙って諦める(表示のために落ちない)。
+            conf = ((row.get("splits") or {}).get("confirm")) or []
+            if conf:
+                seen["n_confirm"] = len(conf)
         if ev == "seed":
             sizes = {k: len(v) for k, v in row["splits"].items()}
             sys.stderr.write(f"[gama] splits {sizes} | seed search={row['search']['score']} "
@@ -401,8 +405,9 @@ def cmd_grow(args: argparse.Namespace) -> int:
                 + (f"({gain:+} of {seen['n_confirm']} cases) " if gain is not None
                                                                     and seen.get("n_confirm")
                    else (f"({gain:+} cases) " if gain is not None else ""))
-                + (f"[{row['paired_wins']}w-{row['paired_losses']}l p={row['paired_p']}] "
-                   if row.get("paired_wins") is not None else "")
+                + (f"[{row['paired_wins']}w-{row.get('paired_losses', '?')}l "
+                   f"p={row.get('paired_p', '?')}] " if row.get("paired_wins") is not None
+                   else "")
                 + f"(delta={row['delta']}) -> {row['reason']}\n")
         elif ev == "stop":
             sys.stderr.write(f"[gama] stop: {row['reason']}\n")
@@ -493,6 +498,9 @@ def cmd_grow(args: argparse.Namespace) -> int:
         if not result.get("net_change"):
             # 何も通っていない走行に「通した手が区別できない」と書くと、直前の NET ZERO 行と
             # 矛盾する。同じ判定でも意味が違うので、言い分けないと読み手が混乱する。
+            # 判定に `net_change` を使うのは、これが `spec_hash(champion) != spec_hash(seed)`
+            # そのものだから(昇格の**回数**ではなく、最終形が種と同一かを直接見ている)。
+            # 足して戻した走行も net_change=False で、その場合も champion は種と同一。
             sys.stderr.write(
                 "[gama] HELD-OUT VERDICT: NOT SEPARABLE — trivially, because nothing was "
                 "promoted: the champion IS the seed, so there was nothing for the sealed split "
