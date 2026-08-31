@@ -471,6 +471,20 @@ def propose(champion: dict, pool: dict[str, dict], classes: list[str],
 # --------------------------------------------------------------------------- #
 # Measurement — 決定的チェッカだけを信じる
 # --------------------------------------------------------------------------- #
+def _state(m: "Measurement") -> dict:
+    """checkpoint に残す形。**per_case を落とさない**。
+
+    台帳の各行(`_meas`)と checkpoint は要件が逆。行は毎測定ごとに出るので 112 個の生の点を
+    並べると読めなくなるが、checkpoint は 1 世代 1 行で、しかも**再開に要る状態**そのもの。
+    ここで per_case を落としたせいで、再開後に静かに死ぬ機能をこのセッションで 3 回作った
+    (対応のある比較・飽和判定・search 側の飽和判定)。3 回目はパッチでなく分離で直す:
+    「見せるための形」と「続きを走らせるための形」を別の関数にして、名前で取り違えを防ぐ。
+    """
+    d = asdict(m)
+    d["error_cases"] = sorted(m.error_cases)      # JSON に載る形へ(frozenset は載らない)
+    return d
+
+
 def _meas(m: "Measurement") -> dict:
     """台帳に出す形。``per_case`` と ``error_cases`` は落とす。
 
@@ -847,7 +861,7 @@ def class_headroom(m: "Measurement", cases: list) -> dict:
 
 
 def _default_swap_viable(champion: dict, classes: list, headroom: dict,
-                         gate_cases: float) -> bool:
+                         gate_cases: float, search_room: Optional[dict] = None) -> bool:
     """既定レーンの差し替えが昇格しうるか。クラス単位の飽和では切れない唯一の変異。
 
     レーン変異は 1 クラスしか触らないので「そのクラスの伸びしろ < 門」で切れるが、既定の
@@ -864,7 +878,23 @@ def _default_swap_viable(champion: dict, classes: list, headroom: dict,
     # 欠損を 0 と読むと「測っていない」が「伸びしろ無し」に化ける。
     if any(c not in headroom for c in under):
         return True
-    return sum(headroom[c] for c in under) >= gate_cases
+    if sum(headroom[c] for c in under) < gate_cases:
+        return False
+    # search 側も合計で見る。既定を替えても search を 1 点も上げられないなら挑戦権が取れず、
+    # confirm の床とは別の理由で必ず落ちる(クラス単位の除外と同じ算術を合計に当てる)。
+    if search_room:
+        if all(c in search_room for c in under) and \
+                sum(search_room[c] for c in under) <= 0.0:
+            return False
+    return True
+
+
+def _restore(d: dict) -> "Measurement":
+    """checkpoint の dict を Measurement に戻す。古い台帳(per_case 無し)もそのまま読める。"""
+    d = dict(d)
+    d["error_cases"] = frozenset(d.get("error_cases") or ())
+    d.setdefault("per_case", {})
+    return Measurement(**d)
 
 
 def _challenger_key(cand: "Candidate", m: "Measurement") -> tuple:
@@ -986,8 +1016,8 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
     # 否定形(「食い違いが無い」)でなく肯定形(「同じだと確かめられた」)で持つ。
     resumed_blind = False
     if resume:
-        champ_search = Measurement(**resume["champion_search"])
-        champ_confirm = Measurement(**resume["champion_confirm"])
+        champ_search = _restore(resume["champion_search"])
+        champ_confirm = _restore(resume["champion_confirm"])
         archive.update(resume.get("archive") or {})
         start_gen = resume["gen"] + 1
         # 中断前に測っていた実体を復元する。復元は resumed イベントより**前**に済ませる
@@ -1035,7 +1065,8 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
     # resume の守備範囲は、いちばん長い空白から埋める。
     if not resume:
         emit({"event": "checkpoint", "gen": -1, "champion": champion,
-              "champion_search": _meas(champ_search), "champion_confirm": _meas(champ_confirm),
+              "champion_search": _state(champ_search),
+              "champion_confirm": _state(champ_confirm),
               "challenged": [], "archive": {}, "stale": 0, "served": served_map(),
               "identity_blind": resumed_blind})
 
@@ -1088,7 +1119,7 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
                         ensemble_strategy=ensemble_strategy, generation=gen,
                         additive_classes=[c for c in classes if c not in saturated],
                         allow_default=_default_swap_viable(champion, classes, headroom,
-                                                           gate_cases))
+                                                           gate_cases, search_room))
         if not cands:
             # ここまでに champion を confirm で測っている。止まるからといって捨てると、
             # 最終結果も再開状態も「測る前の値」のまま残る。checkpoint も**実際に出す**
@@ -1096,8 +1127,8 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
             # だけでは再開したときに古い値へ戻る)。
             champ_confirm = champ_confirm_now
             emit({"event": "checkpoint", "gen": gen, "champion": champion,
-                  "champion_search": _meas(champ_search),
-                  "champion_confirm": _meas(champ_confirm),
+                  "champion_search": _state(champ_search),
+                  "champion_confirm": _state(champ_confirm),
                   "challenged": sorted(challenged), "archive": archive, "stale": stale,
                   "served": served_map(), "identity_blind": resumed_blind})
             emit({"event": "stop", "gen": gen, "reason": "no-new-candidates"})
@@ -1211,7 +1242,8 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
         # 直後に落ちて全部消えた。台帳に判定は残っていたのに再開できなかったのは、**再開に要る
         # 状態(チャンピオンの spec・決着済み・archive)を残していなかった**ため。
         emit({"event": "checkpoint", "gen": gen, "champion": champion,
-              "champion_search": _meas(champ_search), "champion_confirm": _meas(champ_confirm),
+              "champion_search": _state(champ_search),
+              "champion_confirm": _state(champ_confirm),
               "challenged": sorted(challenged), "archive": archive, "stale": stale,
               "served": served_map(), "identity_blind": resumed_blind})
         if stale >= patience:

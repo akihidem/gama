@@ -1516,3 +1516,34 @@ class TestSaturatedClasses(ScriptedCase):
             self.assertFalse(r["label"].endswith(":qa") or ":qa(" in r["label"]
                              or r["label"].startswith("route:qa"),
                              f"measured an additive mutation on an aced class: {r['label']}")
+
+    def test_search_saturation_still_applies_after_a_resume(self):
+        # per_case を checkpoint から落としていたせいで、再開後に静かに死ぬ機能を 3 回作った。
+        # 3 回目は「見せる形」と「続きを走らせる形」を分けて直したので、そこを固定する。
+        cases = _cases(8, "qa", "qa") + _cases(8, "research", "re")
+        Scripted.WINS = {"a": {f"qa{i}" for i in range(1, 9)},
+                         "b": {f"qa{i}" for i in range(1, 9)}}
+        pool = {"a": _lane("a"), "b": _lane("b")}
+        with tempfile.TemporaryDirectory() as d:
+            led = Path(d) / "run.jsonl"
+            grow(pool, cases=cases, generations=1, width=6, patience=3,
+                 ledger_path=str(led), min_margin=0.05)
+            ck = load_checkpoint(led)
+            self.assertTrue(ck["champion_search"].get("per_case"),
+                            "the checkpoint dropped the per-case scores a resume needs")
+            seen = []
+            grow(pool, cases=cases, generations=2, width=6, patience=3,
+                 resume_from=str(led), min_margin=0.05, on_event=lambda r: seen.append(r))
+        sat = [r for r in seen if r["event"] == "saturated"]
+        self.assertTrue(sat, "saturation was not detected after a resume")
+        self.assertIn("qa", sat[0]["classes"])
+
+    def test_a_default_swap_also_needs_search_headroom(self):
+        champ = {"backend": "gama", "kwargs": {
+            "backends": {"a": _lane("a"), "b": _lane("b")},
+            "routing_table": {}, "default": "a"}}
+        cls = ["qa", "research"]
+        room = {"qa": 3.0, "research": 3.0}
+        self.assertTrue(_default_swap_viable(champ, cls, room, 2.0, {"qa": 1.0, "research": 0.0}))
+        # search で取り切っているなら挑戦権が取れない = confirm に余地があっても通らない
+        self.assertFalse(_default_swap_viable(champ, cls, room, 2.0, {"qa": 0.0, "research": 0.0}))
