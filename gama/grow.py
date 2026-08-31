@@ -808,6 +808,17 @@ def sealed_verdict(sealed: Optional[dict]) -> dict:
     return {"verdict": v, "delta_cases": round(delta * s_n, 2), "band_cases": 1.0, "note": note}
 
 
+def _challenger_key(cand: "Candidate", m: "Measurement") -> tuple:
+    """同点の候補をどう並べるか。**測定値を読まない**ことがこの関数の要件。
+
+    以前はここに実測レイテンシが入っていて、走行が決定的にならなかった(壁時計は走るたび
+    違い、共有 GPU では他人の負荷でも動く。determinism テストが 80 回中 4 回落ちた)。
+    分けて名前を与えてあるのは、この性質を文字列検査でなく**振る舞いとして**試験できる
+    ようにするため。並び順は「点の高い順 → 構造の小さい順 → ラベル順」。
+    """
+    return (-m.score, _structure_size(cand.spec), cand.label)
+
+
 def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
          cases: Optional[list[BenchCase]] = None, suites=("wide", "hard", "brutal"),
          ratio: tuple[int, int, int] = (2, 1, 1), generations: int = 3, width: int = 6,
@@ -1027,9 +1038,7 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
             # 再現性はこの repo の売りそのものなので、判定に測定ゆらぎを一切入れない。
             # 構造の大きさは spec だけで決まり、追加コールを生んでいる当のものなので、
             # 「同点なら安い方」の意図もそのまま保つ(shrink 側の Occam と同じ向き)。
-            challenger, chal_search = min(additive, key=lambda t: (-t[1].score,
-                                                                   _structure_size(t[0].spec),
-                                                                   t[0].label))
+            challenger, chal_search = min(additive, key=lambda t: _challenger_key(*t))
             chal_confirm = measure(challenger.spec, splits["confirm"], tier, repeats, unit_cost,
                                    "challenger")
             _guard_measurement(chal_confirm, f"challenger {challenger.label}")

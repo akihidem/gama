@@ -23,7 +23,7 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(__file__))
 
 from gama import backends as backends_mod
-from gama.grow import _structure_size
+from gama.grow import Candidate, _challenger_key, _structure_size
 from gama.backends import ModelBackend
 from gama.benchmark import BenchCase
 from gama.cli import build_parser, main
@@ -1277,25 +1277,55 @@ class TestSealedVerdict(unittest.TestCase):
         self.assertIn("not a comparison", v["note"])
 
 
+def _lane_spec(tag):
+    return {"backend": "gama", "kwargs": {
+        "backends": {tag: {"backend": "echo", "kwargs": {}}},
+        "routing_table": {"qa": tag}, "default_backend": tag}}
+
+
+def _tool_spec(tag):
+    return {"backend": "gama", "kwargs": {
+        "backends": {tag: {"backend": "echo", "kwargs": {}},
+                     "t": {"backend": "tool", "kwargs": {"inner": {"backend": "echo", "kwargs": {}}},
+                           "_grow_base": tag}},
+        "routing_table": {"qa": "t"}, "default_backend": tag}}
+
+
 class TestSelectionIsDeterministic(unittest.TestCase):
     """同点の候補を実測レイテンシで割ると、走行が決定的でなくなる。壁時計は走るたび違い、
     共有 GPU なら他人の負荷でも動くので、「たまたま空いている時に測られた」候補が勝つ。
     determinism テストは 21 回に 1 回しか落ちず、通常の 1 回実行では見えなかった。"""
 
-    def test_the_challenger_key_does_not_read_the_clock(self):
-        import inspect
-        src = inspect.getsource(grow)
-        sel = src[src.index("if additive:"):src.index("chal_confirm = measure")]
-        self.assertNotIn("latency", sel,
-                         "candidate selection reads a measured latency: two runs with identical "
-                         "inputs can then pick different challengers")
+    def _cand(self, label, spec):
+        return Candidate(label=label, kind="route", spec=spec)
 
-    def test_same_score_prefers_less_structure_then_label(self):
-        bare = {"backend": "gama", "kwargs": {"backends": {"m": {"backend": "echo", "kwargs": {}}},
-                                              "routing_table": {"qa": "m"}, "default_backend": "m"}}
-        big = {"backend": "gama", "kwargs": {
-            "backends": {"m": {"backend": "echo", "kwargs": {}},
-                         "t": {"backend": "tool", "kwargs": {"inner": {"backend": "echo",
-                                                                       "kwargs": {}}}}},
-            "routing_table": {"qa": "t"}, "default_backend": "m"}}
-        self.assertLess(_structure_size(bare), _structure_size(big))
+    def _m(self, score, latency):
+        return Measurement(score=score, success_rate=score, latency_s=latency, n=4, cases=4)
+
+    def test_the_key_is_unchanged_by_measured_latency(self):
+        # 文字列検査ではなく振る舞いで見る(別名で実測値を読んでも捕まえられるように)
+        c = self._cand("route:qa->b", _lane_spec("b"))
+        self.assertEqual(_challenger_key(c, self._m(0.9, 0.001)),
+                         _challenger_key(c, self._m(0.9, 12.5)))
+
+    def test_latency_cannot_outrank_structure_or_label(self):
+        cheap_slow = (self._cand("z:bare", _lane_spec("b")), self._m(0.9, 99.0))
+        rich_fast = (self._cand("a:tool", _tool_spec("b")), self._m(0.9, 0.001))
+        # 速く測れた方ではなく、構造の小さい方が勝つ
+        self.assertEqual(min([cheap_slow, rich_fast], key=lambda t: _challenger_key(*t))[0].label,
+                         "z:bare")
+
+    def test_equal_score_and_structure_fall_back_to_label(self):
+        a = (self._cand("a:one", _lane_spec("b")), self._m(0.9, 5.0))
+        b = (self._cand("b:two", _lane_spec("b")), self._m(0.9, 0.1))
+        self.assertEqual(min([a, b], key=lambda t: _challenger_key(*t))[0].label, "a:one")
+
+    def test_a_higher_score_still_wins_over_a_smaller_structure(self):
+        # タイブレークは同点のときだけ。点の差を構造で覆さない
+        better = (self._cand("z:tool", _tool_spec("b")), self._m(0.95, 9.0))
+        smaller = (self._cand("a:bare", _lane_spec("b")), self._m(0.90, 0.1))
+        self.assertEqual(min([better, smaller], key=lambda t: _challenger_key(*t))[0].label,
+                         "z:tool")
+
+    def test_structure_size_ranks_a_bare_lane_below_a_composite_one(self):
+        self.assertLess(_structure_size(_lane_spec("b")), _structure_size(_tool_spec("b")))
