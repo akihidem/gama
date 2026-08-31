@@ -311,16 +311,19 @@ _EDITDIST = '''
 def edit_distance(a, b):
     dp = list(range(len(b) + 1))
     for i, ca in enumerate(a, 1):
-        prev, dp[0] = dp[0], i
+        prev = dp[0]
+        dp[0] = i
         for j, cb in enumerate(b, 1):
-            prev, dp[j] = dp[j], min(dp[j] + 1, dp[j - 1] + 1, prev + (ca != cb))
+            old = dp[j]
+            dp[j] = min(dp[j] + 1, dp[j - 1] + 1, prev + (ca != cb))
+            prev = old
     return dp[-1]
 '''
 _LATTICE = '''
-def lattice_paths(w, h, blocked):
-    grid = [[0] * (w + 1) for _ in range(h + 1)]
-    for r in range(h + 1):
-        for c in range(w + 1):
+def lattice_paths(rows, cols, blocked):
+    grid = [[0] * (cols + 1) for _ in range(rows + 1)]
+    for r in range(rows + 1):
+        for c in range(cols + 1):
             if (r, c) in blocked:
                 continue
             if r == 0 and c == 0:
@@ -330,7 +333,7 @@ def lattice_paths(w, h, blocked):
                 grid[r][c] += grid[r - 1][c]
             if c:
                 grid[r][c] += grid[r][c - 1]
-    return grid[h][w]
+    return grid[rows][cols]
 '''
 _JOSEPHUS = '''
 def josephus(n, k):

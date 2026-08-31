@@ -1491,13 +1491,20 @@ CRUX_SUITE: list[BenchCase] = [
               _func("edit_distance", [(("kitten", "sitting"), 3),
                                       (("intention", "execution"), 5),
                                       (("", "abc"), 3), (("same", "same"), 0)])),
+    # 引数名と検査ケースの両方で「行と列の取り違え」を潰してある。正方形のケースだけだと
+    # 転置した実装がそのまま通り、**正しい実装と区別できない case** になる(実測: 3x7 に
+    # 障害物を置くと 60 対 116 で割れるが、10x10 では両方 121252 で割れない)。
+    # 開始点を塞いだ場合の意味も、曖昧に残さず 1 ケースで固定する。
     BenchCase("crux-code-paths", "code_implementation",
-              "Write a Python function `lattice_paths(w, h, blocked)` returning the number of "
-              "monotone lattice paths from (0,0) to (h,w) moving only down or right, where "
-              "`blocked` is a set of (row, col) tuples that may not be entered. Return ONLY the "
-              "function definition, no prose.",
+              "Write a Python function `lattice_paths(rows, cols, blocked)` returning the "
+              "number of monotone lattice paths on a grid of points from (0, 0) to "
+              "(rows, cols), moving only down (row + 1) or right (col + 1). `blocked` is a set "
+              "of (row, col) points that may not be entered, including possibly the start, in "
+              "which case the answer is 0. Return ONLY the function definition, no prose.",
               _func("lattice_paths", [((10, 10, set()), 184756),
                                       ((10, 10, {(5, 5)}), 121252),
+                                      ((3, 7, {(1, 3)}), 60),
+                                      ((4, 4, {(0, 0)}), 0),
                                       ((1, 1, set()), 2)])),
     BenchCase("crux-code-josephus", "code_implementation",
               "Write a Python function `josephus(n, k)` returning the 1-indexed position of the "
