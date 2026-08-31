@@ -404,6 +404,7 @@ def cmd_grow(args: argparse.Namespace) -> int:
                       repeats=args.repeats, tier=ModelTier(args.tier),
                       min_margin=args.min_margin, patience=args.patience, ledger_path=args.out,
                       ensemble_strategy=args.ensemble_strategy, seed_spec=seed_spec,
+                      max_paired_p=args.max_paired_p,
                       resume_from=args.resume, on_event=on_event)
     except MeasurementFailure as e:
         sys.stderr.write(f"[gama] STOPPED: {e}\n")
@@ -439,6 +440,20 @@ def cmd_grow(args: argparse.Namespace) -> int:
             f"[gama] the bar was set by NOISE in {bound['drift']} of {sum(bound.values())} "
             "generations: the champion's own re-measurement moved more than one case. Raising "
             "--repeats is the lever here, not more cases.\n")
+
+    # 昇格の**証拠の強さ**を最後に必ず言う。平均差の床だけを通った手は、held-out で
+    # しぼむ/反転することが実測で出ている(confirm 比 4〜6 倍、小さい伸びでは符号反転)。
+    # 台帳を読まない人にも、どの手が弱い証拠で通ったかがその場で見えるようにする。
+    weak = [e for e in (result.get("promotion_evidence") or [])
+            if e.get("p") is not None and e["p"] > 0.05]
+    if weak:
+        detail = ", ".join(f"{e['challenger']} ({e['wins']}w-{e['losses']}l, p={e['p']})"
+                           for e in weak)
+        sys.stderr.write(
+            f"[gama] {len(weak)} of {len(result['promotion_evidence'])} promotions cleared the "
+            f"mean floor but NOT a per-case sign test: {detail}. At this case count that test "
+            "needs a near-sweep, so this is a limit of the evidence, not proof the change is "
+            "bad — read the sealed line as the check, and treat these lanes as provisional.\n")
 
     if args.write_recipe:
         d = write_recipe(result, args.write_recipe, hardware=args.hardware)
@@ -583,6 +598,11 @@ def build_parser() -> argparse.ArgumentParser:
                          "the models are noisier than that")
     pg.add_argument("--patience", type=_positive_int, default=2,
                     help="stop after this many generations with no promotion")
+    pg.add_argument("--max-paired-p", type=_nonneg_float, default=None, metavar="P",
+                    help="additionally require the challenger's per-case wins to be unlikely "
+                         "by chance (one-sided sign test p). Default off: at typical case "
+                         "counts this demands a near-sweep and blocks almost every promotion. "
+                         "Read `paired_p` in the ledger first, then decide with your numbers")
     pg.add_argument("--ensemble-strategy", default="synthesize",
                     choices=["majority", "first", "synthesize"],
                     help="aggregation for proposed ensemble lanes. Default synthesize: the "

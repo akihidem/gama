@@ -39,6 +39,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import math
 import re
 import time
 from dataclasses import asdict, dataclass, field
@@ -458,6 +459,11 @@ class Measurement:
     cases: int
     errors: int = 0            # 例外で 0 点になった call 数(モデルが間違えた 0 点とは別物)
     error_rate: float = 0.0
+    # case ごとの得点(repeats 平均)。集計値だけ持ち帰ると**同じ問題での勝ち負け**が消え、
+    # 「平均が上がった」以上のことが何も言えなくなる。床を 1/n と drift から作っている限り
+    # 支配的な誤差である「どの問題がその split に入ったか」を見ていないので、対応のある比較
+    # (同一 case で champion と challenger を突き合わせる)ができる素材をここで残す。
+    per_case: dict = field(default_factory=dict)
 
 
 def measure(spec: dict, cases: list[BenchCase], tier: ModelTier = ModelTier.LARGE,
@@ -475,9 +481,51 @@ def measure(spec: dict, cases: list[BenchCase], tier: ModelTier = ModelTier.LARG
     # 「モデルが間違えた」ではなく「**測れなかった**」で、区別を捨てると死んだ backend の
     # 全ゼロが実測値として判定に入る。件数を持ち帰る。
     errors = sum(1 for r in records if r.get("error"))
+    by_case: dict[str, list[float]] = {}
+    for r in records:
+        by_case.setdefault(r["case_id"], []).append(r["score"])
+    per_case = {cid: sum(v) / len(v) for cid, v in by_case.items()}
     return Measurement(score=agg["score"], success_rate=agg["success_rate"],
                        latency_s=agg["latency_s"], n=agg["n"], cases=len(cases),
-                       errors=errors, error_rate=round(errors / len(records), 4) if records else 0.0)
+                       errors=errors, error_rate=round(errors / len(records), 4) if records else 0.0,
+                       per_case=per_case)
+
+
+# --------------------------------------------------------------------------- #
+# 対応のある比較 — 「平均が上がった」と「同じ問題で勝った」を分ける
+# --------------------------------------------------------------------------- #
+def paired_gain(champion: Measurement, challenger: Measurement,
+                tol: float = 1e-9) -> tuple[int, int, int]:
+    """同一 case での勝ち/負け/引き分けを数える。両者に在る case だけを対象にする。
+
+    平均差は「どの問題が split に入ったか」に強く依存するが、**同じ問題での勝敗**は
+    その依存を打ち消す(対応のある比較)。ここで返す数は次の sign test の素材で、
+    この関数自体は何も判定しない。
+    """
+    shared = set(champion.per_case) & set(challenger.per_case)
+    wins = losses = ties = 0
+    for cid in shared:
+        d = challenger.per_case[cid] - champion.per_case[cid]
+        if d > tol:
+            wins += 1
+        elif d < -tol:
+            losses += 1
+        else:
+            ties += 1
+    return wins, losses, ties
+
+
+def sign_test(wins: int, losses: int) -> float:
+    """符号検定の片側 p 値(厳密)。「差の出た問題のうち勝ちに偏った」が偶然でない確からしさ。
+
+    引き分けは情報を持たないので落とす(McNemar と同じ扱い)。帰無仮説は「勝ち負けは五分」。
+    scipy は使わない(stdlib 縛り)。返すのは p 値だけで、閾値の判断は呼び側に置く。
+    """
+    n = wins + losses
+    if n == 0:
+        return 1.0
+    tail = sum(math.comb(n, k) for k in range(wins, n + 1))
+    return tail / (2 ** n)
 
 
 # --------------------------------------------------------------------------- #
@@ -485,7 +533,8 @@ def measure(spec: dict, cases: list[BenchCase], tier: ModelTier = ModelTier.LARG
 # --------------------------------------------------------------------------- #
 def promote_gate(champion_search: float, challenger_search: float,
                  champion_confirm: float, challenger_confirm: float,
-                 delta: float) -> tuple[bool, str]:
+                 delta: float, paired: Optional[tuple[int, int, int]] = None,
+                 max_paired_p: Optional[float] = None) -> tuple[bool, str]:
     """3 条件が**すべて**証明できたときだけ昇格。理由は台帳に残せる文字列で返す。
 
     ① 挑戦権: search で本当に上回ったか(上回っていない候補は挑戦者になれない)
@@ -501,6 +550,15 @@ def promote_gate(champion_search: float, challenger_search: float,
     # summarize が 4 桁に丸めた値、delta は 1/n の生の値なので、素の >= だと 0.0666 >= 0.066667
     # が偽になり、**丸め方次第で同じ 1 問ぶんの改善が通ったり落ちたりする**。1e-9 は 4 桁丸めの
     # 世界では絶対に効いてこない幅。
+    # ④(任意) 対応のある証拠: 同一 case での勝敗が偶然に見えないか。既定は無効で、
+    #    有効にすると門が一気に厳しくなる(実測: alpha=0.05 は 5勝0敗級を要求し、過去の
+    #    昇格はほぼ全部止まる)。既定を変えないのは、止めるのが正しいかを決める材料が
+    #    まだ 3 走ぶんしかないから。判断は運用者に置き、p 値は常に台帳へ出す。
+    if max_paired_p is not None and paired is not None:
+        w, l, _ = paired
+        p = sign_test(w, l)
+        if p > max_paired_p:
+            return False, f"paired-not-significant(p={p:.3f},{w}w-{l}l)"
     if (challenger_confirm - champion_confirm) < delta - 1e-9:
         return False, f"below-margin(delta={round(delta, 4)})"
     return True, "promote"
@@ -659,6 +717,7 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
          patience: int = 2, seed_spec: Optional[dict] = None,
          ledger_path: Optional[str] = None, unit_cost: Optional[dict] = None,
          ensemble_strategy: str = "synthesize",
+         max_paired_p: Optional[float] = None,
          on_event: Optional[Callable[[dict], None]] = None) -> dict:
     """RSI を ``generations`` 世代回し、最終チャンピオンと全世代の台帳を返す。
 
@@ -666,6 +725,10 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
     ``sealed`` split は世代中一切参照せず、最後に**一度だけ**開けて種と最終チャンピオンを測る。
 
     ``min_margin`` を省くと **confirm 1 問ぶん** (``1/len(confirm)``) が下限になる。
+
+    ``max_paired_p`` を与えると、平均差の床に加えて「同一 case での勝敗が偶然に見えない」
+    ことも要求する(符号検定の片側 p)。既定は None = 無効。有効にすると門は大幅に厳しくなる
+    ので、まず無効のまま台帳の ``paired_p`` を読み、自分の case 数で何が通るかを見てから使う。
     """
     validate_pool(pool)
     pool_cases = cases if cases is not None else suite_pool(suites)
@@ -832,8 +895,10 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
             chal_confirm = measure(challenger.spec, splits["confirm"], tier, repeats, unit_cost,
                                    "challenger")
             _guard_measurement(chal_confirm, f"challenger {challenger.label}")
+            w, l, t = paired_gain(champ_confirm_now, chal_confirm)
             ok, reason = promote_gate(champ_search.score, chal_search.score,
-                                      champ_confirm_now.score, chal_confirm.score, delta)
+                                      champ_confirm_now.score, chal_confirm.score, delta,
+                                      paired=(w, l, t), max_paired_p=max_paired_p)
             challenged.add(spec_hash(challenger.spec))
             row.update({"challenger": challenger.label, "kind": challenger.kind,
                         "challenger_hash": spec_hash(challenger.spec),
@@ -841,6 +906,12 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
                         "challenger_confirm": chal_confirm.score,
                         "gain_cases": round(
                             (chal_confirm.score - champ_confirm_now.score) * n_confirm, 2)})
+            # 対応のある比較を**記録だけ**する(この時点では門にしない)。平均差の床
+            # (1/n と drift)は「どの問題が split に入ったか」という支配的な誤差を見ていない
+            # 疑いがあり、実測 3 走で confirm の伸びが sealed で 4〜6 倍しぼみ、小さい伸びでは
+            # 符号ごと反転した。門にする前に「今までの昇格が何本引っかかるか」を先に測る。
+            row.update({"paired_wins": w, "paired_losses": l, "paired_ties": t,
+                        "paired_p": round(sign_test(w, l), 4)})
         row.update({"verdict": "promote" if ok else "reject", "reason": reason})
         if ok:
             champion, champ_search, champ_confirm = challenger.spec, chal_search, chal_confirm
@@ -924,8 +995,18 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
                    "min_margin": round(margin_floor, 4),
                    "min_margin_source": "auto(one confirm case)" if min_margin is None
                                         else "explicit",
-                   "ensemble_strategy": ensemble_strategy, "code": code_stamp()},
+                   "ensemble_strategy": ensemble_strategy,
+                   "max_paired_p": max_paired_p, "code": code_stamp()},
         "history": history, "archive_size": len(archive),
+        # 昇格した手の対応のある証拠。平均差だけ見ていると「confirm では伸びたが sealed では
+        # しぼんだ/反転した」が説明できない。弱い証拠のまま通った手をここで名指しする。
+        "promotion_evidence": [
+            {"gen": h["gen"], "challenger": h.get("challenger"),
+             "gain_cases": h.get("gain_cases"),
+             "wins": h.get("paired_wins"), "losses": h.get("paired_losses"),
+             "p": h.get("paired_p")}
+            for h in history if h.get("verdict") == "promote"
+        ],
     }
     emit({"event": "final", **{k: v for k, v in result.items() if k != "history"}})
     return result

@@ -29,6 +29,9 @@ from gama.cli import build_parser, main
 from gama.config import build_backend, system_from_config
 from gama.grow import (
     MeasurementFailure,
+    Measurement,
+    paired_gain,
+    sign_test,
     canonical,
     load_checkpoint,
     code_stamp,
@@ -904,3 +907,65 @@ class TestGrowCli(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestPairedEvidence(unittest.TestCase):
+    """平均差の床は「どの問題が split に入ったか」を見ていない。対応のある比較の素材と
+    その検定が、床を通った手の**証拠の強さ**を言えることを固定する。"""
+
+    def _m(self, per_case, score=0.5):
+        return Measurement(score=score, success_rate=score, latency_s=1.0,
+                           n=len(per_case), cases=len(per_case), per_case=per_case)
+
+    def test_sign_test_exact_values(self):
+        self.assertAlmostEqual(sign_test(8, 0), 1 / 256)
+        self.assertAlmostEqual(sign_test(3, 0), 0.125)
+        self.assertAlmostEqual(sign_test(1, 1), 0.75)
+        self.assertEqual(sign_test(0, 0), 1.0)          # 差が出た問題が無い = 何も言えない
+
+    def test_sign_test_is_one_sided(self):
+        # 負けに偏った側は「偶然でない」と言わない(片側)
+        self.assertGreater(sign_test(0, 8), 0.9)
+
+    def test_paired_gain_counts_only_shared_cases(self):
+        a = self._m({"x": 0.0, "y": 1.0, "only_a": 0.0})
+        b = self._m({"x": 1.0, "y": 1.0, "only_b": 1.0})
+        self.assertEqual(paired_gain(a, b), (1, 0, 1))   # x=勝ち y=引き分け、片側だけの case は無視
+
+    def test_paired_gain_uses_tolerance(self):
+        a = self._m({"x": 0.5})
+        b = self._m({"x": 0.5 + 1e-12})
+        self.assertEqual(paired_gain(a, b), (0, 0, 1))   # 浮動小数の遊びは勝ちではない
+
+    def test_gate_unchanged_when_paired_is_off(self):
+        # 既定(None)は従来の判定をそのまま通す。この既定を変えると過去の走行と比較できなくなる
+        ok, reason = promote_gate(0.5, 0.6, 0.5, 0.6, 0.05)
+        self.assertTrue(ok, reason)
+
+    def test_gate_blocks_weak_paired_evidence_when_asked(self):
+        ok, reason = promote_gate(0.5, 0.6, 0.5, 0.6, 0.05,
+                                  paired=(3, 0, 20), max_paired_p=0.05)
+        self.assertFalse(ok)
+        self.assertIn("paired-not-significant", reason)
+        self.assertIn("3w-0l", reason)
+
+    def test_gate_admits_strong_paired_evidence(self):
+        ok, _ = promote_gate(0.5, 0.6, 0.5, 0.6, 0.05,
+                             paired=(8, 0, 20), max_paired_p=0.05)
+        self.assertTrue(ok)
+
+    def test_paired_condition_cannot_rescue_a_failing_mean(self):
+        # 対応のある証拠が強くても、平均差の床を割った手は通らない(条件は AND)
+        ok, reason = promote_gate(0.5, 0.6, 0.5, 0.51, 0.05,
+                                  paired=(8, 0, 0), max_paired_p=0.05)
+        self.assertFalse(ok)
+        self.assertIn("below-margin", reason)
+
+    def test_measure_populates_per_case(self):
+        spec = {"backend": "echo", "kwargs": {}}
+        from gama.benchmark import SUITES
+        cases = SUITES["default"][:3]
+        m = measure(spec, cases)
+        self.assertEqual(set(m.per_case), {c.case_id for c in cases})
+        for v in m.per_case.values():
+            self.assertIsInstance(v, float)
