@@ -196,6 +196,53 @@ class TestSandboxedCheck(unittest.TestCase):
                 "    return E()\n")
         self.assertEqual(_check_func(code, "f", [((0,), [1, 2])]), 0.0)
 
+    def test_scores_correctly_from_c_entrypoint(self):
+        # 回帰: forkserver は子で親の __main__ を path 再 import するため、main が実ファイル
+        # でない起動(python -c / heredoc)だと bootstrap FileNotFoundError で正解コードが
+        # 0.0 に化けていた(2026-08-31 実測)。単スレッド親は fork を使うことで、あらゆる
+        # 起動経路で一様に動くべき。実際に別プロセスの `python -c` から確かめる。
+        import subprocess
+        code = (
+            "from gama.benchmark import _check_func\n"
+            "print(_check_func('def f(x):\\n    return x*x\\n', 'f', "
+            "[((3,), 9), ((4,), 16)]))\n"
+        )
+        r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
+                           cwd=os.path.dirname(os.path.dirname(__file__)), timeout=60)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.strip(), "1.0", f"stdout={r.stdout!r} stderr={r.stderr!r}")
+
+    def test_multithreaded_nonfile_main_fails_loud_not_silent(self):
+        # コンボの穴(多スレッド親 + 非ファイル __main__): fork へ逃がせず forkserver/
+        # spawn の bootstrap が非ファイル main の再 import で失敗し得る。ここは正解コードを
+        # 正しく採れないが、**沈黙で 0 点化してはいけない**(measurement-goes-silent)。
+        # 別スレッドを立てて active_count>1 を作り、python -c から _check_func を呼ぶ。
+        # 期待: 沈黙でなく stderr に 1 度きりの警告が出る(スコアが 0.0 でも可視)。
+        # `python -` (stdin main) は __main__.__file__='<stdin>' になり、forkserver の
+        # 子が main を path 再 import して FileNotFoundError で死ぬ。スレッドを立てて
+        # active_count>1 にすると fork へ逃がせず、まさに doom コンボに落ちる。これを
+        # subprocess の stdin で決定的に踏む。
+        import subprocess
+        script = (
+            "import threading\n"
+            "stop = threading.Event()\n"
+            "t = threading.Thread(target=lambda: stop.wait()); t.start()\n"
+            "from gama.benchmark import _check_func\n"
+            "s = _check_func('def f(x):\\n    return x*x\\n', 'f', [((3,), 9)])\n"
+            "print('score', s)\n"
+            "stop.set(); t.join()\n"
+        )
+        r = subprocess.run([sys.executable, "-"], input=script, capture_output=True,
+                           text=True, cwd=os.path.dirname(os.path.dirname(__file__)),
+                           timeout=60)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        # 沈黙の 0.0 は禁止(measurement-goes-silent): score が 1.0 でないなら、必ず
+        # 「なぜ 0 なのか」の警告が stderr に出ていること。この環境では bootstrap が
+        # 失敗して loud 0.0 になる想定だが、成功して 1.0 でも契約は満たす。
+        if "score 1.0" not in r.stdout:
+            self.assertIn("sandbox child died during bootstrap", r.stderr,
+                          f"silent 0.0 forbidden. stdout={r.stdout!r} stderr={r.stderr!r}")
+
     def test_child_hard_exit_returns_fast(self):
         # 生成コードが q.put 無しで即死する経路(os._exit / ハードクラッシュ)。
         # queue 待ち一本だと満額 timeout を待つ回帰があったので、死の検知で
@@ -206,6 +253,22 @@ class TestSandboxedCheck(unittest.TestCase):
         score = _check_func("import os\nos._exit(0)\n", "f", [((1,), 1)])
         self.assertEqual(score, 0.0)
         self.assertLess(_t.monotonic() - t0, 5.0)
+
+    def test_user_hard_exit_stays_silent(self):
+        # started 印の後に死ぬのは生成コード自身の選択(os._exit)なので、bootstrap 失敗の
+        # 警告を出してはいけない(codex 指摘: 環境失敗と user コードの hard-exit を区別)。
+        # 別プロセスで stderr を捕まえ、警告が漏れないことを確認する。
+        import subprocess
+        script = (
+            "import sys; sys.path.insert(0, %r)\n"
+            "from gama.benchmark import _check_func\n"
+            "print('score', _check_func('import os\\nos._exit(0)\\n', 'f', [((1,), 1)]))\n"
+            % os.path.dirname(os.path.dirname(__file__))
+        )
+        r = subprocess.run([sys.executable, "-c", script], capture_output=True,
+                           text=True, timeout=60)
+        self.assertEqual(r.stdout.strip(), "score 0.0", r.stderr)
+        self.assertNotIn("sandbox child died during bootstrap", r.stderr)
 
 
 class TestNamedSuites(unittest.TestCase):

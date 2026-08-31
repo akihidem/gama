@@ -17,9 +17,11 @@ Honesty notes:
 from __future__ import annotations
 
 import multiprocessing
+import os
 import pickle
 import re
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from typing import Callable, Optional
@@ -134,6 +136,10 @@ def _sandbox_apply(code: str, func_name: str, argss: list, conn) -> None:
     def _send(msg) -> None:
         conn.send_bytes(pickle.dumps(msg))
 
+    # 最初に「起動できた」印を送る: これより前に子が死ぬのは forkserver/spawn の
+    # bootstrap 失敗(親の __main__ 再 import 不能)で、後に死ぬのは生成コード自身の
+    # 選択(os._exit・segfault・hang)。親はこの印の有無で両者を区別し、前者だけ warn する。
+    _send(("started", None, None))
     ns: dict = {}
     try:
         exec(compile(_extract_code(code), "<bench>", "exec"), ns)  # noqa: S102
@@ -175,17 +181,27 @@ def _apply_func_sandboxed(code: str, func_name: str, argss: list,
     # 「採点側を止めない」の上限に含める(start() 自体のブロックだけは残余リスク)。
     deadline = time.monotonic() + timeout
     try:
-        # start method は fork を使わない。多スレッド親(yoriai server の measure)
-        # からの fork は他スレッドが握った lock を子が継承して deadlock し、正解
-        # コードまで 0.0 に化ける(3.12 が警告する既知の罠)。しかも Python から
-        # 見えない native thread は検出できないので「単スレッドなら fork」という
-        # 分岐自体が脆い。forkserver の server はインタプリタ単位で 1 度立って
-        # 再利用されるため呼び出しごとのコストは小さい。無い環境(Windows 等)は
-        # spawn。転送は Pipe.recv_bytes: Queue は受信側で無条件 unpickle が走る。
-        try:
-            ctx = multiprocessing.get_context("forkserver")
-        except ValueError:
-            ctx = multiprocessing.get_context("spawn")
+        # start method の選択には二つの相反するリスクがある:
+        #  (1) 多スレッド親(yoriai server の measure)からの fork は、他スレッドが握った
+        #      lock を子が継承して deadlock し、正解コードまで 0.0 に化ける。
+        #  (2) forkserver/spawn は子で親の __main__ を再 import する。main が実ファイルで
+        #      ないと(python -c / heredoc / REPL)FileNotFoundError で子が bootstrap 中に
+        #      死に、これも正解コードが 0.0 になる(2026-08-31 実測: reference 40/40 が
+        #      stdin 経由だと 32/40 に化けた)。しかも __main__ ガードの外の module 直下の
+        #      コードが子で再実行される。
+        # 既定は fork にする: 単スレッド親(CLI bench・解析スクリプト・pytest)では (1) は
+        # 起きず、(2) の main 再 import も無いのであらゆる起動経路で一様に動く。多スレッド
+        # 親のときだけ forkserver(→spawn)へ逃がす。そこは deadlock を避けるのが優先で、
+        # かつ現実の多スレッド親(uvicorn/yoriai)は実 module から起動されるので (2) は起きない。
+        # 見えない native thread で (1) を取りこぼしても、症状は deadlock=timeout kill で
+        # 0.0 になるだけ(誤って正解を捏造する方向には壊れない)。
+        if hasattr(os, "fork") and threading.active_count() <= 1:
+            ctx = multiprocessing.get_context("fork")
+        else:
+            try:
+                ctx = multiprocessing.get_context("forkserver")
+            except ValueError:
+                ctx = multiprocessing.get_context("spawn")
         rx, tx = ctx.Pipe(duplex=False)
         p = ctx.Process(target=_sandbox_apply, args=(code, func_name, argss, tx),
                         daemon=True)
@@ -208,9 +224,10 @@ def _apply_func_sandboxed(code: str, func_name: str, argss: list,
     # 競合するので、死や EOF を見た後も読める分は飲み干してから確定する。
     results = [("err", None)] * len(argss)
     fatal = None  # exec_error / no_func: 部分点の対象外(関数が存在しない)
+    started = False  # 子が exec 直前まで到達したか(bootstrap 失敗との区別)
 
     def _absorb() -> str:
-        nonlocal fatal
+        nonlocal fatal, started
         try:
             blob = rx.recv_bytes(_RESULT_BYTES_CAP + 65536)
         except EOFError:
@@ -221,6 +238,9 @@ def _apply_func_sandboxed(code: str, func_name: str, argss: list,
             kind, i, payload = _plain_loads(blob)
         except Exception:
             return "cont"  # 復元を拒否した cell は err のまま(実行はしない)
+        if kind == "started":
+            started = True
+            return "cont"
         if kind == "cell":
             if isinstance(i, int) and 0 <= i < len(results):
                 results[i] = payload
@@ -231,6 +251,7 @@ def _apply_func_sandboxed(code: str, func_name: str, argss: list,
         return "done"
 
     state = "cont"
+    hit_deadline = False      # 締切で打ち切ったか(= 正当な timeout。bootstrap 失敗と区別)
     while state == "cont":
         if rx.poll(0.1):
             state = _absorb()
@@ -240,14 +261,28 @@ def _apply_func_sandboxed(code: str, func_name: str, argss: list,
                 state = _absorb()
             break
         if time.monotonic() >= deadline:
+            hit_deadline = True
             break
     if p.is_alive():
         p.kill()
     p.join(1.0)
     rx.close()
+    # started すら来ずに子が死んだ = forkserver/spawn の bootstrap 失敗(多スレッド親 +
+    # 非ファイル __main__ は fork へ逃がせず、子が親の main 再 import で死ぬ)。これは全
+    # code ケースの静かな 0 点化になるので沈黙させず、プロセスあたり 1 回だけ warn する。
+    # started が来た後の死(生成コードの os._exit・segfault・hang)は user コードの正当な
+    # 挙動なので warn しない(codex 指摘: 両者を印で区別)。timeout(hit_deadline)も対象外。
+    # _SANDBOX_START_WARNED の global 宣言は関数冒頭の start 失敗ハンドラ側にある。
+    if not started and fatal is None and state != "done" and not hit_deadline:
+        if not _SANDBOX_START_WARNED:
+            _SANDBOX_START_WARNED = True
+            print("[gama.bench] sandbox child died during bootstrap; code checks score 0 "
+                  f"(exitcode={p.exitcode}). Likely a multithreaded non-file __main__ "
+                  "entrypoint; run the bench from a real module/script.", file=sys.stderr)
+        return None
     if fatal is not None:
         return None
-    # timeout / died でも、届いた分の部分点は返す(未着は err のまま)。
+    # timeout / started 後の死 でも、届いた分の部分点は返す(未着は err のまま)。
     return results
 
 
