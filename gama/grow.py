@@ -757,26 +757,43 @@ def sealed_verdict(sealed: Optional[dict]) -> dict:
     ならない。だから 3 値で返す: 効いた / 分からない / 悪くなった。**「分からない」を
     「効いた」に丸めない**ことがこの関数の全部で、run T はまさにそこを黙って通していた
     (sealed 0.8393 -> 0.8214 なのに「昇格 1・成功」として champion を出した)。
+
+    ``write_recipe`` は任意の result に対してこれを呼ぶので、**全域関数**にしてある。読めない
+    入力で例外を投げると、判定を落とすだけで済むはずが成果物ごと落ちる。区別は 2 語に分けた:
+    ``unsealed`` = そもそも split が無い / ``unjudgeable`` = 在るが比べられない。
     """
-    unsealed = {"verdict": "unsealed", "delta_cases": None, "band_cases": None,
-                "note": "no sealed split: every number fed a decision, so read them as optimistic"}
-    if not sealed:
-        return unsealed
-    # 形を信用しない。この関数は write_recipe から任意の result に対して呼ばれるので、
-    # 古い/欠けた台帳で例外を投げると recipe が書けなくなる。判定できないなら判定しない。
-    seed_m, champ_m = sealed.get("seed") or {}, sealed.get("champion") or {}
-    if not all(isinstance(m.get(k), (int, float))
-               for m in (seed_m, champ_m) for k in ("score", "cases")):
-        return dict(unsealed, note="sealed split present but unreadable: not judging it")
-    n = seed_m["cases"] or 1
-    if champ_m["cases"] != seed_m["cases"]:
-        # 分母が違えば差は問数に直せない。丸めずに「比べられない」と言う。
+    def _score(m) -> Optional[float]:
+        v = m.get("score")
+        return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) \
+            and math.isfinite(v) else None
+
+    def _cases(m) -> Optional[int]:
+        v = m.get("cases")
+        return int(v) if isinstance(v, int) and not isinstance(v, bool) and v > 0 else None
+
+    if not sealed or not isinstance(sealed, dict):
         return {"verdict": "unsealed", "delta_cases": None, "band_cases": None,
-                "note": (f"the sealed split was measured over {seed_m['cases']} cases for the "
-                         f"seed and {champ_m['cases']} for the champion: those two numbers are "
-                         "not a comparison, so this run is not judged")}
-    delta = champ_m["score"] - seed_m["score"]
-    band = 1.0 / n
+                "note": "no sealed split: every number fed a decision, so read them as optimistic"}
+
+    def _unjudgeable(note):
+        return {"verdict": "unjudgeable", "delta_cases": None, "band_cases": None, "note": note}
+
+    seed_m, champ_m = sealed.get("seed"), sealed.get("champion")
+    if not isinstance(seed_m, dict) or not isinstance(champ_m, dict):
+        return _unjudgeable("the sealed block does not hold a seed and a champion measurement, "
+                            "so this run is not judged")
+    s_score, c_score = _score(seed_m), _score(champ_m)
+    s_n, c_n = _cases(seed_m), _cases(champ_m)
+    if None in (s_score, c_score, s_n, c_n):
+        return _unjudgeable("the sealed measurements are missing a usable score or case count, "
+                            "so this run is not judged")
+    if s_n != c_n:
+        # 分母が違えば差は問数に直せない。丸めずに「比べられない」と言う。
+        return _unjudgeable(f"the sealed split was measured over {s_n} cases for the seed and "
+                            f"{c_n} for the champion: those two numbers are not a comparison, "
+                            "so this run is not judged")
+
+    delta, band = c_score - s_score, 1.0 / s_n
     if delta > band:
         v, note = "improved", "the held-out split agrees the champion is better than the seed"
     elif delta < -band:
@@ -788,7 +805,7 @@ def sealed_verdict(sealed: Optional[dict]) -> dict:
         v, note = ("not-separable",
                    "the held-out split cannot tell the champion from the seed at this case "
                    "count. The run neither proved nor disproved an improvement")
-    return {"verdict": v, "delta_cases": round(delta * n, 2), "band_cases": 1.0, "note": note}
+    return {"verdict": v, "delta_cases": round(delta * s_n, 2), "band_cases": 1.0, "note": note}
 
 
 def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
@@ -1176,7 +1193,8 @@ def write_recipe(result: dict, directory, name: Optional[str] = None,
         lines.append("")
     verdict = result.get("sealed_verdict") or sealed_verdict(result.get("sealed"))
     _label = {"improved": "IMPROVED", "regressed": "REGRESSED — do not adopt",
-              "not-separable": "NOT SEPARABLE", "unsealed": "UNSEALED"}
+              "not-separable": "NOT SEPARABLE", "unsealed": "UNSEALED",
+              "unjudgeable": "NOT JUDGED"}
     lines += [
         f"**Held-out verdict: {_label.get(verdict['verdict'], verdict['verdict'])}** "
         + (f"({verdict['delta_cases']:+} cases on the sealed split, which resolves "
