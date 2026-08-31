@@ -1019,9 +1019,17 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
         n_confirm = len(splits["confirm"])
         ok, reason = False, "no-additive-candidate"
         if additive:
-            # 同点はコスト(=実測レイテンシ)の低い方、それも同じならラベル順。決定的に選ぶ。
-            challenger, chal_search = min(additive, key=lambda t: (-t[1].score, t[1].latency_s,
-                                                                    t[0].label))
+            # 同点は構造の小さい方、それも同じならラベル順。
+            #
+            # ここは実測レイテンシで割っていたが、**それだと走行が決定的にならない**。壁時計は
+            # 走るたびに違い、共有 GPU なら他人の負荷でも動くので、同点の候補が「たまたま空いて
+            # いる時に測られた」だけで勝てた(determinism テストが 21 回に 1 回落ちて露見)。
+            # 再現性はこの repo の売りそのものなので、判定に測定ゆらぎを一切入れない。
+            # 構造の大きさは spec だけで決まり、追加コールを生んでいる当のものなので、
+            # 「同点なら安い方」の意図もそのまま保つ(shrink 側の Occam と同じ向き)。
+            challenger, chal_search = min(additive, key=lambda t: (-t[1].score,
+                                                                   _structure_size(t[0].spec),
+                                                                   t[0].label))
             chal_confirm = measure(challenger.spec, splits["confirm"], tier, repeats, unit_cost,
                                    "challenger")
             _guard_measurement(chal_confirm, f"challenger {challenger.label}")

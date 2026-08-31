@@ -23,6 +23,7 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(__file__))
 
 from gama import backends as backends_mod
+from gama.grow import _structure_size
 from gama.backends import ModelBackend
 from gama.benchmark import BenchCase
 from gama.cli import build_parser, main
@@ -1274,3 +1275,27 @@ class TestSealedVerdict(unittest.TestCase):
         self.assertEqual(v["verdict"], "unjudgeable")
         self.assertIsNone(v["delta_cases"])
         self.assertIn("not a comparison", v["note"])
+
+
+class TestSelectionIsDeterministic(unittest.TestCase):
+    """同点の候補を実測レイテンシで割ると、走行が決定的でなくなる。壁時計は走るたび違い、
+    共有 GPU なら他人の負荷でも動くので、「たまたま空いている時に測られた」候補が勝つ。
+    determinism テストは 21 回に 1 回しか落ちず、通常の 1 回実行では見えなかった。"""
+
+    def test_the_challenger_key_does_not_read_the_clock(self):
+        import inspect
+        src = inspect.getsource(grow)
+        sel = src[src.index("if additive:"):src.index("chal_confirm = measure")]
+        self.assertNotIn("latency", sel,
+                         "candidate selection reads a measured latency: two runs with identical "
+                         "inputs can then pick different challengers")
+
+    def test_same_score_prefers_less_structure_then_label(self):
+        bare = {"backend": "gama", "kwargs": {"backends": {"m": {"backend": "echo", "kwargs": {}}},
+                                              "routing_table": {"qa": "m"}, "default_backend": "m"}}
+        big = {"backend": "gama", "kwargs": {
+            "backends": {"m": {"backend": "echo", "kwargs": {}},
+                         "t": {"backend": "tool", "kwargs": {"inner": {"backend": "echo",
+                                                                       "kwargs": {}}}}},
+            "routing_table": {"qa": "t"}, "default_backend": "m"}}
+        self.assertLess(_structure_size(bare), _structure_size(big))
