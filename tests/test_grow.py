@@ -643,11 +643,13 @@ class TestGrowLoop(ScriptedCase):
         # A real run died to the OOM killer right after measuring 43 cases x 4 candidates, and
         # every one of those measurements was lost because nothing in the ledger carried the
         # state a continuation needs.
+        # confirm 側に必ず伸びしろを残す(満点だとクラスが飽和して挑戦が一度も起きず、
+        # 再開の試験が空回りする)。ここで見たいのは再開であって精度ではない。
         Scripted.WINS = {"a": set(), "b": {"qa1", "qa2", "qa4"}}
         pool = {"a": _lane("a"), "b": _lane("b")}
         with tempfile.TemporaryDirectory() as d:
             led = Path(d) / "run.jsonl"
-            first = grow(pool, cases=_cases(4), generations=1, width=2, patience=5,
+            first = grow(pool, cases=_cases(8), generations=1, width=2, patience=5,
                          ledger_path=str(led), min_margin=0.05)
             ck = load_checkpoint(led)
             self.assertIsNotNone(ck)
@@ -656,7 +658,7 @@ class TestGrowLoop(ScriptedCase):
             # a half-written line is what a kill actually leaves behind
             with led.open("a", encoding="utf-8") as fh:
                 fh.write('{"event": "gener')
-            second = grow(pool, cases=_cases(4), generations=3, width=2, patience=5,
+            second = grow(pool, cases=_cases(8), generations=3, width=2, patience=5,
                           resume_from=str(led), min_margin=0.05)
         self.assertEqual(second["history"][0]["gen"], 1)          # continued, did not restart
         self.assertEqual(second["seed_hash"], first["champion_hash"])
@@ -1010,9 +1012,9 @@ class TestPairedEvidenceSurvivesResume(ScriptedCase):
         pool = {"a": _lane("a"), "b": _lane("b")}
         with tempfile.TemporaryDirectory() as d:
             led = Path(d) / "run.jsonl"
-            grow(pool, cases=_cases(4), generations=1, width=2, patience=5,
+            grow(pool, cases=_cases(8), generations=1, width=2, patience=5,
                  ledger_path=str(led), min_margin=0.05)
-            second = grow(pool, cases=_cases(4), generations=3, width=2, patience=5,
+            second = grow(pool, cases=_cases(8), generations=3, width=2, patience=5,
                           resume_from=str(led), min_margin=0.05)
         challenged = [h for h in second["history"] if h.get("challenger")]
         self.assertTrue(challenged, "resumed run never challenged anything")
@@ -1391,3 +1393,40 @@ class TestSaturatedClasses(ScriptedCase):
              on_event=lambda r: seen.append(r))
         self.assertTrue([r for r in seen if r["event"] == "candidate"],
                         "a class with headroom was skipped")
+
+    def test_a_default_swap_is_dropped_when_no_class_with_headroom_uses_the_default(self):
+        # 既定レーンの差し替えは「既定に落ちているクラス」経由でしか効かない。qa は明示ルート、
+        # research は飽和 —— なら誰の点も動かせないので提案しない
+        champ = {"backend": "gama", "kwargs": {
+            "backends": {"a": _lane("a"), "b": _lane("b")},
+            "routing_table": {"qa": "b"}, "default": "a"}}
+        cands = propose(champ, {"a": _lane("a"), "b": _lane("b")}, ["qa", "research"],
+                        width=8, additive_classes=["qa"])
+        self.assertNotIn("default", {c.kind for c in cands})
+
+    def test_a_default_swap_survives_when_a_class_with_headroom_uses_the_default(self):
+        champ = {"backend": "gama", "kwargs": {
+            "backends": {"a": _lane("a"), "b": _lane("b")},
+            "routing_table": {"qa": "b"}, "default": "a"}}
+        cands = propose(champ, {"a": _lane("a"), "b": _lane("b")}, ["qa", "research"],
+                        width=8, additive_classes=["research"])   # research は既定に落ちている
+        self.assertIn("default", {c.kind for c in cands})
+
+    def test_saturation_still_applies_after_a_resume(self):
+        # checkpoint は `_meas()` を通すので per_case を持たない。飽和判定を復元状態から
+        # 作っていた版では、再開のたびにこの除外が黙って無効化されていた(codex 指摘)。
+        Scripted.WINS = {"a": {f"qa{i}" for i in range(1, 9)},
+                         "b": {f"qa{i}" for i in range(1, 9)}}
+        pool = {"a": _lane("a"), "b": _lane("b")}
+        with tempfile.TemporaryDirectory() as d:
+            led = Path(d) / "run.jsonl"
+            grow(pool, cases=_cases(8), generations=1, width=4, patience=3,
+                 ledger_path=str(led), min_margin=0.05)
+            seen = []
+            grow(pool, cases=_cases(8), generations=2, width=4, patience=3,
+                 resume_from=str(led), min_margin=0.05, on_event=lambda r: seen.append(r))
+        self.assertTrue([r for r in seen if r["event"] == "saturated"],
+                        "saturation was not detected after a resume")
+        kinds = {r["kind"] for r in seen if r["event"] == "candidate"}
+        self.assertFalse(kinds & {"route", "tool", "ensemble", "meshflow", "deepen"},
+                         f"additive mutation measured on a saturated class after resume: {kinds}")

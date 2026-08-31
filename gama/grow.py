@@ -433,9 +433,11 @@ def propose(champion: dict, pool: dict[str, dict], classes: list[str],
     add_set = set(additive)
     for kind in ("route", "tool", "ensemble", "meshflow", "deepen"):
         buckets[kind] = [(tt, c) for (tt, c) in buckets[kind] if tt in add_set]
-    if not add_set:
-        # ⑥ 既定レーンの差し替えはどれか 1 クラス経由でしか効かない。どのクラスにも
-        # 伸びしろが無いなら、これも通りようがない。
+    # ⑥ 既定レーンの差し替えは「既定に落ちているクラス」経由でしか効かない。伸びしろのある
+    # クラスが 1 つも既定に落ちていないなら、この変異は誰の点も動かせない。全クラス飽和の
+    # ときだけ落とすのでは足りない(一部飽和でも、残ったクラスが全部明示ルートなら同じこと)。
+    if not any(_lane_for(champion, tt) == (champion.get("kwargs") or {}).get("default")
+               for tt in add_set):
         buckets["default"] = []
 
     queues = {k: _by_class_rotation(buckets[k], ordered_classes, offset + generation)
@@ -1017,23 +1019,36 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
     stale = resume["stale"] if resume else 0
     # confirm で決着がついた設計(勝っても負けても二度は問わない)
     challenged: set = set(resume["challenged"]) if resume else set()
-    floor_cases = margin_floor * len(splits["confirm"])
     for gen in range(start_gen, generations):
         t0 = time.time()
         # 伸びしろの尽きたクラスは変異させない。実測(run U seed): integration は 8/8 満点で
         # 伸びしろ 0.00 問なのに `tool:integration` が候補に出て、確実に無駄と分かっている
-        # 測定に実モデルを焚いていた。取りうる最大の伸びが床(1 問)に満たないクラスは、
+        # 測定に実モデルを焚いていた。取りうる最大の伸びが門の幅に満たないクラスは、
         # **どの変異でも昇格しえない**ので、除外は推定ではなく算術。
-        # per_case が無い(古い checkpoint からの再開など)ときは何も除外しない —— 飽和を
-        # 証明できないなら除外しない、という向きに倒す。
-        headroom = class_headroom(champ_confirm, splits["confirm"])
+        #
+        # チャンピオンの confirm 測定をここ(propose の前)でやるのは、飽和判定を
+        # **復元した状態に依存させない**ため。checkpoint は `_meas()` を通すので per_case を
+        # 落としており、再開のたびに伸びしろが空になって除外が黙って無効化されていた
+        # (同一性検査でも同じ形で一度やっている)。毎世代どのみち測るものなので、順番を
+        # 前に出すだけで測定回数は変わらず、再開の有無に関係なく新鮮な値で判定できる。
+        champ_confirm_now = measure(champion, splits["confirm"], tier, repeats, unit_cost,
+                                    "champion")
+        _guard_measurement(champ_confirm_now, f"champion on confirm (gen {gen})")
+        # 差 δ の下限は「同じ config を測り直したときの揺れ」そのもの — 自分の揺れより
+        # 小さい改善を採らないための実測アンカー。
+        drift = abs(champ_confirm_now.score - champ_confirm.score)
+        delta = max(margin_floor, drift)
+        # 飽和の閾値も δ で見る。床だけで見ると、揺れが床より大きい世代に「床は越えられるが
+        # δ は越えられない」クラスが候補に残り、通りようのない測定を焚くことになる。
+        gate_cases = delta * len(splits["confirm"])
+        headroom = class_headroom(champ_confirm_now, splits["confirm"])
         saturated = sorted(c for c in classes
-                           if c in headroom and headroom[c] < floor_cases)
+                           if c in headroom and headroom[c] < gate_cases)
         if saturated:
             emit({"event": "saturated", "gen": gen,
                   "classes": {c: round(headroom[c], 2) for c in saturated},
-                  "floor_cases": round(floor_cases, 2),
-                  "note": "no mutation on these classes can clear the promotion floor; "
+                  "gate_cases": round(gate_cases, 2),
+                  "note": "no mutation on these classes can clear the promotion gate; "
                           "the suite has nothing left to win there"})
         # 飽和したクラスも propose には渡す。削る変異は「悪くならないこと」しか要求しないので、
         # むしろ満点のクラスこそ「その構造は何も買っていない」と言える場所になる。
@@ -1062,13 +1077,6 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
                       "hash": h, "search": _meas(m)})
             scored.append((c, m))
 
-        # チャンピオンを毎世代 confirm で測り直す。差 δ の下限は「同じ config を測り直したときの
-        # 揺れ」そのもの — 自分の揺れより小さい改善を採らないための実測アンカー。
-        champ_confirm_now = measure(champion, splits["confirm"], tier, repeats, unit_cost,
-                                    "champion")
-        _guard_measurement(champ_confirm_now, f"champion on confirm (gen {gen})")
-        drift = abs(champ_confirm_now.score - champ_confirm.score)
-        delta = max(margin_floor, drift)
 
         # 追加と削減は別々に選ぶ。混ぜると、構造を剥がした候補が search 最高点の勝負に放り込まれ、
         # 「良くなったか」という**別の問い**の門で焼かれる(そして二度と挑戦できない)。
