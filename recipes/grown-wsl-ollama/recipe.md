@@ -4,6 +4,8 @@ The first recipe in this library that was **not written by a person**. `gama gro
 the config space on a CPU-only box across six runs and ended up with two changes to a bare
 `llama3.2:3b`, each of which had to clear a held-out split to get in:
 
+**Held-out verdict: IMPROVED** (+4.33 cases on the sealed split, which resolves 1). The sealed split is opened once, after the last generation, and feeds no decision — it is the only number here entitled to say the champion is better than the bare model it grew from. It is also the only run in this library that clears that bar; see the README for the six that come back NOT SEPARABLE.
+
 | task class | lane | what it does |
 |---|---|---|
 | `qa` | **`tool(llama3.2:3b)`** | the model writes Python, we execute it (exact arithmetic) |

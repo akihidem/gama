@@ -4,6 +4,16 @@ The second recipe in this library grown by `gama grow`, and the reason it is wor
 to [`grown-wsl-ollama`](../grown-wsl-ollama): **same suites, same mutation set, same gates —
 and a different answer.**
 
+**Held-out verdict: NOT SEPARABLE.** Every completed run on this box — six of them —
+ends the same way: the sealed split cannot tell the grown champion from the seed it
+started from. The lane choices below are what `confirm` selected, and `confirm` is
+selected against every generation, so read them as the loop's best guess rather than a
+demonstrated improvement. The reason is measured and is not the gates: across 56
+confirm cases there are 7.48 cases of score left to win, 46 are already perfect, and
+`integration` is at 8 out of 8. **This suite is saturated for a 48B**, and a saturated
+suite cannot resolve structures. Use this recipe as a starting configuration, not as
+evidence that it beats the bare model.
+
 | box | champion the loop settled on |
 |---|---|
 | WSL2, CPU, `llama3.2:3b` | `qa → tool`, `research → mesh(3b → qwen2.5-coder:7b)` |
