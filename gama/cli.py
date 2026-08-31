@@ -459,6 +459,13 @@ def cmd_grow(args: argparse.Namespace) -> int:
             "needs a near-sweep, so this is a limit of the evidence, not proof the change is "
             "bad — read the sealed line as the check, and treat these lanes as provisional.\n")
 
+    if result.get("identity_verified") is False:
+        sys.stderr.write(
+            "[gama] this run resumed from a ledger written before served-model identity was "
+            "recorded, so the boundary between the old run and this one is UNVERIFIED: if the "
+            "server was restarted onto different weights in between, the generations either "
+            "side are not comparable. Later generations are still checked against each other.\n")
+
     if args.write_recipe:
         d = write_recipe(result, args.write_recipe, hardware=args.hardware)
         sys.stderr.write(f"[gama] recipe -> {d}/config.json + {d}/recipe.md\n")

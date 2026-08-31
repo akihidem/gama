@@ -1086,7 +1086,9 @@ class SwappingBackend(ModelBackend):
         SwappingBackend.CALLS += 1
         served = ("/models/first.gguf" if SwappingBackend.CALLS <= SwappingBackend.SWAP_AFTER
                   else "/models/second.gguf")
-        note_served("box:8000/m", served)
+        # レーンごとに別の要求先を名乗る。要求先が 1 つしかない模型だと、複数レーンが
+        # 混ざったときに鍵の取り違えで起きる偽陽性/偽陰性を一切踏まない。
+        note_served(f"box:8000/{self.tag}", served if self.tag == "a" else "/models/other.gguf")
         return "GOOD"
 
 
@@ -1123,7 +1125,9 @@ class TestBackendIdentityThroughTheLoop(ScriptedCase):
         pool = {"a": {"backend": "swapping", "kwargs": {"tag": "a"}},
                 "b": {"backend": "swapping", "kwargs": {"tag": "b"}}}
         result = grow(pool, cases=_cases(4), generations=2, width=2, patience=3, min_margin=0.05)
-        self.assertEqual(result["served"], {"box:8000/m": ["/models/first.gguf"]})
+        self.assertEqual(result["served"], {"box:8000/a": ["/models/first.gguf"],
+                                            "box:8000/b": ["/models/other.gguf"]})
+        self.assertTrue(result["identity_verified"])
 
     def test_observations_survive_a_resume(self):
         # resume を跨いだ載せ替えが見えなければ、長い走行ほど検査の抜け道になる
@@ -1134,8 +1138,44 @@ class TestBackendIdentityThroughTheLoop(ScriptedCase):
             grow(pool, cases=_cases(4), generations=1, width=2, patience=3,
                  ledger_path=str(led), min_margin=0.05)
             ck = load_checkpoint(led)
-            self.assertEqual(ck["served"], {"box:8000/m": ["/models/first.gguf"]})
+            self.assertEqual(ck["served"]["box:8000/a"], ["/models/first.gguf"])
             SwappingBackend.SWAP_AFTER = 0        # 再開後は別モデルが応える
             with self.assertRaises(MeasurementFailure):
                 grow(pool, cases=_cases(4), generations=3, width=2, patience=3,
                      resume_from=str(led), min_margin=0.05)
+
+    def test_resuming_a_ledger_without_identity_says_so_instead_of_claiming_it(self):
+        # この機能より前に書かれた台帳(run O〜T)には served が無い。空から再開して黙って
+        # 「検査済み」を名乗ると、未検証が検証済みに化ける。肯定形で持つ。
+        pool = {"a": {"backend": "swapping", "kwargs": {"tag": "a"}},
+                "b": {"backend": "swapping", "kwargs": {"tag": "b"}}}
+        with tempfile.TemporaryDirectory() as d:
+            led = Path(d) / "old.jsonl"
+            grow(pool, cases=_cases(4), generations=1, width=2, patience=3,
+                 ledger_path=str(led), min_margin=0.05)
+            # served を落とした古い形式の台帳に書き換える
+            rows = [json.loads(l) for l in led.read_text(encoding="utf-8").splitlines() if l.strip()]
+            for r in rows:
+                r.pop("served", None)
+            led.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in rows) + "\n",
+                           encoding="utf-8")
+            reset_served()
+            out = grow(pool, cases=_cases(4), generations=2, width=2, patience=3,
+                       resume_from=str(led), min_margin=0.05)
+        self.assertFalse(out["identity_verified"])
+
+    def test_an_unidentifiable_pool_is_not_marked_unverified(self):
+        # echo だけの走行は「名乗れない」のであって「怪しい」のではない。偽の警告を出さない
+        with tempfile.TemporaryDirectory() as d:
+            led = Path(d) / "old.jsonl"
+            pool = {"e1": {"backend": "echo", "kwargs": {}}, "e2": {"backend": "echo", "kwargs": {}}}
+            grow(pool, cases=_cases(4), generations=1, width=2, patience=3,
+                 ledger_path=str(led), min_margin=0.05)
+            rows = [json.loads(l) for l in led.read_text(encoding="utf-8").splitlines() if l.strip()]
+            for r in rows:
+                r.pop("served", None)
+            led.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in rows) + "\n",
+                           encoding="utf-8")
+            out = grow(pool, cases=_cases(4), generations=2, width=2, patience=3,
+                       resume_from=str(led), min_margin=0.05)
+        self.assertTrue(out["identity_verified"])

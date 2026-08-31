@@ -843,11 +843,29 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
         if on_event:
             on_event(row)
 
+    # 同一性が「連続して確かめられた」と言えるのは、それを証明できたときだけ。この変更より
+    # 前に書かれた台帳には served が無く、黙って空から再開すると**検査を通ったこと**にされる。
+    # 否定形(「食い違いが無い」)でなく肯定形(「同じだと確かめられた」)で持つ。
+    resumed_blind = False
     if resume:
         champ_search = Measurement(**resume["champion_search"])
         champ_confirm = Measurement(**resume["champion_confirm"])
         archive.update(resume.get("archive") or {})
         start_gen = resume["gen"] + 1
+        # 中断前に測っていた実体を復元する。復元は resumed イベントより**前**に済ませる
+        # (イベントを見る側が、空の状態を再開直後の真値だと読まないように)。
+        prior = resume.get("served")
+        if prior:
+            for dest, seen in prior.items():
+                for one in seen:
+                    note_served(dest, one)
+        else:
+            # 古い台帳からの再開(この機能より前の run O〜T には served が無い)。突き合わせる
+            # 相手が無いので、この境界だけは検査できない。ただし「名乗らない backend だから
+            # 空」なのか「古い形式だから空」なのかは、backend 名の許可リストで決めない
+            # (名前で判定すると新しい backend が黙って検査対象から漏れる)。走ってみて実体を
+            # 1 つでも観測したなら、名乗れる相手なのに突き合わせられなかった、と後で分かる。
+            resumed_blind = True
     else:
         champ_search = measure(champion, splits["search"], tier, repeats, unit_cost, "champion")
         _guard_measurement(champ_search, "seed on the search split")
@@ -873,13 +891,6 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
               "champion_search": _meas(champ_search), "champion_confirm": _meas(champ_confirm),
               "challenged": [], "archive": {}, "stale": 0, "served": served_map()})
 
-    if resume:
-        # 中断前に「どの実体を測っていたか」を復元する。ここを空のまま再開すると、再開の
-        # 前後で相手が入れ替わっていても突き合わせる相手が無く、resume が同一性検査の
-        # 抜け道になる(長い走行ほど resume を挟むので、そこが一番通したくない穴)。
-        for dest, seen in (resume.get("served") or {}).items():
-            for one in seen:
-                note_served(dest, one)
     stale = resume["stale"] if resume else 0
     # confirm で決着がついた設計(勝っても負けても二度は問わない)
     challenged: set = set(resume["challenged"]) if resume else set()
@@ -1048,6 +1059,12 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
         # この走行が実際に測った相手。空なら同一性を名乗れない backend(echo 等)で、
         # 「確認できなかった」ことがそのまま読める(黙って保証したことにしない)。
         "served": served_map(),
+        # 走行を通して同じ相手を測ったと**言い切れる**か。False は「違った」ではなく
+        # 「確かめられなかった」で、その区別を残さないと未検証が検証済みに化ける。
+        # 名乗れる相手を測ったのに、再開の境界で突き合わせる記録が無かった場合だけ False。
+        # 名乗らない backend(echo 等)は「怪しい」のではなく「確かめようがない」ので、
+        # 偽の警告を出さない。
+        "identity_verified": not (resumed_blind and bool(served_map())),
         "history": history, "archive_size": len(archive),
         # 昇格した手の対応のある証拠。平均差だけ見ていると「confirm では伸びたが sealed では
         # しぼんだ/反転した」が説明できない。弱い証拠のまま通った手をここで名指しする。
