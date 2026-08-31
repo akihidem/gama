@@ -1241,6 +1241,11 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
         # 走行そのものの合否。confirm 上の昇格数は「何手通したか」であって「良くなったか」
         # ではない。封をした split に一度だけ言わせる。
         "sealed_verdict": sealed_verdict(sealed),
+        # クラスごとの伸びしろ(問)。「どこに case を足すべきか」を一般論でなく実測で言う。
+        # 空なら per_case が取れなかった走行(古い checkpoint からの再開など)。
+        "headroom": {c: round(v, 2)
+                     for c, v in sorted(class_headroom(champ_confirm,
+                                                       splits["confirm"]).items())},
         "splits": {k: [c.case_id for c in v] for k, v in splits.items()},
         "params": {"suites": list(suites) if cases is None else "custom", "ratio": list(ratio),
                    "tier": tier.value, "repeats": repeats, "width": width,

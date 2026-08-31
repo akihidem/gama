@@ -1476,3 +1476,11 @@ class TestSaturatedClasses(ScriptedCase):
         gens = [r["gen"] for r in rows if r["event"] == "checkpoint"]
         self.assertIn(stops[0]["gen"], gens,
                       "stopped without checkpointing the confirm measurement it paid for")
+
+    def test_the_run_reports_where_the_headroom_is(self):
+        # 「変えているクラスに case を足せ」を一般論でなく実測で言えるようにする
+        Scripted.WINS = {"a": {"qa1", "qa2"}, "b": {"qa1", "qa2", "qa3"}}
+        pool = {"a": _lane("a"), "b": _lane("b")}
+        res = grow(pool, cases=_cases(8), generations=1, width=3, patience=3, min_margin=0.05)
+        self.assertIn("qa", res["headroom"])
+        self.assertGreater(res["headroom"]["qa"], 0.0)

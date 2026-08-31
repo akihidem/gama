@@ -435,6 +435,19 @@ def cmd_grow(args: argparse.Namespace) -> int:
             "touch changes nothing — the floor 1/n and a gain S/n scale together — so the "
             "lever is more cases IN THE CLASS being changed, not a bigger pool. More "
             "--repeats does nothing here either.\n")
+        # 一般論(「変えているクラスに case を足せ」)は測った数字で言える。どのクラスに
+        # どれだけ余地が残っているかは走行が知っているので、推測させない。
+        room = result.get("headroom") or {}
+        if room:
+            dry = [c for c, v in room.items() if v < 1.0]
+            listing = ", ".join(f"{c} {v:g}" for c, v in sorted(room.items(), key=lambda kv: kv[1]))
+            sys.stderr.write(f"[gama] headroom left, in cases: {listing}.\n")
+            if dry:
+                sys.stderr.write(
+                    f"[gama] {', '.join(dry)} hold less than one case of headroom, so no "
+                    "additive mutation there can clear the floor whatever you try. Adding cases "
+                    "to those classes only helps if the new cases are ones this champion gets "
+                    "WRONG — harder, not more.\n")
     elif bound.get("drift", 0):
         sys.stderr.write(
             f"[gama] the bar was set by NOISE in {bound['drift']} of {sum(bound.values())} "
