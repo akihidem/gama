@@ -187,7 +187,7 @@ def cmd_mesh(args: argparse.Namespace) -> int:
     records = run_bench(backends, suite=SUITES[args.suite], tier=ModelTier(args.tier),
                         repeats=args.repeats, run_id="mesh")
     try:
-        result = mesh_analyze(records, members, pass_score=args.pass_score)
+        result = mesh_analyze(records, members, pass_score=args.pass_score, by_class=True)
     except ValueError as e:
         sys.stderr.write(f"[gama] {e}\n")
         return 2
@@ -201,6 +201,19 @@ def cmd_mesh(args: argparse.Namespace) -> int:
         f"[{lo}, {hi}] -> ceiling 1-beta={result['ceiling']} vs best-single({result['best_member']})="
         f"{result['best_single']}  gain={result['mesh_gain']} ({result['gain_cases']} cases; bounds [{glo}, {ghi}])  "
         f"-> verdict={result['verdict']} (pairwise rho={result['failure_rho']}, secondary)\n")
+    blind = {c: v for c, v in result.get("classes", {}).items() if v["blind_spot"]}
+    if blind:
+        # existence is certified (k >= 1); MAGNITUDE is the interval — read it before acting.
+        # Those k cases defeat every member, so where the mass is large, more members won't
+        # help: add a different KIND of capability (tool/lane) or accept the ceiling.
+        sys.stderr.write("[gama] certified co-failure by class (k>=1): "
+                         + "  ".join(f"{c}={v['cofailure_k']}/{v['n_cases']} "
+                                     f"[{v['beta_interval'][0]}, {v['beta_interval'][1]}] "
+                                     f"ceiling<={v['ceiling_certified']}"
+                                     for c, v in blind.items()) + "\n")
+    if result.get("unclassified_cases"):
+        sys.stderr.write(f"[gama] note: {result['unclassified_cases']} case(s) carry no "
+                         "task_type and are outside the class breakdown\n")
     return 0
 
 

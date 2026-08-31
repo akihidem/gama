@@ -193,18 +193,79 @@ def clopper_pearson(k: int, n: int, confidence: float = 0.95) -> tuple:
     return lower, upper
 
 
-def solve_vectors_from_records(records: list, members: list, pass_score: float = 1.0) -> list:
-    """Build each member's 0/1 per-case solve vector (1 iff its score >= pass_score), aligned by case."""
+def _scores_and_cases(records: list, strict_classes: bool = False) -> tuple:
+    """(score map, first-seen case order, case -> task_type). One pass, set-backed membership.
+
+    ``strict_classes`` guards the class metadata only where it is actually used (the by-class
+    path): conflicting or non-str task_types are refused THERE, while score-only callers
+    (solve vectors, plain analyze) keep working — task_type is auxiliary for them."""
     score: dict = {}
     cases: list = []
     seen: set = set()          # membership via set: the list scan was O(n²) on large benches
+    case_class: dict = {}
     for r in records:
         key = (r["case_id"], r["backend"])
         score[key] = max(score.get(key, 0.0), float(r.get("score", 0.0)))
         if r["case_id"] not in seen:
             seen.add(r["case_id"])
             cases.append(r["case_id"])   # list keeps first-seen order (aligned vectors, stable)
+        tt = r.get("task_type")
+        if tt is not None:
+            if strict_classes:
+                if not isinstance(tt, str):
+                    raise ValueError(f"task_type must be a str for by-class analysis "
+                                     f"(case {r['case_id']!r} has {tt!r})")
+                prev = case_class.get(r["case_id"])
+                if prev is not None and prev != tt:
+                    # same case, two classes: the records are inconsistent — refuse rather than
+                    # silently keep whichever came first (it would move cases between classes)
+                    raise ValueError(f"case {r['case_id']!r} has conflicting task_types "
+                                     f"({prev!r} vs {tt!r})")
+            if r["case_id"] not in case_class:
+                case_class[r["case_id"]] = tt
+    return score, cases, case_class
+
+
+def solve_vectors_from_records(records: list, members: list, pass_score: float = 1.0) -> list:
+    """Build each member's 0/1 per-case solve vector (1 iff its score >= pass_score), aligned by case."""
+    score, cases, _ = _scores_and_cases(records)
     return [[1 if score.get((c, m), 0.0) >= pass_score else 0 for c in cases] for m in members]
+
+
+def cofailure_by_class(records: list, members: list, pass_score: float = 1.0,
+                       confidence: float = 0.95) -> dict:
+    """Per-task-class co-failure: ``{class: {...}}`` with exact intervals and the blind-spot flag.
+
+    β caps every answer-selecting policy *per class* too: a class where the interval's lower
+    bound is above 0 is a **structural blind spot** — certified co-failure mass that no vote,
+    router or cascade over these members can fix those cases. The flag certifies **existence**
+    (with exact Clopper–Pearson, lower bound > 0 iff k >= 1); magnitude is read from the
+    interval, and ``ceiling_certified = 1 − beta_lo`` is the certified bound on what any
+    selection policy can score in that class. Where the mass is large, the prescription
+    changes: add a different *kind* of capability (a tool, another lane), not more members.
+    ``per_member_solved`` shows who covers what. Cases without a task_type are counted in
+    ``unclassified_cases`` on the analyze() result rather than silently dropped."""
+    score, cases, case_class = _scores_and_cases(records, strict_classes=True)
+    vecs = [[1 if score.get((c, m), 0.0) >= pass_score else 0 for c in cases] for m in members]
+    out: dict = {}
+    for cls in sorted({v for v in case_class.values()}):
+        idx = [i for i, c in enumerate(cases) if case_class.get(c) == cls]
+        sub = [[v[i] for i in idx] for v in vecs]
+        k, n = cofailure(sub)
+        lo, hi = clopper_pearson(k, n, confidence)
+        out[cls] = {
+            "cofailure_k": k,
+            "n_cases": n,
+            "cofailure_beta": round(k / n, 4),
+            "beta_interval": [round(lo, 6), round(hi, 6)],
+            "ceiling": round(1.0 - k / n, 4),          # point estimate
+            "ceiling_certified": round(1.0 - lo, 4),   # any policy scores <= this (95%)
+            # certified co-failure mass: even the interval's pessimistic-for-the-claim end
+            # says some cases defeat EVERY member (== k >= 1 under exact CP)
+            "blind_spot": lo > 0.0,
+            "per_member_solved": {m: sum(v) for m, v in zip(members, sub)},
+        }
+    return out
 
 
 def verdict_from_counts(cofailure_k: int, n_cases: int, best_solved: int, members: int,
@@ -273,7 +334,8 @@ def verdict_from_counts(cofailure_k: int, n_cases: int, best_solved: int, member
     }
 
 
-def analyze(records: list, members: list, pass_score: float = 1.0, confidence: float = 0.95) -> dict:
+def analyze(records: list, members: list, pass_score: float = 1.0, confidence: float = 0.95,
+            by_class: bool = False) -> dict:
     """Measure whether ensembling ``members`` ignites, certified from the co-failure rate β.
 
     ``union = 1 − β`` exactly, so ``mesh_gain = union − best_single`` is the oracle gain of the
@@ -289,6 +351,10 @@ def analyze(records: list, members: list, pass_score: float = 1.0, confidence: f
       a paired test would make it, never easier. More cases than one fluke can explain.
     * ``undetermined`` — a gain was observed but the sample cannot separate it from 0; report
       the size and the interval, do not say "it fired" (the soshiki-genron +0.042 retraction).
+
+    With ``by_class=True`` the result also carries ``classes`` (see :func:`cofailure_by_class`):
+    per-task-class β with its own exact interval, and ``blind_spot`` = the interval's lower
+    bound is above 0 — a class every member fails on more than a fluke can explain.
 
     ``gain_bounds = [(1 − β_hi) − best_hi, (1 − β_lo) − best_lo]`` are those conservative
     bounds — not a confidence interval of the paired difference — and ``gain_upper_bound`` is the
@@ -319,4 +385,9 @@ def analyze(records: list, members: list, pass_score: float = 1.0, confidence: f
                    "Chen 2026 arXiv:2606.27288; soshiki-genron mesh, analytic gain="
                    "(1-rho)(1-p)(1-(1-p)^(n-1)))."),
     })
+    if by_class:
+        out["classes"] = cofailure_by_class(records, members, pass_score, confidence)
+        # classes are a BREAKDOWN of the global counts only over classified cases; say
+        # explicitly how many cases carried no task_type instead of letting sums silently differ
+        out["unclassified_cases"] = n - sum(v["n_cases"] for v in out["classes"].values())
     return out

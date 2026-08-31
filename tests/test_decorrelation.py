@@ -8,8 +8,8 @@ from gama.backends import ModelBackend
 from gama.benchmark import BenchCase, run_bench
 from gama.cli import build_parser
 from gama.decorrelation import (
-    analyze, clopper_pearson, cofailure, failure_correlation, ignites, mesh_correctness,
-    mesh_gain, solve_vectors_from_records, union_solve, verdict_from_counts,
+    analyze, clopper_pearson, cofailure, cofailure_by_class, failure_correlation, ignites,
+    mesh_correctness, mesh_gain, solve_vectors_from_records, union_solve, verdict_from_counts,
 )
 from gama.models import ModelTier
 
@@ -307,6 +307,83 @@ class TestCofailure(unittest.TestCase):
         self.assertEqual((r["cofailure_k"], r["n_cases"]), (11, 24))
         self.assertEqual(r["verdict"], "undetermined")
         self.assertFalse(r["ignites"])
+
+
+class TestByClass(unittest.TestCase):
+    """L0-5b: per-class beta. The blind-spot flag is certified (interval), never a point guess."""
+
+    def _recs(self):
+        # class "qa": co-failure 0 of 12 -> the only way the flag stays off (lower bound 0).
+        # class "code": EVERY member fails all 12 -> beta_lo = 0.025^(1/12) ~ 0.735 -> blind spot.
+        # class "math": 1 co-failure of 12 -> CP lower bound is small but POSITIVE -> certified
+        #   (a case that defeats every member was observed); magnitude is read from the interval.
+        recs = []
+        for i in range(12):
+            recs += [{"case_id": f"q{i}", "backend": "A", "score": 1.0, "task_type": "qa"},
+                     {"case_id": f"q{i}", "backend": "B", "score": 0.0, "task_type": "qa"},
+                     {"case_id": f"c{i}", "backend": "A", "score": 0.0, "task_type": "code"},
+                     {"case_id": f"c{i}", "backend": "B", "score": 0.0, "task_type": "code"},
+                     {"case_id": f"m{i}", "backend": "A", "score": 0.0 if i == 0 else 1.0,
+                      "task_type": "math"},
+                     {"case_id": f"m{i}", "backend": "B", "score": 0.0, "task_type": "math"}]
+        return recs
+
+    def test_blind_spot_is_certified_not_pointwise(self):
+        by = cofailure_by_class(self._recs(), ["A", "B"])
+        self.assertEqual(set(by), {"qa", "code", "math"})
+        self.assertEqual((by["qa"]["cofailure_k"], by["qa"]["blind_spot"]), (0, False))
+        code = by["code"]
+        self.assertEqual((code["cofailure_k"], code["n_cases"]), (12, 12))
+        self.assertTrue(code["blind_spot"] and code["beta_interval"][0] > 0.7)
+        self.assertEqual(code["ceiling"], 0.0)
+        # 1 co-failure: the flag is on (a co-failure was observed, so mass 0 is excluded),
+        # but the interval shows it is small — the reader judges magnitude, the flag only
+        # certifies existence. Only k=0 leaves the class unflagged.
+        math_c = by["math"]
+        self.assertEqual(math_c["cofailure_k"], 1)
+        self.assertTrue(math_c["blind_spot"])
+        self.assertLess(math_c["beta_interval"][0], 0.05)
+        self.assertGreater(math_c["beta_interval"][0], 0.0)
+        self.assertEqual(by["qa"]["per_member_solved"], {"A": 12, "B": 0})
+
+    def test_analyze_carries_classes_only_when_asked(self):
+        r = analyze(self._recs(), ["A", "B"])
+        self.assertNotIn("classes", r)                      # API compat: opt-in
+        r2 = analyze(self._recs(), ["A", "B"], by_class=True)
+        self.assertEqual(r2["classes"]["code"]["blind_spot"], True)
+        # the per-class counts must reconcile with the global ones
+        self.assertEqual(sum(v["cofailure_k"] for v in r2["classes"].values()), r2["cofailure_k"])
+        self.assertEqual(sum(v["n_cases"] for v in r2["classes"].values()), r2["n_cases"])
+        self.assertEqual(r2["unclassified_cases"], 0)
+
+    def test_cases_without_task_type_are_counted_as_unclassified(self):
+        recs = [{"case_id": "x", "backend": "A", "score": 0.0},
+                {"case_id": "x", "backend": "B", "score": 0.0}]
+        self.assertEqual(cofailure_by_class(recs, ["A", "B"]), {})
+        r = analyze(recs + [{"case_id": "y", "backend": "A", "score": 1.0, "task_type": "qa"},
+                            {"case_id": "y", "backend": "B", "score": 0.0, "task_type": "qa"}],
+                    ["A", "B"], by_class=True)
+        self.assertEqual(r["unclassified_cases"], 1)
+        self.assertEqual(sum(v["n_cases"] for v in r["classes"].values()) + 1, r["n_cases"])
+
+    def test_conflicting_task_types_for_one_case_are_refused_only_in_by_class(self):
+        recs = [{"case_id": "x", "backend": "A", "score": 0.0, "task_type": "qa"},
+                {"case_id": "x", "backend": "B", "score": 0.0, "task_type": "code"}]
+        with self.assertRaises(ValueError):
+            cofailure_by_class(recs, ["A", "B"])
+        with self.assertRaises(ValueError):
+            cofailure_by_class([{"case_id": "x", "backend": "A", "score": 0.0, "task_type": 7}],
+                               ["A"])
+        # スコアだけ見る経路（by_class 無し）では task_type は補助情報: 落とさない
+        self.assertEqual(solve_vectors_from_records(recs, ["A", "B"]), [[0], [0]])
+        r = analyze(recs + [{"case_id": "y", "backend": "A", "score": 1.0},
+                            {"case_id": "y", "backend": "B", "score": 0.0}], ["A", "B"])
+        self.assertEqual(r["verdict"], "dead")              # 例外にならず通常判定（union==best）
+
+    def test_ceiling_certified_bounds_the_point_estimate(self):
+        by = cofailure_by_class(self._recs(), ["A", "B"])
+        for v in by.values():
+            self.assertGreaterEqual(v["ceiling_certified"], v["ceiling"])
 
 
 class TestMeshCli(unittest.TestCase):
