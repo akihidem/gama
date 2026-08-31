@@ -1150,7 +1150,10 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
             else:
                 m = measure(c.spec, splits["search"], tier, repeats, unit_cost, "candidate")
                 _guard_measurement(m, f"candidate {c.label}")
-                # archive も**状態**。ここを表示用の形で入れると、キャッシュから昇格した
+                # archive も**状態**。実測(112問・5世代・width 4・候補20本)で台帳全体 75.5KB、
+                # うち checkpoint が 84%。この規模なら per_case を持たせても問題にならないので、
+                # 「重そう」で痩せさせない(痩せさせた結果が下の 4 例目)。
+                # ここを表示用の形で入れると、キャッシュから昇格した
                 # 候補の champ_search に per_case が無くなり、search 側の飽和判定がその走行の
                 # 残り全部で黙って効かなくなる(per_case を落として機能が死ぬのはこれで 4 例目。
                 # 台帳の行だけが痩せていればよく、決定に使うものは痩せさせない)。

@@ -1599,3 +1599,11 @@ class TestSaturatedClasses(ScriptedCase):
         for entry in ck[-1]["archive"].values():
             self.assertTrue(entry["search"].get("per_case"),
                             "an archived candidate lost its per-case scores")
+        # 本命の性質: **昇格したあとのチャンピオン**が per_case を持ち続けていること
+        # (保存形式が正しくても、昇格の受け渡しで落ちたら search 側の飽和判定は死ぬ)。
+        promoted = [r for r in seen if r["event"] == "generation" and r["verdict"] == "promote"]
+        self.assertTrue(promoted, "nothing was promoted, so this test checked nothing")
+        after = [r for r in ck if r["gen"] >= promoted[0]["gen"]]
+        self.assertTrue(after, "no checkpoint after the promotion")
+        self.assertTrue(after[0]["champion_search"].get("per_case"),
+                        "the champion lost its per-case search scores when it was promoted")
