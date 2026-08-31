@@ -1452,3 +1452,24 @@ class TestSaturatedClasses(ScriptedCase):
         self.assertNotIn("default",
                          {c.kind for c in propose(champ, pool, ["qa", "research"], width=8,
                                                   additive_classes=[], allow_default=False)})
+
+    def test_an_unmeasured_class_under_the_default_is_not_read_as_zero_headroom(self):
+        # 欠損を 0 と読むと「測っていない」が「伸びしろ無し」に化ける
+        champ = {"backend": "gama", "kwargs": {
+            "backends": {"a": _lane("a")}, "routing_table": {}, "default": "a"}}
+        self.assertTrue(_default_swap_viable(champ, ["qa", "research"], {"qa": 0.1}, 2.0))
+
+    def test_stopping_for_want_of_candidates_still_writes_a_checkpoint(self):
+        # 変数を更新しただけでは再開で古い値に戻る(load_checkpoint が読むのは checkpoint 行)
+        Scripted.WINS = {"a": {f"qa{i}" for i in range(1, 9)}}
+        pool = {"a": _lane("a"), "b": _lane("b")}
+        with tempfile.TemporaryDirectory() as d:
+            led = Path(d) / "run.jsonl"
+            grow(pool, cases=_cases(8), generations=3, width=4, patience=3,
+                 ledger_path=str(led), min_margin=0.05)
+            rows = [json.loads(l) for l in led.read_text(encoding="utf-8").splitlines() if l.strip()]
+        stops = [r for r in rows if r["event"] == "stop"]
+        if stops and stops[0]["reason"] == "no-new-candidates":
+            gens = [r["gen"] for r in rows if r["event"] == "checkpoint"]
+            self.assertIn(stops[0]["gen"], gens,
+                          "stopped without checkpointing the confirm measurement it paid for")

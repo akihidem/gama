@@ -860,7 +860,11 @@ def _default_swap_viable(champion: dict, classes: list, headroom: dict,
         return True
     default_lane = (champion.get("kwargs") or {}).get("default")
     under = [c for c in classes if _lane_for(champion, c) == default_lane]
-    return sum(headroom.get(c, 0.0) for c in under) >= gate_cases
+    # 測れていないクラスが 1 つでも既定の下に在るなら、合計は下から押さえられない。
+    # 欠損を 0 と読むと「測っていない」が「伸びしろ無し」に化ける。
+    if any(c not in headroom for c in under):
+        return True
+    return sum(headroom[c] for c in under) >= gate_cases
 
 
 def _challenger_key(cand: "Candidate", m: "Measurement") -> tuple:
@@ -1078,8 +1082,15 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
                                                            gate_cases))
         if not cands:
             # ここまでに champion を confirm で測っている。止まるからといって捨てると、
-            # 最終結果と checkpoint が「測る前の値」のまま残る。
+            # 最終結果も再開状態も「測る前の値」のまま残る。checkpoint も**実際に出す**
+            # (load_checkpoint が読むのは checkpoint イベントだけなので、変数を更新した
+            # だけでは再開したときに古い値へ戻る)。
             champ_confirm = champ_confirm_now
+            emit({"event": "checkpoint", "gen": gen, "champion": champion,
+                  "champion_search": _meas(champ_search),
+                  "champion_confirm": _meas(champ_confirm),
+                  "challenged": sorted(challenged), "archive": archive, "stale": stale,
+                  "served": served_map(), "identity_blind": resumed_blind})
             emit({"event": "stop", "gen": gen, "reason": "no-new-candidates"})
             break
 
