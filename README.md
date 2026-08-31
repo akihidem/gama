@@ -364,6 +364,17 @@ there are at most seven promotions' worth of room in the entire suite, and any s
 change moves one to three cases — inside the sealed split's resolution. That is the mechanism
 behind six NOT SEPARABLE verdicts, and it means **the lever is harder cases, not more of them**.
 
+One caveat on that headroom, found by auditing the checkers rather than the models: of the ten
+cases the champion loses, **four are scored on output format as well as content** (their checker
+rejects a correct answer wrapped in prose), and they carry 3.25 of the 7.48 cases of headroom.
+For those the suite cannot separate "the model cannot do this" from "the model did not answer in
+the demanded shape". Some of that is legitimate — writing a lipogram *is* a format task — but it
+means a share of the remaining room may not be reasoning room at all. Confirming which needs the
+replies themselves, and the ledger stores scores rather than outputs, so it is an open question
+rather than a result. `crux` was written with the looser convention throughout: numeric answers
+are read as "the last integer in the reply", so a model that solves the problem and then adds a
+sentence still scores it.
+
 It also gives the loop a proof rather than a heuristic. An additive lane mutation only touches
 cases of its own class, so a class with less headroom than the gate cannot produce a promotable
 gain whatever you try there — and `integration` at 8/8 was being handed real GPU time anyway.

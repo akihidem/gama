@@ -628,6 +628,19 @@ def _eq_nospace(expected: str) -> Callable[[str], float]:
     return lambda out: 1.0 if "".join((out or "").split()).lower() == want else 0.0
 
 
+def _contains_token(expected: str) -> Callable[[str], float]:
+    """期待する文字列が、単語境界で囲まれた形で返答のどこかに現れる。
+
+    「答えだけ返せ」と書いた上で厳密一致にすると、正しく解いたうえで一言添えたモデルを
+    0 点にする ── それは能力でなく指示追従を測っている(README の「公平な答え抽出」の話と
+    同じ)。数値の case は `_eq_int` が最後の整数を拾うことで既にこの寛容さを持っているので、
+    文字列の答えにも同じ扱いを与える。長い特定文字列なので、偶然の混入は起きない。
+    """
+    want = expected.strip().lower()
+    pat = re.compile(r"(?<![\w-])" + re.escape(want) + r"(?![\w-])")
+    return lambda out: 1.0 if pat.search((out or "").lower()) else 0.0
+
+
 def _eq_exact(expected: str) -> Callable[[str], float]:
     """Reply equals expected after stripping the ends only (inner whitespace is scored).
 
@@ -1473,7 +1486,7 @@ CRUX_SUITE: list[BenchCase] = [
               "exclusive of the end? Reply with ONLY the integer.", _eq_int(36524)),
     BenchCase("crux-int-base", "integration",
               "Interpret the string zz as a base-36 number, then write that value in base 7. "
-              "Reply with ONLY the base-7 digits.", _eq_nospace("3530")),
+              "Reply with ONLY the base-7 digits.", _eq_int(3530)),
     BenchCase("crux-int-dijkstra", "integration",
               "A directed weighted graph has edges A->B 4, A->C 2, B->C 5, B->D 10, C->E 3, "
               "E->D 4, D->F 11. What is the length of the shortest path from A to F? Reply "
@@ -1482,7 +1495,7 @@ CRUX_SUITE: list[BenchCase] = [
               "Take the sentence: The quick brown Fox jumps over the lazy Dog. Keep only the "
               "words longer than 3 characters, lowercase them, remove duplicates, sort them "
               "alphabetically, and join them with a single hyphen. Reply with ONLY the "
-              "resulting string.", _eq_nospace("brown-jumps-lazy-over-quick")),
+              "resulting string.", _contains_token("brown-jumps-lazy-over-quick")),
 
     # --- code_implementation: 実装が要る(暗記では出ない) ---------------------- #
     BenchCase("crux-code-editdist", "code_implementation",
