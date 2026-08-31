@@ -7,7 +7,7 @@ and a different answer.**
 | box | champion the loop settled on |
 |---|---|
 | WSL2, CPU, `llama3.2:3b` | `qa → tool`, `research → mesh(3b → qwen2.5-coder:7b)` |
-| **AWS L4, `Kimi-Linear-48B-A3B`** | **`qa → ensemble(two temperatures)`, `research → tool`** |
+| **AWS L4, `Kimi-Linear-48B-A3B`** | **`qa → tool`, `research → tool`** (the `qa` lane is a coin-flip between `tool` and an ensemble — see below) |
 
 Both classes changed hands. Structure is not portable; the loop is how you find out what your
 box wants.
@@ -57,6 +57,57 @@ temperatures, aggregated. On the 20-case confirm split of an earlier run that la
 +0.25 cases and was refused as unprovable; with 16 `qa` cases in confirm it measures +3.00 and
 clears easily. Same effect, enough cases to see it. The shrink gate then tried to take it back
 out in generation 4 and refused — it is load-bearing, not decoration.
+
+## The audit, applied to both classes
+
+`qadeep` had shown that `qa` was 16 for 16 exact computation, so `researchdeep` did the same
+thing to the other suspicious class: 16 more `research` cases, 8 computational and 8 that no
+program can supply (temporal order, referent resolution, odd-one-out, analogy, contradiction,
+category deduction, negation, causal chain). `tool:research` had been the one mutation
+reproducing across splits, and the question was whether it survives a class that contains what
+the class is supposed to be.
+
+**It does.** With the deepened class in place (112 cases, 56 confirm), removing the lane was
+put to the shrink gate and refused:
+
+| audit | result |
+|---|---|
+| `simplify:qa` → bare model (run R, run T) | refused, measurably worse — `qa` needs *a* lane |
+| `tool:qa` vs `ensemble:qa` (run R, after qadeep) | ±0.00 cases — tool adds nothing over the ensemble |
+| `simplify:research` → bare model (run T, after researchdeep) | **refused, measurably worse — the lane earns its place** |
+
+So of the two classes that looked like they might be named for something they did not contain,
+only `qa` was. `research` holds up.
+
+## What is still undecided, and what ships because of it
+
+The `qa` lane is not settled, and the two measurements disagree by less than they can resolve:
+
+| split | winner | margin |
+|---|---|---|
+| confirm, 56 cases | `tool` | +1.25 cases |
+| sealed, 28 cases | `ensemble` | 0.5 cases |
+
+Both inside one case, with the sign flipped. What *is* settled is that removing the lane
+altogether is worse, in both runs. So `qa` needs a lane and this box cannot yet say which.
+
+This recipe ships **`tool`**: at a statistical tie, take the cheaper and simpler option — one
+call instead of three, deterministic instead of stochastic. That is the same Occam the shrink
+gate encodes, applied by hand where the loop has no rule for it. If your own run separates them,
+prefer what it measures over what this file shipped.
+
+## A run that had to be thrown away
+
+Run S ran this exact configuration first and produced a champion out of nothing. Partway
+through, the owner of the shared box restarted the llama.cpp server onto a different model;
+every call after that returned a 503 body, `run_bench` caught the exceptions and scored the
+cases 0.0, and the loop saw a perfectly coherent measurement — champion 0.0, challenger 0.0,
+drift 0.0 — and concluded that dropping the research lane cost exactly nothing. It deleted it
+and reported a sealed score of 0.0 -> 0.0.
+
+Every gate worked correctly on numbers that meant nothing. `grow` now separates "the model was
+wrong" from "the call raised", and stops the run above a 20% failure rate rather than deciding
+on it. Its ledger is kept as the record of what a broken measurement looks like from inside.
 
 ## Reproduce
 ```bash

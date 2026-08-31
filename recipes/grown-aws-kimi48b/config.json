@@ -1,99 +1,9 @@
 {
-  "_comment": "GROWN by `gama grow` on a different box and a much larger model than recipes/grown-wsl-ollama, and it landed on a DIFFERENT champion. Lanes are two temperature settings of one llama.cpp server, reached over SSH; no second model was loaded. Sealed numbers never fed a decision.",
+  "_comment": "GROWN by `gama grow`. Ships the cheaper of two statistically tied `qa` lanes (see recipe.md): tool is 1 call and deterministic, the ensemble is 3 calls and stochastic, and they trade places within one case. The `research` lane survived an audit that killed the same lane on `qa`.",
   "system": {
     "backend": "gama",
     "kwargs": {
       "backends": {
-        "ens(kimi-cold+kimi-hot)": {
-          "backend": "ensemble",
-          "_grow_base": "kimi-cold",
-          "kwargs": {
-            "members": [
-              {
-                "backend": "ssh-openai",
-                "kwargs": {
-                  "ssh_host": "aws-mf",
-                  "port": 8000,
-                  "path": "/v1/chat/completions",
-                  "model_by_tier": {
-                    "small": "kimi",
-                    "medium": "kimi",
-                    "large": "kimi"
-                  },
-                  "max_tokens": 1536,
-                  "temperature": 0.0,
-                  "ssh_opts": [
-                    "-o",
-                    "BatchMode=yes",
-                    "-o",
-                    "ConnectTimeout=15",
-                    "-o",
-                    "ControlMaster=auto",
-                    "-o",
-                    "ControlPath=/tmp/gama-ssh-%r@%h:%p",
-                    "-o",
-                    "ControlPersist=10m"
-                  ]
-                }
-              },
-              {
-                "backend": "ssh-openai",
-                "kwargs": {
-                  "ssh_host": "aws-mf",
-                  "port": 8000,
-                  "path": "/v1/chat/completions",
-                  "model_by_tier": {
-                    "small": "kimi",
-                    "medium": "kimi",
-                    "large": "kimi"
-                  },
-                  "max_tokens": 1536,
-                  "temperature": 0.8,
-                  "ssh_opts": [
-                    "-o",
-                    "BatchMode=yes",
-                    "-o",
-                    "ConnectTimeout=15",
-                    "-o",
-                    "ControlMaster=auto",
-                    "-o",
-                    "ControlPath=/tmp/gama-ssh-%r@%h:%p",
-                    "-o",
-                    "ControlPersist=10m"
-                  ]
-                }
-              }
-            ],
-            "strategy": "synthesize",
-            "aggregator": {
-              "backend": "ssh-openai",
-              "kwargs": {
-                "ssh_host": "aws-mf",
-                "port": 8000,
-                "path": "/v1/chat/completions",
-                "model_by_tier": {
-                  "small": "kimi",
-                  "medium": "kimi",
-                  "large": "kimi"
-                },
-                "max_tokens": 1536,
-                "temperature": 0.8,
-                "ssh_opts": [
-                  "-o",
-                  "BatchMode=yes",
-                  "-o",
-                  "ConnectTimeout=15",
-                  "-o",
-                  "ControlMaster=auto",
-                  "-o",
-                  "ControlPath=/tmp/gama-ssh-%r@%h:%p",
-                  "-o",
-                  "ControlPersist=10m"
-                ]
-              }
-            }
-          }
-        },
         "kimi-cold": {
           "backend": "ssh-openai",
           "kwargs": {
@@ -156,7 +66,7 @@
         }
       },
       "routing_table": {
-        "qa": "ens(kimi-cold+kimi-hot)",
+        "qa": "tool(kimi-cold)",
         "research": "tool(kimi-cold)"
       },
       "default": "kimi-cold"
@@ -346,6 +256,29 @@
         "gain_cases": 0.0,
         "reason": "search-not-better"
       }
-    ]
+    ],
+    "runs": {
+      "R (96 cases, qadeep added)": {
+        "champion": "qa->ensemble, research->tool",
+        "sealed": [
+          0.8611,
+          0.875
+        ]
+      },
+      "S (112 cases)": "DISCARDED — the served model was swapped mid-run and every later call returned 503; the loop scored them 0.0 and deleted a lane on that basis",
+      "T (112 cases, researchdeep added)": {
+        "champion": "qa->tool, research->tool",
+        "sealed": [
+          0.8393,
+          0.8214
+        ]
+      }
+    },
+    "undecided": {
+      "qa_lane": {
+        "note": "confirm favoured tool by +1.25 cases, sealed favoured the ensemble by 0.5 — both inside one case, sign flipped. Removing the lane entirely was refused in both runs, so qa needs A lane; which one is not resolved at this case count.",
+        "shipped": "tool (cheaper: 1 call vs 3, deterministic vs stochastic)"
+      }
+    }
   }
 }
