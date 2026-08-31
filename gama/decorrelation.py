@@ -91,11 +91,58 @@ def failure_correlation(solve_vectors: list):
     are left out of the mean; if no pair is defined the result is ``None`` rather than a number.
     This is a *pairwise* statistic: with 3+ members it cannot identify the co-failure rate (see
     :func:`cofailure`), so it explains but never certifies a verdict."""
+    x = _phi_bar(solve_vectors)
+    return None if x is None else round(x, 4)
+
+
+def _phi_bar(solve_vectors: list):
+    """Unrounded mean pairwise phi; the rounding belongs to display, not to math.
+
+    effective_votes がここを使う: 丸め済みの値を計算に流し込むと境界(分母 0 付近)で
+    判定が丸めの副作用で動く。verdict を件数で持つのと同じ規律。"""
     fails = [[1 - s for s in v] for v in solve_vectors]
     phis = [_phi(fails[i], fails[j])
             for i in range(len(fails)) for j in range(i + 1, len(fails))]
     defined = [x for x in phis if x is not None]
-    return round(sum(defined) / len(defined), 4) if defined else None
+    return sum(defined) / len(defined) if defined else None
+
+
+def pairwise_cofailure(solve_vectors: list, members: list) -> list:
+    """Per-pair co-failure COUNTS (secondary diagnostic; the verdict never reads these).
+
+    m>=3 の β はペア統計から識別できない(cofailure の docstring)が、逆向きの読み
+    「どの 2 者が一緒に落ちるか」は編成の当たりを付ける表示として有用なので、
+    件数のまま出す(率に丸めない: verdict と同じ規律)。pair は与えられた members の
+    並び順で (i<j) 全組。"""
+    n = _n_cases(solve_vectors)
+    if len(solve_vectors) != len(members):
+        raise ValueError(f"members/vectors mismatch: {len(members)} vs {len(solve_vectors)}")
+    out = []
+    for i in range(len(solve_vectors)):
+        for j in range(i + 1, len(solve_vectors)):
+            k = sum(1 for c in range(n)
+                    if not solve_vectors[i][c] and not solve_vectors[j][c])
+            out.append({"pair": [members[i], members[j]], "cofailure_k": k, "n_cases": n})
+    return out
+
+
+def effective_votes(solve_vectors: list):
+    """Kish 実効独立票 n_eff = m / (1 + (m−1)·φ̄)(secondary diagnostic)、または ``None``。
+
+    2605.29800(Nine Judges)の診断そのまま: 9 審判でも φ̄=0.391 なら実効 2.18 票。
+    ペア φ 由来なので m>=3 の β を識別しない(non-identification は β 側が主量である
+    理由そのもの)。φ̄ が未定義(定数メンバーのみ)や強い負相関で分母が 0 以下になる
+    場合は数として意味を持たないので None。"""
+    m = len(solve_vectors)
+    if m < 2:
+        return None
+    phi_bar = _phi_bar(solve_vectors)
+    if phi_bar is None:
+        return None
+    denom = 1.0 + (m - 1) * phi_bar
+    if denom <= 0.0:
+        return None
+    return round(m / denom, 2)
 
 
 def _n_cases(solve_vectors: list) -> int:
@@ -375,6 +422,10 @@ def analyze(records: list, members: list, pass_score: float = 1.0, confidence: f
     out = verdict_from_counts(k, n, solved[best_i], members=len(vecs), confidence=confidence)
     out.update({
         "members": list(members),
+        # SECONDARY 診断(verdict は読まない): ペア件数と Kish 実効票。どちらもペア
+        # 統計由来で m>=3 の β を識別しない(2605.29800 の n_eff をそのまま表示に使う)。
+        "pairwise_cofailure": pairwise_cofailure(vecs, list(members)),
+        "effective_votes": effective_votes(vecs),
         "per_member_solve_rate": [round(c / n, 4) for c in solved],   # empirical p_i
         "best_member": members[best_i],
         "failure_rho": failure_correlation(vecs),   # SECONDARY: pairwise phi, cannot identify beta

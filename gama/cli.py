@@ -211,6 +211,18 @@ def cmd_mesh(args: argparse.Namespace) -> int:
                                      f"[{v['beta_interval'][0]}, {v['beta_interval'][1]}] "
                                      f"ceiling<={v['ceiling_certified']}"
                                      for c, v in blind.items()) + "\n")
+    neff = result.get("effective_votes")
+    if neff is not None:
+        # advisory only: Kish n_eff はペア φ 由来で β を識別しない(2605.29800 の診断)。
+        # 「m 人置いて実効何票か」の直感を運ぶだけで、verdict はこれを読まない。
+        worst = max(result.get("pairwise_cofailure", []),
+                    key=lambda d: d["cofailure_k"], default=None)
+        line = (f"[gama] advisory: effective votes n_eff={neff}/{len(result.get('members', []))} "
+                f"(Kish, pairwise phi; cannot certify beta)")
+        if worst and worst["cofailure_k"] > 0:
+            line += (f"  worst pair={worst['pair'][0]}+{worst['pair'][1]} "
+                     f"co-fail {worst['cofailure_k']}/{worst['n_cases']}")
+        sys.stderr.write(line + "\n")
     if result.get("unclassified_cases"):
         sys.stderr.write(f"[gama] note: {result['unclassified_cases']} case(s) carry no "
                          "task_type and are outside the class breakdown\n")

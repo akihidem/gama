@@ -8,8 +8,9 @@ from gama.backends import ModelBackend
 from gama.benchmark import BenchCase, run_bench
 from gama.cli import build_parser
 from gama.decorrelation import (
-    analyze, clopper_pearson, cofailure, cofailure_by_class, failure_correlation, ignites,
-    mesh_correctness, mesh_gain, solve_vectors_from_records, union_solve, verdict_from_counts,
+    analyze, clopper_pearson, cofailure, cofailure_by_class, effective_votes,
+    failure_correlation, ignites, mesh_correctness, mesh_gain, pairwise_cofailure,
+    solve_vectors_from_records, union_solve, verdict_from_counts,
 )
 from gama.models import ModelTier
 
@@ -307,6 +308,61 @@ class TestCofailure(unittest.TestCase):
         self.assertEqual((r["cofailure_k"], r["n_cases"]), (11, 24))
         self.assertEqual(r["verdict"], "undetermined")
         self.assertFalse(r["ignites"])
+
+
+class TestPairwiseAdvisory(unittest.TestCase):
+    """SECONDARY 表示(pairwise 件数と Kish n_eff)の性質。verdict はこれらを読まない。"""
+
+    def test_pairwise_counts_are_exact(self):
+        # A は case0,1 で失敗 / B は case1,2 で失敗 / C は全勝
+        vecs = [[0, 0, 1, 1], [1, 0, 0, 1], [1, 1, 1, 1]]
+        pw = pairwise_cofailure(vecs, ["A", "B", "C"])
+        by_pair = {tuple(d["pair"]): d["cofailure_k"] for d in pw}
+        self.assertEqual(by_pair[("A", "B")], 1)   # case1 のみ両落ち
+        self.assertEqual(by_pair[("A", "C")], 0)   # C は落ちない
+        self.assertEqual(by_pair[("B", "C")], 0)
+        self.assertTrue(all(d["n_cases"] == 4 for d in pw))
+
+    def test_pairwise_refuses_mismatched_members(self):
+        with self.assertRaises(ValueError):
+            pairwise_cofailure([[0, 1], [1, 0]], ["only-one"])
+
+    def test_n_eff_closed_forms(self):
+        # φ=1(同一ベクトル・非定数) → n_eff = m/m = 1.0
+        v = [0, 1, 0, 1]
+        self.assertEqual(effective_votes([v, list(v)]), 1.0)
+        # φ=0 は「互いに素な失敗」ではない(それは反相関で n_eff>m になる)。
+        # cov=0 の構成: A の失敗 {c0,c1} / B の失敗 {c0,c2} → φ=0 → n_eff=2.0
+        self.assertEqual(effective_votes([[0, 0, 1, 1], [0, 1, 0, 1]]), 2.0)
+        # 互いに素な失敗は反相関(φ=-1/3)なので独立 2 票より価値が高い: 3.0
+        self.assertEqual(effective_votes([[0, 1, 1, 1], [1, 0, 1, 1]]), 3.0)
+
+    def test_n_eff_matches_published_nine_judges_value(self):
+        # 外部アンカー: 2605.29800 Table 2 は m=9, φ̄=0.391 で n_eff=2.18。
+        # failure_correlation を経由できない(実ベクトル非公開)ので、式の段だけを
+        # 公表値と突き合わせる: m/(1+(m-1)*0.391) = 2.18(2 桁丸め)。
+        m, phi_bar = 9, 0.391
+        self.assertAlmostEqual(round(m / (1 + (m - 1) * phi_bar), 2), 2.18)
+
+    def test_n_eff_none_when_undefined(self):
+        # 定数メンバーだけ → φ 未定義 → None(数を出すと診断に読まれる)
+        self.assertIsNone(effective_votes([[1, 1, 1], [1, 1, 1]]))
+        # 1 人では独立票の概念が立たない
+        self.assertIsNone(effective_votes([[0, 1, 0]]))
+
+    def test_n_eff_none_on_negative_denominator(self):
+        # 完全反相関(φ=-1, m=2)は分母 0 → None
+        self.assertIsNone(effective_votes([[0, 1], [1, 0]]))
+
+    def test_analyze_carries_advisory_fields(self):
+        recs = ([{"backend": "a", "case_id": f"c{i}", "score": 1.0 if i < 3 else 0.0,
+                  "task_type": "qa"} for i in range(4)]
+                + [{"backend": "b", "case_id": f"c{i}", "score": 1.0 if i in (0, 3) else 0.0,
+                    "task_type": "qa"} for i in range(4)])
+        out = analyze(recs, ["a", "b"])
+        self.assertIn("pairwise_cofailure", out)
+        self.assertIn("effective_votes", out)
+        self.assertEqual(out["pairwise_cofailure"][0]["pair"], ["a", "b"])
 
 
 class TestByClass(unittest.TestCase):
