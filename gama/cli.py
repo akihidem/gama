@@ -470,7 +470,8 @@ def cmd_grow(args: argparse.Namespace) -> int:
     elif sv.get("verdict") == "not-separable":
         sys.stderr.write(
             f"[gama] HELD-OUT VERDICT: NOT SEPARABLE ({sv['delta_cases']:+} cases, and the "
-            "sealed split resolves 1). The run promoted changes that its held-out cases cannot "
+            f"sealed split resolves {sv.get('band_cases', 1):g}). The run promoted changes that "
+            "its held-out cases cannot "
             "tell apart from the seed. That is not a failure, but it is not an improvement "
             "either — say so when quoting these numbers.\n")
     elif sv.get("verdict") == "improved":

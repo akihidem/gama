@@ -1249,3 +1249,19 @@ class TestSealedVerdict(unittest.TestCase):
             text = (out / "recipe.md").read_text(encoding="utf-8")
         self.assertIn("REGRESSED", text)
         self.assertIn("do not adopt", text.lower())
+
+    def test_a_malformed_sealed_block_is_not_judged_instead_of_crashing(self):
+        # write_recipe は任意の result に対してこれを呼ぶ。古い台帳で例外を投げると
+        # recipe が書けなくなる。判定できないものは判定しない
+        for bad in ({}, {"seed": {}}, {"seed": {"score": 1.0}, "champion": {"score": 1.0}},
+                    {"seed": {"score": "x", "cases": 4}, "champion": {"score": 1.0, "cases": 4}}):
+            with self.subTest(bad=bad):
+                self.assertEqual(sealed_verdict(bad)["verdict"], "unsealed")
+
+    def test_a_mismatched_case_count_is_refused_not_scaled(self):
+        # 分母が違えば差は問数に直せない。丸めて出すと嘘の「何問差」になる
+        v = sealed_verdict({"seed": {"score": 0.5, "cases": 20},
+                            "champion": {"score": 0.9, "cases": 28}})
+        self.assertEqual(v["verdict"], "unsealed")
+        self.assertIsNone(v["delta_cases"])
+        self.assertIn("not a comparison", v["note"])

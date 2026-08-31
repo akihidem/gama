@@ -758,11 +758,24 @@ def sealed_verdict(sealed: Optional[dict]) -> dict:
     「効いた」に丸めない**ことがこの関数の全部で、run T はまさにそこを黙って通していた
     (sealed 0.8393 -> 0.8214 なのに「昇格 1・成功」として champion を出した)。
     """
-    if not sealed:
-        return {"verdict": "unsealed", "delta_cases": None,
+    unsealed = {"verdict": "unsealed", "delta_cases": None, "band_cases": None,
                 "note": "no sealed split: every number fed a decision, so read them as optimistic"}
-    n = sealed["seed"]["cases"] or 1
-    delta = sealed["champion"]["score"] - sealed["seed"]["score"]
+    if not sealed:
+        return unsealed
+    # 形を信用しない。この関数は write_recipe から任意の result に対して呼ばれるので、
+    # 古い/欠けた台帳で例外を投げると recipe が書けなくなる。判定できないなら判定しない。
+    seed_m, champ_m = sealed.get("seed") or {}, sealed.get("champion") or {}
+    if not all(isinstance(m.get(k), (int, float))
+               for m in (seed_m, champ_m) for k in ("score", "cases")):
+        return dict(unsealed, note="sealed split present but unreadable: not judging it")
+    n = seed_m["cases"] or 1
+    if champ_m["cases"] != seed_m["cases"]:
+        # 分母が違えば差は問数に直せない。丸めずに「比べられない」と言う。
+        return {"verdict": "unsealed", "delta_cases": None, "band_cases": None,
+                "note": (f"the sealed split was measured over {seed_m['cases']} cases for the "
+                         f"seed and {champ_m['cases']} for the champion: those two numbers are "
+                         "not a comparison, so this run is not judged")}
+    delta = champ_m["score"] - seed_m["score"]
     band = 1.0 / n
     if delta > band:
         v, note = "improved", "the held-out split agrees the champion is better than the seed"
