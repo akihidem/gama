@@ -366,8 +366,14 @@ def cmd_grow(args: argparse.Namespace) -> int:
         sys.stderr.write(f"[gama] WARNING: ledger at {args.out} is under /tmp and will not "
                          "survive a reboot — the evidence for this run dies with it.\n")
 
+    seen: dict = {}
+
     def on_event(row: dict) -> None:
         ev = row.get("event")
+        if ev in ("seed", "resumed"):
+            # confirm の問数は seed 行にしか無い。世代行は持たないので、ここで控えておかないと
+            # 「+1.25 問 / 全何問中」が出せない(出せないまま書式だけ残ると "cases of " になる)。
+            seen["n_confirm"] = len(row["splits"]["confirm"])
         if ev == "seed":
             sizes = {k: len(v) for k, v in row["splits"].items()}
             sys.stderr.write(f"[gama] splits {sizes} | seed search={row['search']['score']} "
@@ -392,8 +398,11 @@ def cmd_grow(args: argparse.Namespace) -> int:
                 f"[gama] gen{row['gen']} challenger={row.get('challenger', '(none)')} "
                 f"search {row['champion_search']}->{row.get('challenger_search', '-')} "
                 f"confirm {row['champion_confirm']}->{row.get('challenger_confirm', '-')} "
-                + (f"({gain:+} cases of {len(row.get('splits', {}) or []) or ''}) "
-                   if gain is not None else "")
+                + (f"({gain:+} of {seen['n_confirm']} cases) " if gain is not None
+                                                                    and seen.get("n_confirm")
+                   else (f"({gain:+} cases) " if gain is not None else ""))
+                + (f"[{row['paired_wins']}w-{row['paired_losses']}l p={row['paired_p']}] "
+                   if row.get("paired_wins") is not None else "")
                 + f"(delta={row['delta']}) -> {row['reason']}\n")
         elif ev == "stop":
             sys.stderr.write(f"[gama] stop: {row['reason']}\n")
@@ -481,12 +490,20 @@ def cmd_grow(args: argparse.Namespace) -> int:
             "The promotions were measured on `confirm`, which is selected against every "
             "generation and therefore reads high; `sealed` is the only split that was not.\n")
     elif sv.get("verdict") == "not-separable":
-        sys.stderr.write(
-            f"[gama] HELD-OUT VERDICT: NOT SEPARABLE ({sv['delta_cases']:+} cases, and the "
-            f"sealed split resolves {sv.get('band_cases', 1):g}). The run promoted changes that "
-            "its held-out cases cannot "
-            "tell apart from the seed. That is not a failure, but it is not an improvement "
-            "either — say so when quoting these numbers.\n")
+        if not result.get("net_change"):
+            # 何も通っていない走行に「通した手が区別できない」と書くと、直前の NET ZERO 行と
+            # 矛盾する。同じ判定でも意味が違うので、言い分けないと読み手が混乱する。
+            sys.stderr.write(
+                "[gama] HELD-OUT VERDICT: NOT SEPARABLE — trivially, because nothing was "
+                "promoted: the champion IS the seed, so there was nothing for the sealed split "
+                "to tell apart. The refusals are the result here.\n")
+        else:
+            sys.stderr.write(
+                f"[gama] HELD-OUT VERDICT: NOT SEPARABLE ({sv['delta_cases']:+} cases, and the "
+                f"sealed split resolves {sv.get('band_cases', 1):g}). The run promoted changes "
+                "that its held-out cases cannot tell apart from the seed. That is not a "
+                "failure, but it is not an improvement either — say so when quoting these "
+                "numbers.\n")
     elif sv.get("verdict") == "improved":
         sys.stderr.write(f"[gama] HELD-OUT VERDICT: IMPROVED ({sv['delta_cases']:+} cases on "
                          "cases that never fed a decision).\n")
