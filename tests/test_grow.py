@@ -1421,8 +1421,8 @@ class TestSaturatedClasses(ScriptedCase):
         self.assertTrue(_default_swap_viable(champ, ["qa"], {}, 2.0))
 
     def test_saturation_still_applies_after_a_resume(self):
-        # checkpoint は `_meas()` を通すので per_case を持たない。飽和判定を復元状態から
-        # 作っていた版では、再開のたびにこの除外が黙って無効化されていた(codex 指摘)。
+        # 飽和判定を復元状態から作っていた版では、再開のたびにこの除外が黙って無効化されて
+        # いた(codex 指摘)。confirm 側は毎世代測り直すので復元値に依存しない。
         Scripted.WINS = {"a": {f"qa{i}" for i in range(1, 9)},
                          "b": {f"qa{i}" for i in range(1, 9)}}
         pool = {"a": _lane("a"), "b": _lane("b")}

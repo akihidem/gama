@@ -893,6 +893,9 @@ def _restore(d: dict) -> "Measurement":
     """checkpoint の dict を Measurement に戻す。古い台帳(per_case 無し)もそのまま読める。"""
     d = dict(d)
     d["error_cases"] = frozenset(d.get("error_cases") or ())
+    # この分離より前に書かれた台帳には per_case が無い。空で復元すると search 側の飽和判定は
+    # 昇格が起きて champ_search が測り直されるまで効かないが、それが正しい向き —— 飽和は
+    # 証明できたときだけ主張する。証拠が無いことを「余地なし」の側に丸めない。
     d.setdefault("per_case", {})
     return Measurement(**d)
 
@@ -1081,10 +1084,10 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
         # **どの変異でも昇格しえない**ので、除外は推定ではなく算術。
         #
         # チャンピオンの confirm 測定をここ(propose の前)でやるのは、飽和判定を
-        # **復元した状態に依存させない**ため。checkpoint は `_meas()` を通すので per_case を
-        # 落としており、再開のたびに伸びしろが空になって除外が黙って無効化されていた
-        # (同一性検査でも同じ形で一度やっている)。毎世代どのみち測るものなので、順番を
-        # 前に出すだけで測定回数は変わらず、再開の有無に関係なく新鮮な値で判定できる。
+        # **復元した状態に依存させない**ため。毎世代どのみち測るものなので、順番を前に
+        # 出すだけで測定回数は変わらず、再開の有無に関係なく新鮮な値で判定できる。
+        # (checkpoint 自体は `_state()` で per_case を保つようになったが、search 側と違って
+        #  confirm は毎世代測り直すので、そもそも復元値に頼る必要が無い。)
         champ_confirm_now = measure(champion, splits["confirm"], tier, repeats, unit_cost,
                                     "champion")
         _guard_measurement(champ_confirm_now, f"champion on confirm (gen {gen})")
