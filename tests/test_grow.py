@@ -1585,3 +1585,17 @@ class TestSaturatedClasses(ScriptedCase):
         if first_candidate != -1:
             self.assertLess(out.index("saturated"), first_candidate,
                             "the saturation warning came after candidates were measured")
+
+    def test_a_promoted_cached_candidate_keeps_its_per_case_scores(self):
+        # archive は「表示」でなく「状態」。痩せた形で入れると、キャッシュ由来の候補が昇格した
+        # 瞬間に champ_search の per_case が消え、search 側の飽和判定が残り全部で効かなくなる。
+        Scripted.WINS = {"a": set(), "b": {"qa1", "qa2", "qa3"}}
+        pool = {"a": _lane("a"), "b": _lane("b")}
+        seen = []
+        grow(pool, cases=_cases(8), generations=3, width=3, patience=3, min_margin=0.05,
+             on_event=lambda r: seen.append(r))
+        ck = [r for r in seen if r["event"] == "checkpoint" and r.get("archive")]
+        self.assertTrue(ck, "no checkpoint carried an archive to check")
+        for entry in ck[-1]["archive"].values():
+            self.assertTrue(entry["search"].get("per_case"),
+                            "an archived candidate lost its per-case scores")

@@ -1146,11 +1146,15 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
             # (代償は「上振れ candidate に挑戦権を 1 回使う」ことだけ)。揺れ自体を抑えたい場合は
             # repeats を上げる。
             if cached:
-                m = Measurement(**cached["search"])
+                m = _restore(cached["search"])
             else:
                 m = measure(c.spec, splits["search"], tier, repeats, unit_cost, "candidate")
                 _guard_measurement(m, f"candidate {c.label}")
-                archive[h] = {"label": c.label, "kind": c.kind, "search": _meas(m)}
+                # archive も**状態**。ここを表示用の形で入れると、キャッシュから昇格した
+                # 候補の champ_search に per_case が無くなり、search 側の飽和判定がその走行の
+                # 残り全部で黙って効かなくなる(per_case を落として機能が死ぬのはこれで 4 例目。
+                # 台帳の行だけが痩せていればよく、決定に使うものは痩せさせない)。
+                archive[h] = {"label": c.label, "kind": c.kind, "search": _state(m)}
                 emit({"event": "candidate", "gen": gen, "label": c.label, "kind": c.kind,
                       "hash": h, "search": _meas(m)})
             scored.append((c, m))
