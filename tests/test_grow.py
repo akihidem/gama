@@ -1496,3 +1496,23 @@ class TestSaturatedClasses(ScriptedCase):
                                                     or res["headroom"]))
         for cls in res["headroom"]:
             self.assertIn(cls, {c.task_type for c in cases})
+
+    def test_a_class_the_champion_aces_on_search_is_not_mutated_either(self):
+        # 挑戦権は search で**厳密に**上回ること。チャンピオンがそのクラスの search case を
+        # 取り切っていれば、どの変異も 1 点も上げられず必ず search-not-better で落ちる。
+        # confirm 側の床とは別の理由なので、両方見ないと片方から漏れる(run U gen1 で実測)。
+        cases = _cases(8, "qa", "qa") + _cases(8, "research", "re")
+        # qa は search でも confirm でも満点、research は落とす
+        Scripted.WINS = {"a": {f"qa{i}" for i in range(1, 9)},
+                         "b": {f"qa{i}" for i in range(1, 9)}}
+        pool = {"a": _lane("a"), "b": _lane("b")}
+        seen = []
+        grow(pool, cases=cases, generations=1, width=6, patience=3, min_margin=0.05,
+             on_event=lambda r: seen.append(r))
+        sat = [r for r in seen if r["event"] == "saturated"]
+        self.assertTrue(sat, "a class the champion aces was not reported saturated")
+        self.assertIn("qa", sat[0]["classes"])
+        for r in (r for r in seen if r["event"] == "candidate"):
+            self.assertFalse(r["label"].endswith(":qa") or ":qa(" in r["label"]
+                             or r["label"].startswith("route:qa"),
+                             f"measured an additive mutation on an aced class: {r['label']}")

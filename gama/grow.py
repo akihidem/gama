@@ -1065,14 +1065,23 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
         # δ は越えられない」クラスが候補に残り、通りようのない測定を焚くことになる。
         gate_cases = delta * len(splits["confirm"])
         headroom = class_headroom(champ_confirm_now, splits["confirm"])
+        # search 側にも同じ算術が効く。挑戦権は「search で**厳密に**上回る」ことなので、
+        # チャンピオンがそのクラスの search case を取り切っていれば、そのクラスへの変異は
+        # どれも search を 1 点も上げられず、必ず search-not-better で落ちる(実測: run U の
+        # gen1 が `route:integration->kimi-hot` にそれを払った)。confirm の床とは別の理由で
+        # 通れないので、両方見ないと片方から漏れる。
+        search_room = class_headroom(champ_search, splits["search"])
         saturated = sorted(c for c in classes
-                           if c in headroom and headroom[c] < gate_cases)
+                           if (c in headroom and headroom[c] < gate_cases)
+                           or (c in search_room and search_room[c] <= 0.0))
         if saturated:
             emit({"event": "saturated", "gen": gen,
-                  "classes": {c: round(headroom[c], 2) for c in saturated},
+                  "classes": {c: round(headroom.get(c, 0.0), 2) for c in saturated},
+                  "search_headroom": {c: round(search_room.get(c, 0.0), 2) for c in saturated},
                   "gate_cases": round(gate_cases, 2),
-                  "note": "no mutation on these classes can clear the promotion gate; "
-                          "the suite has nothing left to win there"})
+                  "note": "no additive mutation on these classes can be promoted: either the "
+                          "confirm headroom is below the gate, or the champion already takes "
+                          "every search case there so no challenge can be earned"})
         # 飽和したクラスも propose には渡す。削る変異は「悪くならないこと」しか要求しないので、
         # むしろ満点のクラスこそ「その構造は何も買っていない」と言える場所になる。
         cands = propose(champion, pool, classes, width=width, exclude=challenged,
