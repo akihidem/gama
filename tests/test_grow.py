@@ -23,7 +23,8 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(__file__))
 
 from gama import backends as backends_mod
-from gama.grow import Candidate, _challenger_key, _structure_size, class_headroom
+from gama.grow import (Candidate, _challenger_key, _default_swap_viable,
+                       _structure_size, class_headroom)
 from gama.backends import ModelBackend
 from gama.benchmark import BenchCase
 from gama.cli import build_parser, main
@@ -1394,23 +1395,30 @@ class TestSaturatedClasses(ScriptedCase):
         self.assertTrue([r for r in seen if r["event"] == "candidate"],
                         "a class with headroom was skipped")
 
-    def test_a_default_swap_is_dropped_when_no_class_with_headroom_uses_the_default(self):
-        # 既定レーンの差し替えは「既定に落ちているクラス」経由でしか効かない。qa は明示ルート、
-        # research は飽和 —— なら誰の点も動かせないので提案しない
+    def test_a_default_swap_needs_the_SUM_of_headroom_under_the_default(self):
+        # レーン変異は 1 クラスしか触らないのでクラス単位で切れるが、既定の差し替えは既定に
+        # 落ちている全クラスへ同時に効く。個別には門を越えなくても合計で越えるなら消さない。
         champ = {"backend": "gama", "kwargs": {
             "backends": {"a": _lane("a"), "b": _lane("b")},
-            "routing_table": {"qa": "b"}, "default": "a"}}
-        cands = propose(champ, {"a": _lane("a"), "b": _lane("b")}, ["qa", "research"],
-                        width=8, additive_classes=["qa"])
-        self.assertNotIn("default", {c.kind for c in cands})
+            "routing_table": {}, "default": "a"}}
+        cls = ["qa", "research"]
+        # 各 1.5 問・門 2 問 -> 個別は飽和だが合計 3 問なので通す
+        self.assertTrue(_default_swap_viable(champ, cls, {"qa": 1.5, "research": 1.5}, 2.0))
+        # 合計 1.2 問 < 門 2 問 -> どう転んでも越えない
+        self.assertFalse(_default_swap_viable(champ, cls, {"qa": 0.6, "research": 0.6}, 2.0))
 
-    def test_a_default_swap_survives_when_a_class_with_headroom_uses_the_default(self):
+    def test_a_default_swap_ignores_headroom_that_is_not_under_the_default(self):
+        # qa は明示ルートなので既定を替えても動かない。その伸びしろを足してはいけない
         champ = {"backend": "gama", "kwargs": {
             "backends": {"a": _lane("a"), "b": _lane("b")},
             "routing_table": {"qa": "b"}, "default": "a"}}
-        cands = propose(champ, {"a": _lane("a"), "b": _lane("b")}, ["qa", "research"],
-                        width=8, additive_classes=["research"])   # research は既定に落ちている
-        self.assertIn("default", {c.kind for c in cands})
+        self.assertFalse(_default_swap_viable(champ, ["qa", "research"],
+                                              {"qa": 9.0, "research": 0.1}, 2.0))
+
+    def test_unmeasurable_headroom_keeps_the_default_swap(self):
+        champ = {"backend": "gama", "kwargs": {"backends": {"a": _lane("a")},
+                                               "routing_table": {}, "default": "a"}}
+        self.assertTrue(_default_swap_viable(champ, ["qa"], {}, 2.0))
 
     def test_saturation_still_applies_after_a_resume(self):
         # checkpoint は `_meas()` を通すので per_case を持たない。飽和判定を復元状態から
@@ -1430,3 +1438,17 @@ class TestSaturatedClasses(ScriptedCase):
         kinds = {r["kind"] for r in seen if r["event"] == "candidate"}
         self.assertFalse(kinds & {"route", "tool", "ensemble", "meshflow", "deepen"},
                          f"additive mutation measured on a saturated class after resume: {kinds}")
+
+    def test_a_default_swap_survives_when_headroom_only_adds_up_across_classes(self):
+        # 既定レーンの差し替えは既定に落ちている全クラスへ同時に効く。各クラス単独では門を
+        # 越えなくても、合計で越えるなら消してはいけない(codex 指摘)。
+        champ = {"backend": "gama", "kwargs": {
+            "backends": {"a": _lane("a"), "b": _lane("b")},
+            "routing_table": {}, "default": "a"}}
+        pool = {"a": _lane("a"), "b": _lane("b")}
+        self.assertIn("default",
+                      {c.kind for c in propose(champ, pool, ["qa", "research"], width=8,
+                                               additive_classes=[], allow_default=True)})
+        self.assertNotIn("default",
+                         {c.kind for c in propose(champ, pool, ["qa", "research"], width=8,
+                                                  additive_classes=[], allow_default=False)})

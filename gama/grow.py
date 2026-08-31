@@ -294,7 +294,8 @@ def propose(champion: dict, pool: dict[str, dict], classes: list[str],
             width: int = 6, exclude: Optional[set] = None,
             ensemble_strategy: str = "synthesize",
             generation: int = 0,
-            additive_classes: Optional[list[str]] = None) -> list[Candidate]:
+            additive_classes: Optional[list[str]] = None,
+            allow_default: bool = True) -> list[Candidate]:
     """チャンピオンから 1 手だけ動かした候補を、種類を混ぜて ``width`` 本返す。
 
     1 手だけなのは、勝因を測定に帰属させるため(2 手同時だとどちらが効いたか台帳から読めない)。
@@ -433,11 +434,12 @@ def propose(champion: dict, pool: dict[str, dict], classes: list[str],
     add_set = set(additive)
     for kind in ("route", "tool", "ensemble", "meshflow", "deepen"):
         buckets[kind] = [(tt, c) for (tt, c) in buckets[kind] if tt in add_set]
-    # ⑥ 既定レーンの差し替えは「既定に落ちているクラス」経由でしか効かない。伸びしろのある
-    # クラスが 1 つも既定に落ちていないなら、この変異は誰の点も動かせない。全クラス飽和の
-    # ときだけ落とすのでは足りない(一部飽和でも、残ったクラスが全部明示ルートなら同じこと)。
-    if not any(_lane_for(champion, tt) == (champion.get("kwargs") or {}).get("default")
-               for tt in add_set):
+    # ⑥ 既定レーンの差し替えだけはクラス単位で切れない。**既定に落ちている全クラスへ同時に
+    # 効く**ので、「各クラス単独では門を越えないが合計では越える」場合がある(confirm 20 問・
+    # δ=0.1 なら門は 2 問。1.5 問ずつ余っている 2 クラスは個別には飽和でも、合計 3 問で昇格
+    # しうる)。だから足し合わせの判断は呼び側(伸びしろを持っている grow)に置き、ここは
+    # その結論だけを受け取る。
+    if not allow_default:
         buckets["default"] = []
 
     queues = {k: _by_class_rotation(buckets[k], ordered_classes, offset + generation)
@@ -844,6 +846,23 @@ def class_headroom(m: "Measurement", cases: list) -> dict:
     return out
 
 
+def _default_swap_viable(champion: dict, classes: list, headroom: dict,
+                         gate_cases: float) -> bool:
+    """既定レーンの差し替えが昇格しうるか。クラス単位の飽和では切れない唯一の変異。
+
+    レーン変異は 1 クラスしか触らないので「そのクラスの伸びしろ < 門」で切れるが、既定の
+    差し替えは**既定に落ちている全クラスへ同時に効く**。confirm 20 問・δ=0.1 なら門は 2 問で、
+    1.5 問ずつ余っている 2 クラスは個別には飽和でも合計 3 問ぶん動きうる。足してから比べる。
+
+    伸びしろが測れない(``headroom`` が空)ときは True —— 飽和は証明できたときだけ主張する。
+    """
+    if not headroom:
+        return True
+    default_lane = (champion.get("kwargs") or {}).get("default")
+    under = [c for c in classes if _lane_for(champion, c) == default_lane]
+    return sum(headroom.get(c, 0.0) for c in under) >= gate_cases
+
+
 def _challenger_key(cand: "Candidate", m: "Measurement") -> tuple:
     """同点の候補をどう並べるか。**再現しない量を読まない**ことがこの関数の要件。
 
@@ -1054,8 +1073,13 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
         # むしろ満点のクラスこそ「その構造は何も買っていない」と言える場所になる。
         cands = propose(champion, pool, classes, width=width, exclude=challenged,
                         ensemble_strategy=ensemble_strategy, generation=gen,
-                        additive_classes=[c for c in classes if c not in saturated])
+                        additive_classes=[c for c in classes if c not in saturated],
+                        allow_default=_default_swap_viable(champion, classes, headroom,
+                                                           gate_cases))
         if not cands:
+            # ここまでに champion を confirm で測っている。止まるからといって捨てると、
+            # 最終結果と checkpoint が「測る前の値」のまま残る。
+            champ_confirm = champ_confirm_now
             emit({"event": "stop", "gen": gen, "reason": "no-new-candidates"})
             break
 
