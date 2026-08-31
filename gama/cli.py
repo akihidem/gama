@@ -420,7 +420,10 @@ def cmd_grow(args: argparse.Namespace) -> int:
                 "classes are skipped this generation.\n")
             if row["gen"] == 0 and not seen.get("live_classes_warned"):
                 seen["live_classes_warned"] = True
-                if set(row["classes"]) >= set(seen.get("classes") or ()):
+                known = set(seen.get("classes") or ())
+                # 空集合と比較すると `>=` は常に真になり、全クラス飽和でなくても警告が出る。
+                # 「全部」と言えるのは、比べる相手を実際に知っているときだけ。
+                if known and set(row["classes"]) >= known:
                     sys.stderr.write(
                         "[gama] ...that is EVERY class this run can mutate. Nothing additive can "
                         "be promoted no matter how many generations you give it: this champion "

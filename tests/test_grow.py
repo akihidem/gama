@@ -1556,6 +1556,8 @@ class TestSaturatedClasses(ScriptedCase):
         from gama.benchmark import SUITES
         Scripted.WINS = {"a": {f"qa{i}" for i in range(1, 9)},
                          "b": {f"qa{i}" for i in range(1, 9)}}
+        had = "_sat_probe" in SUITES
+        prior = SUITES.get("_sat_probe")
         SUITES["_sat_probe"] = _cases(8)
         try:
             pool = {"a": _lane("a"), "b": _lane("b")}
@@ -1568,8 +1570,18 @@ class TestSaturatedClasses(ScriptedCase):
                               "--min-margin", "0.05", "--out", str(Path(d, "l.jsonl"))])
             out = err.getvalue()
         finally:
-            SUITES.pop("_sat_probe", None)
+            if had:
+                SUITES["_sat_probe"] = prior
+            else:
+                SUITES.pop("_sat_probe", None)
         self.assertIn("saturated", out)
         self.assertIn("EVERY class this run can mutate", out)
-        # 候補を測る前に言っていること(この行より後ろに gen0 の candidate 行が来る)
-        self.assertLess(out.index("saturated"), len(out))
+        # **候補を1つも測る前に**言っていること。ここが機能の全部(最後に分かっても遅い)。
+        # `out.index(...) < len(out)` のような常に真の比較にしないこと —— それは何も
+        # 確かめずに緑になる(このセッションで一度やった)。
+        # candidate 行は "[gama]  gen0 <label>  search=" 形式(空白2つ)。seed 行にも
+        # "search=" は出るので、そちらに当たると常に真の比較になって試験が死ぬ。
+        first_candidate = out.find("[gama]  gen")
+        if first_candidate != -1:
+            self.assertLess(out.index("saturated"), first_candidate,
+                            "the saturation warning came after candidates were measured")
