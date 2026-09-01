@@ -426,3 +426,13 @@ def _walk_actions(parser):
                 yield from _walk_actions(sub)
         else:
             yield action
+
+    def test_every_registered_suite_has_a_one_line_description(self):
+        # help を手書きの写しにしていたので、qadeep / researchdeep / crux の 3 本が登録済みなのに
+        # 説明に出てこない状態が続いていた。出所を 1 つにしたことを試験で固定する。
+        from gama.benchmark import SUITE_DOCS
+        self.assertEqual(set(SUITE_DOCS), set(SUITES),
+                         f"SUITE_DOCS drifted from the registry: "
+                         f"{sorted(set(SUITE_DOCS) ^ set(SUITES))}")
+        for name, doc in SUITE_DOCS.items():
+            self.assertTrue(doc.strip(), f"{name} has an empty description")

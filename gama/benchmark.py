@@ -1550,6 +1550,27 @@ CRUX_SUITE: list[BenchCase] = [
 ]
 
 
+
+# suite 1 行説明の**単一の出所**。CLI の help はここから作る。
+# 手で書いた写しを help に置いていたせいで、qadeep / researchdeep / crux の 3 本が
+# 登録済みなのに説明に出てこない状態が続いていた(選択肢のベタ書きと同じ壊れ方)。
+SUITE_DOCS: dict[str, str] = {
+    "default": "5 classes, may hit a ceiling",
+    "hard": "harder variants of the default classes",
+    "brutal": "discriminating, breaks the ceiling effect",
+    "wide": "40 cases, 8 per class — breadth for splitting, same band as hard",
+    "graded": "20 cases scored as a FRACTION of independently checked requirements, "
+              "so a score can move by less than a whole case",
+    "steep": "20 cases for models that already saturate the others — exact computation, "
+             "escaping, eviction order",
+    "qadeep": "16 qa cases, half computational and half not — added because `qa` had been "
+              "16 for 16 arithmetic, which made a tool lane look better than it was",
+    "researchdeep": "16 research cases, half of them things no program can supply — the same "
+                    "audit applied to the other suspicious class",
+    "crux": "17 cases aimed where a 48B fails alone but a program succeeds — for boxes where "
+            "the other suites are saturated and can no longer separate structures",
+}
+
 SUITES: dict[str, list[BenchCase]] = {
     "default": DEFAULT_SUITE,
     "hard": HARD_SUITE,

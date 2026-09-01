@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 
 from .backends import get_backend
-from .benchmark import SUITES, propose_routing_table, run_bench
+from .benchmark import SUITE_DOCS, SUITES, propose_routing_table, run_bench
 from .config import (
     abmcts_from_config,
     build_backend,
@@ -564,13 +564,8 @@ def build_parser() -> argparse.ArgumentParser:
                          "e.g. a grown recipe). 'echo' = free smoke")
     pb.add_argument("--tier", default="large", choices=["small", "medium", "large"])
     pb.add_argument("--suite", default="default", choices=sorted(SUITES),
-                    help="case suite: default (5 classes, may hit a ceiling) | hard | "
-                         "brutal (discriminating, break the ceiling effect) | wide (40 cases, "
-                         "8 per class — breadth for splitting, same band as hard) | graded "
-                         "(20 cases scored as a FRACTION of independently checked "
-                         "requirements, so a score can move by less than a whole case) | steep "
-                         "(20 cases for models that already saturate the others — exact "
-                         "computation, escaping, eviction order)")
+                    help="case suite. " + " | ".join(f"{k} ({v})"
+                                                       for k, v in sorted(SUITE_DOCS.items())))
     pb.add_argument("--repeats", type=int, default=1)
     pb.add_argument("--limit-per-class", type=int, default=None)
     pb.add_argument("--out", default=None, help="write a JSONL bench ledger")
