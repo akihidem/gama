@@ -36,7 +36,8 @@ from gama.backends import (note_served, note_tool, reset_served, reset_tool_stat
 from gama.grow import (
     MeasurementFailure,
     sealed_verdict,
-    claimed_gain_cases,
+    promoted_gain_cases,
+    confirm_claim,
     _guard_measurement,
     Measurement,
     paired_gain,
@@ -1151,6 +1152,128 @@ class TestPairedEvidenceSurvivesResume(ScriptedCase):
                                "were restored from a checkpoint instead of re-measured")
 
 
+class TestConfirmClaim(unittest.TestCase):
+    """sealed が検定する仮説の confirm 側の大きさ。どの測定で出すかで ±1 問(帯そのもの)動くので、
+    選択に使っていない測定の平均で出す。数字は run T/V/R の台帳そのまま。"""
+
+    def test_run_t_the_seed_drifted_down_and_the_claim_is_the_mean_not_the_first_pair(self):
+        c = confirm_claim([0.8619, 0.8485, 0.844], [0.8664, 0.8664, 0.8664], 56,
+                          promotion_score=0.8664)
+        self.assertAlmostEqual(c["cases"], 0.84, places=2)      # first pair would say +0.25
+        self.assertEqual((c["seed_measurements"], c["champion_measurements"]), (3, 3))
+        self.assertFalse(c["promotion_only"])
+        self.assertFalse(c["same_as_seed"])
+
+    def test_run_v_the_promotion_measurement_is_excluded_because_it_was_selected(self):
+        c = confirm_claim([0.7669, 0.7669], [0.7792, 0.7637, 0.7608, 0.7592], 65,
+                          promotion_score=0.7838)
+        self.assertLess(c["cases"], 0)                           # -0.08: the gain evaporated
+        self.assertAlmostEqual(c["cases"], -0.08, places=2)
+        self.assertEqual(c["champion_mean"], 0.7657)
+        # counting the selected measurement would have turned that into a positive claim
+        self.assertGreater(confirm_claim([0.7669, 0.7669],
+                                         [0.7838, 0.7792, 0.7637, 0.7608, 0.7592], 65)["cases"], 0)
+
+    def test_run_r_the_claim_is_close_to_the_certified_total_when_nothing_regressed(self):
+        c = confirm_claim([0.7712, 0.7712], [0.8493, 0.8597], 48, promotion_score=0.8597)
+        self.assertAlmostEqual(c["cases"], 4.0, places=2)       # certified +4.37 on the way
+
+    def test_a_promotion_in_the_last_generation_has_only_its_selected_measurement(self):
+        c = confirm_claim([0.80, 0.80], [], 40, promotion_score=0.85)
+        self.assertAlmostEqual(c["cases"], 2.0, places=2)
+        self.assertTrue(c["promotion_only"])
+        self.assertEqual(c["champion_measurements"], 1)
+
+    def test_a_champion_identical_to_the_seed_claims_nothing_whatever_it_re_measured(self):
+        c = confirm_claim([0.80, 0.85, 0.75], [], 40)
+        self.assertEqual(c["cases"], 0.0)
+        self.assertTrue(c["same_as_seed"])
+        self.assertEqual(c["champion_mean"], c["seed_mean"])
+
+    def test_the_claim_is_not_rounded(self):
+        c = confirm_claim([0.8], [0.8 + 1 / 3 / 40], 40, promotion_score=0.9)
+        self.assertNotEqual(c["cases"], round(c["cases"], 2))
+
+
+class TestTheClaimSealedTests(ScriptedCase):
+    """sealed の検定力は「最終形が confirm で種より何問上か」で決まる(sealed が比べるのがその
+    二つだから)。種は走行ごとに一つで、再開した走行の種は**再開点のチャンピオン**。主張の基準も
+    それに合わせる: 元の種まで遡ると、sealed が比べていない相手に対する主張になる。"""
+
+    def test_the_claim_is_the_final_champion_over_the_seed_on_confirm(self):
+        Scripted.WINS = {"a": set(), "b": {"qa1", "qa2", "qa4"},
+                         "c": {"qa1", "qa2", "qa3", "qa4", "qa5", "qa6"}}
+        pool = {"a": _lane("a"), "b": _lane("b"), "c": _lane("c")}
+        with tempfile.TemporaryDirectory() as d:
+            led = Path(d) / "run.jsonl"
+            first = grow(pool, cases=_cases(8), generations=1, width=1, patience=5,
+                         ledger_path=str(led), min_margin=0.05)
+            seed_row = [json.loads(l) for l in led.read_text().splitlines()
+                        if json.loads(l).get("event") == "seed"][0]
+            self.assertTrue(first["net_change"])
+            claim = first["confirm_claim"]
+            # one generation: the seed was measured twice (seed + gen0 re-measure), the champion
+            # only at its promotion
+            self.assertEqual(claim["seed_measurements"], 2)
+            self.assertTrue(claim["promotion_only"])
+            self.assertEqual(claim["champion_mean"], first["confirm"]["score"])
+            self.assertEqual(claim["seed_mean"], seed_row["confirm"]["score"])   # deterministic
+            n_confirm = len(first["splits"]["confirm"])
+            sv = first["sealed_verdict"]
+            self.assertAlmostEqual(
+                sv["claimed_confirm_cases"],
+                round((claim["champion_mean"] - claim["seed_mean"]) * n_confirm, 2), places=2)
+            self.assertIsNotNone(sv["power"])
+            self.assertIn("measured once, at its promotion", sv["note"])
+            # the certified total is reported beside the claim
+            self.assertAlmostEqual(sv["promoted_confirm_cases"],
+                                   round(sum(h["gain_cases"] for h in first["history"]
+                                             if h["champion_hash"] != h["champion_after"]), 2),
+                                   places=2)
+            # a resumed run's seed is the resume point, and so is the baseline of its claim
+            resume_point = load_checkpoint(led)["champion_confirm"]["score"]
+            second = grow(pool, cases=_cases(8), generations=3, width=3, patience=5,
+                          ledger_path=str(led), resume_from=str(led), min_margin=0.05)
+            self.assertEqual(second["seed_hash"], first["champion_hash"])
+            claim = second["confirm_claim"]
+            self.assertGreaterEqual(claim["seed_measurements"], 1)
+            if second["net_change"]:
+                self.assertFalse(claim["same_as_seed"])
+                self.assertAlmostEqual(
+                    second["sealed_verdict"]["claimed_confirm_cases"],
+                    round((claim["champion_mean"] - claim["seed_mean"])
+                          * len(second["splits"]["confirm"]), 2), places=2)
+            else:
+                self.assertTrue(claim["same_as_seed"])
+                self.assertEqual(second["sealed_verdict"]["claimed_confirm_cases"], 0.0)
+
+    def test_re_measurements_after_a_promotion_feed_the_claim_not_the_promotion_score(self):
+        # b is promoted at gen0; gens 1-2 re-measure it (deterministic here, so the mean is the
+        # same number, but the count shows which measurements were used)
+        Scripted.WINS = {"a": set(), "b": {"qa1", "qa2", "qa4"}}
+        pool = {"a": _lane("a"), "b": _lane("b")}
+        result = grow(pool, cases=_cases(8), generations=3, width=1, patience=5, min_margin=0.05)
+        self.assertTrue(result["net_change"])
+        claim = result["confirm_claim"]
+        self.assertFalse(claim["promotion_only"])
+        self.assertEqual(claim["champion_measurements"], 2)
+        self.assertIn("means of 2 champion and 2 seed measurements",
+                      result["sealed_verdict"]["note"])
+
+    def test_a_run_that_stayed_on_its_seed_claims_nothing(self):
+        # re-measuring the seed is drift, not a claim: a champion identical to the seed must not
+        # read as "underpowered" or "powered" from its own noise
+        Scripted.WINS = {"a": {"qa1", "qa2"}, "b": set()}
+        pool = {"a": _lane("a"), "b": _lane("b")}
+        result = grow(pool, cases=_cases(8), generations=1, width=1, patience=5, min_margin=0.05)
+        self.assertFalse(result["net_change"])
+        sv = result["sealed_verdict"]
+        self.assertEqual(sv["verdict"], "not-separable")
+        self.assertEqual(sv["claimed_confirm_cases"], 0.0)
+        self.assertEqual(sv["power"], "nothing-claimed")
+        self.assertTrue(result["confirm_claim"]["same_as_seed"])
+
+
 class TestBackendIdentity(unittest.TestCase):
     """run S は載せ替えが 503 を返したから捕まった。200 を返しながら中身だけ入れ替わる
     載せ替えは何も鳴らさず、世代 0 と世代 5 が別モデルの比較になる。"""
@@ -1405,27 +1528,73 @@ class TestSealedVerdict(unittest.TestCase):
         self.assertIsNone(v["delta_cases"])
         self.assertIn("not a comparison", v["note"])
 
-    # 「分からない」の二つの中身。7 走の台帳を並べて出た区別で、行動が違う(split を広げる /
-    # 手を疑う)ので一語に丸めない。
+    # 「分からない」の三つの中身。7 走の台帳を並べて出た区別で、行動が違う(split を広げる /
+    # 手を疑う / 門を疑う)ので一語に丸めない。判定の軸は「最終形が confirm で種より何問上か」
+    # (sealed が比べるのがその二つだから)。昇格時の認定の合計は並記されるだけ。
     def test_a_gain_too_small_for_the_split_was_never_going_to_separate(self):
-        # run V: +1.1 of 65 confirm → 0.54 of 32 sealed, inside the one-case band
-        v = sealed_verdict(self._s(0.7484, 0.7471, n=32), claimed_gain_cases=1.1, confirm_cases=65)
+        # a champion standing +1.1 of 65 confirm over the seed → 0.54 of 32 sealed, inside the band
+        v = sealed_verdict(self._s(0.7484, 0.7471, n=32), claimed_gain_cases=1.1, confirm_cases=65,
+                           promoted_gain_cases=1.1)
         self.assertEqual(v["verdict"], "not-separable")
         self.assertEqual(v["power"], "underpowered")
         self.assertEqual(v["claimed_confirm_cases"], 1.1)
+        self.assertEqual(v["promoted_confirm_cases"], 1.1)
         self.assertAlmostEqual(v["expected_cases"], 0.54, places=2)
         self.assertIn("never could have", v["note"])
+        self.assertIn("certified +1.10 at promotion time", v["note"])
         self.assertIn("at least 60 cases", v["note"])          # int(65/1.1)+1
         self.assertIn("more than 2.03 confirm cases", v["note"])  # 65/32
 
     def test_a_gain_the_split_could_see_but_did_not_is_called_non_transfer(self):
-        # run R: +4.37 of 48 confirm → 2.19 of 24 sealed expected, sealed shows +0.33
-        v = sealed_verdict(self._s(0.8611, 0.8750, n=24), claimed_gain_cases=4.37, confirm_cases=48)
+        # run R: champion +4.25 of 48 confirm over the seed → 2.12 of 24 sealed expected,
+        # the promotions certified +4.37 on the way, sealed shows +0.33
+        v = sealed_verdict(self._s(0.8611, 0.8750, n=24), claimed_gain_cases=4.25, confirm_cases=48,
+                           promoted_gain_cases=4.37)
         self.assertEqual(v["verdict"], "not-separable")
         self.assertEqual(v["power"], "powered")
-        self.assertAlmostEqual(v["expected_cases"], 2.19, places=2)
+        self.assertAlmostEqual(v["expected_cases"], 2.12, places=2)
         self.assertIn("did not transfer", v["note"])
+        self.assertIn("stands +4.25 of 48", v["note"])
+        self.assertIn("certified +4.37", v["note"])
         self.assertIn("+0.33", v["note"])
+
+    def test_a_gain_the_run_itself_retracted_is_called_evaporated(self):
+        # run V: the gate certified +1.10 at promotion time; re-measured every generation
+        # after, the champion ended -0.50 under the seed on confirm. Sealed had nothing to test,
+        # and that is not "nothing was claimed": the gate did certify a gain.
+        v = sealed_verdict(self._s(0.7484, 0.7471, n=32), claimed_gain_cases=-0.5, confirm_cases=65,
+                           promoted_gain_cases=1.1)
+        self.assertEqual(v["verdict"], "not-separable")
+        self.assertEqual(v["power"], "evaporated")
+        self.assertEqual(v["claimed_confirm_cases"], -0.5)
+        self.assertEqual(v["promoted_confirm_cases"], 1.1)
+        self.assertIn("certified +1.10 of 65 confirm cases", v["note"])
+        self.assertIn("stands -0.50 over the seed", v["note"])
+        self.assertIn("evaporated", v["note"])
+        self.assertIn("no better than the seed", v["note"])
+        # a champion that gained nothing, promoted by simplification only, claims nothing
+        v = sealed_verdict(self._s(0.7484, 0.7471, n=32), claimed_gain_cases=-0.5, confirm_cases=65,
+                           promoted_gain_cases=-0.5)
+        self.assertEqual(v["power"], "nothing-claimed")
+
+    def test_the_claim_decides_power_even_when_the_certified_total_was_larger(self):
+        # certified +4.0 on the way, but the champion stands only +0.3 over the seed at the end:
+        # sealed tests the +0.3, and that is inside the band
+        v = sealed_verdict(self._s(0.85, 0.85, n=32), claimed_gain_cases=0.3, confirm_cases=64,
+                           promoted_gain_cases=4.0)
+        self.assertEqual(v["power"], "underpowered")
+        self.assertIn("stands +0.30 of 64", v["note"])
+        self.assertIn("certified +4.00", v["note"])
+
+    def test_an_unreadable_claim_with_a_recorded_certification_says_which_is_missing(self):
+        # a resumed old ledger: the promotions are readable, the seed's confirm score is not
+        v = sealed_verdict(self._s(0.85, 0.85, n=32), None, 64, promoted_gain_cases=2.0)
+        self.assertEqual(v["verdict"], "not-separable")
+        self.assertIsNone(v["power"])
+        self.assertIsNone(v["claimed_confirm_cases"])
+        self.assertEqual(v["promoted_confirm_cases"], 2.0)
+        self.assertIn("not recorded", v["note"])
+        self.assertIn("certified +2.00", v["note"])
 
     def test_no_claimed_gain_keeps_the_plain_reading(self):
         v = sealed_verdict(self._s(0.85, 0.85), claimed_gain_cases=0.0, confirm_cases=56)
@@ -1441,6 +1610,8 @@ class TestSealedVerdict(unittest.TestCase):
         self.assertEqual(v["verdict"], "not-separable")
         self.assertIsNone(v["power"])
         self.assertIsNone(v["expected_cases"])
+        self.assertIsNone(v["promoted_confirm_cases"])
+        self.assertIn("neither proved nor disproved", v["note"])
         for bad in (float("nan"), True, "3"):
             self.assertIsNone(sealed_verdict(self._s(0.85, 0.85), bad, 56)["power"])
         self.assertIsNone(sealed_verdict(self._s(0.85, 0.85), 2.0, 0)["power"])
@@ -1460,10 +1631,21 @@ class TestSealedVerdict(unittest.TestCase):
         self.assertEqual(v["power"], "underpowered")         # the claim was small; also stands
         v = sealed_verdict(self._s(0.90, 0.80), claimed_gain_cases=5.0, confirm_cases=40)
         self.assertEqual(v["verdict"], "regressed")
+        v = sealed_verdict(self._s(0.90, 0.80), claimed_gain_cases=-1.0, confirm_cases=40,
+                           promoted_gain_cases=3.0)
+        self.assertEqual(v["verdict"], "regressed")
+        self.assertEqual(v["power"], "evaporated")
+
+    def test_the_certified_total_is_reported_rounded_but_the_claim_is_judged_exact(self):
+        v = sealed_verdict(self._s(0.85, 0.85, n=32), claimed_gain_cases=2.0 + 1e-9,
+                           confirm_cases=64, promoted_gain_cases=2.123456)
+        self.assertEqual(v["promoted_confirm_cases"], 2.12)
+        self.assertEqual(v["claimed_confirm_cases"], 2.0)
+        self.assertEqual(v["power"], "powered")              # 2.000000001*32/64 > 1 exactly
 
 
-class TestClaimedGain(unittest.TestCase):
-    """sealed が検定する仮説の大きさ = 走行が confirm で主張した伸びの合計。"""
+class TestPromotedGain(unittest.TestCase):
+    """門が昇格時に認めた伸びの合計。判定には使わず、最終形の主張の横に並記される。"""
 
     def _gen(self, gen, changed, **kw):
         row = {"gen": gen, "champion_hash": "h0", "champion_after": "h1" if changed else "h0",
@@ -1475,29 +1657,30 @@ class TestClaimedGain(unittest.TestCase):
         hist = [self._gen(0, True, gain_cases=1.25),
                 self._gen(1, False, gain_cases=3.0),                    # rejected: not claimed
                 self._gen(2, True, simplify_verdict="promote", simplify_confirm=0.79)]
-        # +1.25, then a removal that cost 0.01*56 = 0.56
-        self.assertAlmostEqual(claimed_gain_cases(hist, 56), 0.69, places=2)
+        # +1.25, then a removal that cost 0.01*56 = 0.56; returned unrounded (display rounds)
+        self.assertAlmostEqual(promoted_gain_cases(hist, 56), 0.69, places=2)
+        self.assertNotEqual(promoted_gain_cases(hist, 56), 0.69)
 
     def test_nothing_changed_is_zero_not_none(self):
-        self.assertEqual(claimed_gain_cases([self._gen(0, False, gain_cases=2.0)], 56), 0.0)
-        self.assertEqual(claimed_gain_cases([], 56), 0.0)
+        self.assertEqual(promoted_gain_cases([self._gen(0, False, gain_cases=2.0)], 56), 0.0)
+        self.assertEqual(promoted_gain_cases([], 56), 0.0)
 
     def test_an_unreadable_promotion_makes_the_claim_unknown(self):
         # a changed generation with no readable gain (an old ledger) must not count as 0:
         # "nothing claimed" would read as a run that could never separate, which is a lie
-        self.assertIsNone(claimed_gain_cases([self._gen(0, True)], 56))
-        self.assertIsNone(claimed_gain_cases(
+        self.assertIsNone(promoted_gain_cases([self._gen(0, True)], 56))
+        self.assertIsNone(promoted_gain_cases(
             [self._gen(0, True, simplify_verdict="promote")], 56))
-        self.assertIsNone(claimed_gain_cases([self._gen(0, True, gain_cases=1.0)], 0))
-        self.assertIsNone(claimed_gain_cases([self._gen(0, True, gain_cases=1.0)], None))
+        self.assertIsNone(promoted_gain_cases([self._gen(0, True, gain_cases=1.0)], 0))
+        self.assertIsNone(promoted_gain_cases([self._gen(0, True, gain_cases=1.0)], None))
 
     def test_booleans_and_non_finite_values_are_not_numbers(self):
         # a ledger's true/false must not be read as 1/0 cases (bool is an int in Python)
-        self.assertIsNone(claimed_gain_cases([self._gen(0, True, gain_cases=True)], 56))
-        self.assertIsNone(claimed_gain_cases([self._gen(0, True, gain_cases=float("nan"))], 56))
-        self.assertIsNone(claimed_gain_cases(
+        self.assertIsNone(promoted_gain_cases([self._gen(0, True, gain_cases=True)], 56))
+        self.assertIsNone(promoted_gain_cases([self._gen(0, True, gain_cases=float("nan"))], 56))
+        self.assertIsNone(promoted_gain_cases(
             [self._gen(0, True, simplify_verdict="promote", simplify_confirm=True)], 56))
-        self.assertIsNone(claimed_gain_cases([self._gen(0, True, gain_cases=1.0)], True))
+        self.assertIsNone(promoted_gain_cases([self._gen(0, True, gain_cases=1.0)], True))
 
 
 def _lane_spec(tag):

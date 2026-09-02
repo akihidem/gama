@@ -384,14 +384,15 @@ def cmd_grow(args: argparse.Namespace) -> int:
             sys.stderr.write(f"[gama] splits {sizes} | seed search={row['search']['score']} "
                              f"confirm={row['confirm']['score']}\n")
             # sealed が何を言えるかは封を開ける前に決まっている。1 問の帯を confirm の問数に
-            # 直した量より小さい伸びしか通らなかった走行は、転移していても NOT SEPARABLE で
-            # 終わる。run T/V がそれで、走行後に「分からない」と読むのは 3 時間遅い。
+            # 直した量より小さくしか種の上に立てなかった最終形は、転移していても NOT SEPARABLE
+            # で終わる。run T/V がそれで、走行後に「分からない」と読むのは 3 時間遅い。
+            # 量るのは昇格時の認定の合計ではなく最終形の confirm 点(sealed が比べる相手と同じ)。
             if sizes.get("sealed") and sizes.get("confirm"):
                 need = sizes["confirm"] / sizes["sealed"]
                 sys.stderr.write(
                     f"[gama] the sealed split resolves one case, which is {need:.2f} confirm "
-                    f"cases of claimed gain: promotions totalling less than that will end "
-                    "NOT SEPARABLE by construction, whatever they are worth.\n")
+                    f"cases: a champion that ends less than that above the seed on confirm "
+                    "will be NOT SEPARABLE by construction, whatever it is worth.\n")
             if row.get("margin_floor_coarse"):
                 sys.stderr.write(
                     f"[gama] WARNING: only {len(row['splits']['confirm'])} confirm cases, so "

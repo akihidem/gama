@@ -120,10 +120,13 @@ Seeded from this recipe, with the `crux` suite added to the pool (129 cases, spl
 | 4 | `route:content → kimi-cold` | 0.759 → 0.767 | 2 / 1 | search-not-better |
 
 Sealed: seed 0.748, champion 0.747 — **not separable** (the eighth run in a row on this box).
-Re-read with the promotions' claim in hand: +1.1 of 65 confirm cases is 0.54 of 32 sealed
-cases, so this run was **underpowered by construction**; sealed could not have said anything
-either way. (Run R on this box was the other kind: +4.37 of 48 claimed, 2.19 sealed cases
-expected, +0.33 seen — the gains did not transfer.)
+Re-read with the run's own confirm numbers in hand: the gate certified +1.1 of 65 confirm cases
+at gen 0, and the champion, re-measured every generation after (0.784 at promotion, then 0.779,
+0.764, 0.761, 0.759 against a seed measured twice at 0.767), ended **0.08 cases below the seed**
+on confirm. The claim had **evaporated** before sealed was opened, so sealed had nothing to
+test. (Run T on this box was underpowered instead: +0.84 of 56 at the end, 0.42 of 28 sealed
+cases. Run R was the third kind: +4.0 of 48 at the end, 2.0 sealed cases expected, +0.33
+seen — the gains did not transfer.)
 
 Three things this run showed, none of them about the model:
 

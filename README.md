@@ -364,15 +364,23 @@ there are at most seven promotions' worth of room in the entire suite, and any s
 change moves one to three cases — inside the sealed split's resolution. That is the mechanism
 behind six NOT SEPARABLE verdicts, and it means **the lever is harder cases, not more of them**.
 
-"Not separable" turned out to be two different results wearing one word, and the loop now says
-which. Scale what a run's promotions claimed on `confirm` to the sealed split's size: run V
-claimed +1.1 of 65 confirm cases, which is 0.54 of 32 sealed cases, inside the one case sealed
-resolves, so its verdict was **fixed before the split was opened** (run T likewise: +1.25 of 56
-→ 0.62 of 28). Run R claimed +4.37 of 48, which should have shown as 2.19 of 24 sealed cases,
-and sealed showed +0.33: there the confirm gains **did not transfer**, and the promotions were
-selection noise. The first kind asks for a bigger sealed split (or larger promotions); the
-second asks you to distrust the promotions. A run prints the sealed split's resolution in
-confirm cases at the seed, so an underpowered run announces itself three hours before it ends.
+"Not separable" turned out to be three different results wearing one word, and the loop now
+says which. The hypothesis sealed tests is *the final champion against the seed*, so the claim
+to scale is how far the champion stands above the seed on `confirm` at the end (means of the
+measurements that were never used for selection: every seed measurement, and the champion's
+re-measurements after its promotion, not the promotion score itself), scaled to the sealed
+split's size. Run T's champion ended +0.84 of 56 confirm cases above its seed, which is 0.42 of
+28 sealed cases, inside the one case sealed resolves: its verdict was **fixed before the split
+was opened**. Run R's ended +4.0 of 48, which should have shown as 2.0 of 24 sealed cases, and
+sealed showed +0.33: there the confirm gains **did not transfer**, and the promotions were
+selection noise. Run V is the third kind: its gate certified +1.1 cases at promotion time, and
+the champion, re-measured every generation after (0.784 at promotion, then 0.779, 0.764, 0.761,
+0.759 against a seed at 0.767), ended **0.08 cases below the seed** on confirm. The claim had
+**evaporated** before sealed was opened; the promotion score was the selection, and the
+re-measurements were the correction. The first kind asks for a bigger sealed split (or larger
+gains); the second asks you to distrust the promotions; the third says the gate certified
+noise. A run prints the sealed split's resolution in confirm cases at the seed, so an
+underpowered run announces itself three hours before it ends.
 
 One caveat on that headroom, found by auditing the checkers rather than the models: of the ten
 cases the champion loses, **four are scored on output format as well as content** (their checker
