@@ -562,6 +562,49 @@ class TestPropose(ScriptedCase):
         self.assertEqual([m["kwargs"].get("system") for m in got["kwargs"]["members"]],
                          ["something else", TERSE_SYSTEM])
 
+    # 症状(Measurement のクラス別カウンタ)と治療(propose が鋳造する変異)の対応表。
+    # 増やすときはここに 1 行足す。表に無い症状欄が Measurement に生えたら下のテストが落ちる:
+    # 「数えているが治療が無い」診断は、席も取らず recipe にも出ない死んだ計測になる。
+    # 4 列目は「症状が無ければ鋳造しないか」。prefill だけ False なのは、それが tool レーンの
+    # 1 手の洗練として元から変異の語彙に在り、診断は**順番**を決めているだけだから(README)。
+    # 枠 2 倍と system 一行は探索でなく処方で、効きようのないクラスに配ると席と測定を食う。
+    SYMPTOM_REMEDIES = (
+        ("tool_no_code_by_class", "no_code", "tool", False),
+        ("cut_by_class", "cut", "tokens", True),
+        ("preamble_by_class", "preamble", "terse", True),
+    )
+
+    def test_every_symptom_the_measurement_counts_has_a_remedy_the_loop_can_propose(self):
+        import dataclasses
+        from gama.grow import Measurement
+        counted = {f.name for f in dataclasses.fields(Measurement)
+                   if f.name.endswith("_by_class")}
+        self.assertEqual(counted, {f for f, _, _, _ in self.SYMPTOM_REMEDIES},
+                         "a symptom is counted with no remedy, or a remedy names no symptom")
+        # 3 つの治療が同時に出せるレーン: ssh-openai を tool で包んだもの(prefill / 枠 / system)
+        inner = {"backend": "ssh-openai", "kwargs": {"ssh_host": "h", "max_tokens": 1536}}
+        pool = {"a": inner}
+        champ = canonical(seed_champion(pool, "a"))
+        champ["kwargs"]["backends"]["tool(a)"] = {
+            "backend": "tool", "_grow_base": "a", "kwargs": {"inner": inner}}
+        champ["kwargs"]["routing_table"]["qa"] = "tool(a)"
+        champ = canonical(champ)
+        for field, treats, kind, only_on_symptom in self.SYMPTOM_REMEDIES:
+            arg = {"tool_no_code_by_class": "no_code_by_class"}.get(field, field)
+            with self.subTest(symptom=treats):
+                cands = propose(champ, pool, ["qa"], width=30, **{arg: {"qa": 3}})
+                mine = [c for c in cands if c.treats == treats]
+                self.assertTrue(mine, f"no remedy proposed for {treats}")
+                self.assertEqual({c.kind for c in mine}, {kind})
+                # 処方だけの治療は、症状を渡さなければ鋳造されない
+                without = [c for c in propose(champ, pool, ["qa"], width=30)
+                           if c.treats == treats]
+                self.assertEqual(bool(without), not only_on_symptom,
+                                 f"{treats}: minted without a symptom = {bool(without)}")
+                # どちらの治療も、席を先頭で取るのは症状がある時だけ
+                seat = propose(champ, pool, ["qa"], width=1, **{arg: {"qa": 3}})
+                self.assertEqual([c.treats for c in seat], [treats])
+
     def test_only_a_reply_that_starts_with_a_preamble_counts_as_one(self):
         from gama.grow import _has_preamble
         for opener in ("Sure! Here's a sentence that meets your criteria:", "Sure, the answer:",
