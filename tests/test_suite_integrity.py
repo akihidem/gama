@@ -640,6 +640,17 @@ REFERENCE: dict[str, str] = {
     "edge-content-toads": ("A toad sits by the pond. The toad watches the still water. "
                            "Another toad hops away."),
     "edge-content-alpha": "A big cat dozed every fine hour in June kitchens.",
+    "edge-research-birthday": "0.507",
+    "edge-research-twopair": "123552",
+    "edge-research-stairs": "10946",
+    "edge-research-bayes": "9",
+    "edge-int-caesar": "DWQXEDPDJ",
+    "edge-int-digitsum": "110110",
+    "edge-int-factors": "108",
+    "edge-content-longwords": ("Quiet toads gather near mossy stones while gentle water keeps "
+                               "reeds alive."),
+    "edge-content-tpond": ("Toads gather at the pond\nThe moon rests over the pond\n"
+                           "Two herons watch the pond"),
 }
 
 
@@ -704,6 +715,30 @@ class TestSuiteIntegrity(unittest.TestCase):
             with self.subTest(suite=suite_name, case=case.case_id):
                 self.assertLess(score_output(case, JUNK), 1.0)
                 self.assertLess(score_output(case, ""), 1.0)
+
+    def test_the_multi_constraint_content_checkers_reject_near_misses(self):
+        # 体裁の case は「惜しい返答」で落ちることに意味がある。満点の参照answer だけ見ていると、
+        # 制約を 1 つ落とした返答まで通す緩い checker が全部のテストを通ってしまう。
+        from gama.benchmark import _chk_t_pond_lines, _chk_twelve_long_words
+        ok12 = "Quiet toads gather near mossy stones while gentle water keeps reeds alive."
+        self.assertEqual(_chk_twelve_long_words(ok12), 1.0)
+        for miss in ("A quiet toad rests near mossy stones while gentle water keeps reeds alive.",
+                     "Quiet toads gather near mossy stones while gentle water keeps reeds alive "
+                     "today.",
+                     "Quiet toads gather near mossy stones. While gentle water keeps reeds "
+                     "alive."):
+            self.assertEqual(_chk_twelve_long_words(miss), 0.0, miss)
+        okt = ("Toads gather at the pond\nThe moon rests over the pond\n"
+               "Two herons watch the pond")
+        self.assertEqual(_chk_t_pond_lines(okt), 1.0)
+        # 空行と行頭の空白は落とさない(この suite の複数行 case と同じ規約)
+        self.assertEqual(_chk_t_pond_lines("\n" + okt.replace("The", "  The") + "\n"), 1.0)
+        for miss in ("Toads gather at the pond\nThe moon rests over the pond",
+                     "Toads gather at the pond\nA moon rests over the pond\n"
+                     "Two herons watch the pond",
+                     "Toads gather at the pond\nThe moon rests over the pond\n"
+                     "Two herons watch the ponder"):
+            self.assertEqual(_chk_t_pond_lines(miss), 0.0, miss)
 
     def test_graded_cases_can_actually_return_a_fraction(self):
         # The point of the graded suite: a partially-correct answer must land strictly

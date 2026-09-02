@@ -1591,6 +1591,31 @@ def _last_upper_word(word: str) -> Callable[[str], float]:
     return chk
 
 
+def _chk_twelve_long_words(out: str) -> float:
+    """12 語ちょうど・各語 4 文字以上・1 文(制約を同時に満たすかを見る)。"""
+    o = (out or "").strip()
+    words = re.findall(r"[A-Za-z']+", o)
+    one_sentence = o.endswith((".", "!", "?")) and not re.search(r"[.!?]", o[:-1])
+    return 1.0 if (one_sentence and len(words) == 12
+                   and all(len(w.replace("'", "")) >= 4 for w in words)) else 0.0
+
+
+def _chk_t_pond_lines(out: str) -> float:
+    """3 行ちょうど・各行が T で始まり pond で終わる(語の途中の pond は認めない)。
+
+    空行は落とし、行頭行末の空白と大小文字は見ない ── この suite の他の複数行 case
+    (`_chk_three_bullets` / `_chk_acrostic_gama`)と同じ規約に合わせる。末尾の改行や
+    インデントで正しい返答を落とすのは、能力でなく体裁を測ることになる(codex 指摘への
+    回答: 規約を 1 つにする方を採る)。
+    """
+    lines = [ln.strip() for ln in (out or "").splitlines() if ln.strip()]
+    if len(lines) != 3:
+        return 0.0
+    ok = all(ln[:1].upper() == "T" and re.search(r"\bpond\b[.!?]?$", ln.lower())
+             for ln in lines)
+    return 1.0 if ok else 0.0
+
+
 def _chk_alpha_sentence(out: str) -> float:
     """10 語ちょうど・語が(大小無視で)辞書順・重複なし・**1 文**。語順の制約は各語に効く。
 
@@ -1725,6 +1750,46 @@ EDGE_SUITE: list[BenchCase] = [
               "separator, then reverse the result. Reply with ONLY the final string.",
               _last_upper_word("EDCBA")),
 
+    # --- 追加分(2026-09-02): 最初の実測で分かれた 3 クラスへ寄せる ------------------ #
+    # 初版の狙い(「素直に書いたプログラムが間違う」)はコードのクラスでは外れた ── 種の測定で
+    # edge のコード 12 コールは全部満点だった。分かれたのは content / integration / research
+    # (それぞれ 0.00・0.00・0.17)。伸びしろは「その champion が落とす問題」にしか無いので、
+    # 当たった 3 クラスに足す。答えはすべて総当たり/独立計算で確かめてある。
+    BenchCase("edge-research-birthday", "research",
+              "In a room of 23 people, what is the probability that at least two share a "
+              "birthday? Assume 365 equally likely birthdays and no twins. Reply with ONLY the "
+              "probability rounded to three decimal places.", _eq_norm("0.507")),
+    BenchCase("edge-research-twopair", "research",
+              "How many 5-card hands from a standard 52-card deck contain exactly two pairs "
+              "(two cards of one rank, two of another, and a fifth card of a third rank)? "
+              "Reply with ONLY the integer.", _eq_int(123552)),
+    BenchCase("edge-research-stairs", "research",
+              "A frog climbs a staircase of 20 steps, moving either 1 or 2 steps at a time. "
+              "How many distinct sequences of moves reach the top? Reply with ONLY the integer.",
+              _eq_int(10946)),
+    BenchCase("edge-research-bayes", "research",
+              "A test for a disease is positive for 99% of people who have it and for 5% of "
+              "people who do not. One person in 200 has the disease. Someone tests positive; "
+              "what is the probability they have the disease, as a percentage rounded to the "
+              "nearest whole number? Reply with ONLY the integer.", _eq_int(9)),
+    BenchCase("edge-int-caesar", "integration",
+              "Take the word GAMABUNTA. Shift each letter forward by 3 places in the alphabet, "
+              "wrapping Z to C, then reverse the resulting string. Reply with ONLY the final "
+              "string in capitals.", _last_upper_word("DWQXEDPDJ")),
+    BenchCase("edge-int-digitsum", "integration",
+              "Multiply 987654321 by 3, add up the digits of the result, and write that sum in "
+              "binary. Reply with ONLY the binary digits.", _last_digits("110110")),
+    BenchCase("edge-int-factors", "integration",
+              "Take 2024, find its distinct prime factors, add them together, and multiply the "
+              "total by how many distinct prime factors there are. Reply with ONLY the integer.",
+              _eq_int(108)),
+    BenchCase("edge-content-longwords", "content",
+              "Write one sentence of exactly 12 words in which every word has at least four "
+              "letters. Output ONLY the sentence.", _chk_twelve_long_words),
+    BenchCase("edge-content-tpond", "content",
+              "Write exactly three lines. Every line must start with the letter T and end with "
+              "the word pond. Output ONLY the three lines.", _chk_t_pond_lines),
+
     # --- content: 同時に満たす制約を増やす ---------------------------------------- #
     BenchCase("edge-content-toads", "content",
               "Write exactly three sentences about a pond. Every sentence must contain the "
@@ -1755,9 +1820,10 @@ SUITE_DOCS: dict[str, str] = {
                     "audit applied to the other suspicious class",
     "crux": "17 cases aimed where a 48B fails alone but a program succeeds — for boxes where "
             "the other suites are saturated and can no longer separate structures",
-    "edge": "20 cases where the obvious program is wrong (greedy, boundaries, backtracking) "
+    "edge": "29 cases where the obvious program is wrong (greedy, boundaries, backtracking) "
             "or the obvious reading is — for a champion that already has a tool lane and "
-            "saturates crux",
+            "saturates crux; the later cases aim at the three classes the first measurement "
+            "actually separated",
 }
 
 SUITES: dict[str, list[BenchCase]] = {
