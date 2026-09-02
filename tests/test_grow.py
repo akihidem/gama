@@ -25,7 +25,8 @@ sys.path.insert(0, os.path.dirname(__file__))
 from gama.cli import main as cli_main
 from gama import backends as backends_mod
 from gama.grow import (Candidate, _challenger_key, _default_swap_viable,
-                       _structure_size, class_headroom)
+                       _structure_size, class_headroom, propose, search_gate, spec_hash,
+                       split_cases)
 from gama.backends import ModelBackend
 from gama.benchmark import BenchCase
 from gama.cli import build_parser, main
@@ -68,6 +69,7 @@ class Scripted(ModelBackend):
     WINS: dict = {}
     PARTIAL: dict = {}
     SEEN: list = []
+    SEEN_BY: list = []          # (tag, cid): which lane was asked which case
 
     def __init__(self, tag: str = "a"):
         self.tag = tag
@@ -76,6 +78,7 @@ class Scripted(ModelBackend):
     def complete(self, prompt, tier, **kw):
         cid = prompt.split("case=")[1].split()[0] if "case=" in prompt else "?"
         Scripted.SEEN.append(cid)
+        Scripted.SEEN_BY.append((self.tag, cid))
         if cid in Scripted.PARTIAL.get(self.tag, set()):
             return "HALF"
         return "GOOD" if cid in Scripted.WINS.get(self.tag, set()) else "BAD"
@@ -102,10 +105,12 @@ class ScriptedCase(unittest.TestCase):
     def setUp(self):
         backends_mod._BACKENDS["scripted"] = Scripted
         Scripted.WINS, Scripted.SEEN, Scripted.PARTIAL = {}, [], {}
+        Scripted.SEEN_BY = []
 
     def tearDown(self):
         backends_mod._BACKENDS.pop("scripted", None)
         Scripted.WINS, Scripted.SEEN, Scripted.PARTIAL = {}, [], {}
+        Scripted.SEEN_BY = []
 
 
 # --------------------------------------------------------------------------- #
@@ -136,6 +141,13 @@ class TestSplit(unittest.TestCase):
         # Positive-proof floor: refuse to grow rather than silently decide on the search split.
         with self.assertRaises(ValueError):
             split_cases(_cases(1))
+
+    def test_empty_search_is_refused(self):
+        # A ratio with no search share leaves the split empty; the search band (1 / n_search)
+        # would then divide by zero. Refuse here, in positive form, without relying on how
+        # _allocate rounds a one-case class.
+        with self.assertRaisesRegex(ValueError, "search split is empty"):
+            split_cases(_cases(4), ratio=(0, 1, 0))
 
     def test_ratio_validated(self):
         with self.assertRaises(ValueError):
@@ -404,15 +416,43 @@ class TestPropose(ScriptedCase):
 # 4. The gate
 # --------------------------------------------------------------------------- #
 class TestPromoteGate(unittest.TestCase):
+    def test_exactly_one_case_passes_every_gate_whichever_way_the_scores_rounded(self):
+        # scores reach the gates rounded to 4 digits; the widths (1/n) are exact. 11/15 − 10/15
+        # arrives as 0.0666 against a delta of 0.066667, and 1 − 5/6 as 0.1667 against a band of
+        # 0.166667. A one-case difference must not pass or fail on the rounding direction.
+        r = lambda x: round(x, 4)
+        self.assertEqual(promote_gate(1.0, 1.0, r(10 / 15), r(11 / 15), 1 / 15)[1], "promote")
+        self.assertTrue(search_gate(1.0, r(5 / 6), 1 / 6)[0])
+        self.assertTrue(search_gate(r(29 / 32), r(28 / 32), 1 / 32)[0])
+        self.assertTrue(simplify_gate(r(11 / 15), r(10 / 15), 1 / 15, 2, 1)[0])
+        # and a real extra case is still a real difference on the other side of the line
+        self.assertFalse(search_gate(1.0, r(4 / 6), 1 / 6)[0])
+        self.assertFalse(simplify_gate(r(12 / 15), r(10 / 15), 1 / 15, 2, 1)[0])
+        self.assertTrue(promote_gate(1.0, 1.0, r(10 / 15), r(11 / 15) - 0.001, 1 / 15)[1]
+                        .startswith("below-margin"))
+
     def test_promotes_only_when_all_three_hold(self):
         ok, why = promote_gate(0.5, 0.8, 0.5, 0.9, 0.05)
         self.assertTrue(ok)
         self.assertEqual(why, "promote")
 
-    def test_rejects_when_search_not_better(self):
+    def test_a_tie_on_search_keeps_the_right_to_challenge(self):
+        # search は選抜用で分解能が 1 問しかない。同点は負けではないので、決めるのは confirm。
         ok, why = promote_gate(0.8, 0.8, 0.5, 0.9, 0.05)
+        self.assertTrue(ok)
+        self.assertEqual(why, "promote")
+
+    def test_rejects_when_search_is_worse_beyond_the_band(self):
+        ok, why = promote_gate(0.8, 0.79, 0.5, 0.9, 0.05)          # band 0: 少しでも負ければ落ちる
         self.assertFalse(ok)
-        self.assertEqual(why, "search-not-better")
+        self.assertTrue(why.startswith("search-worse"), why)
+        # band = 1 問ぶん(1/32): 0.5 問の負けは通し、1 問を超える負けは落とす(run V gen3 が
+        # 0.83 問負けで捨てられた 4勝0敗の候補を、この帯なら confirm に回せる)
+        band = 1 / 32
+        self.assertTrue(search_gate(0.901, 0.875, band)[0])
+        self.assertTrue(search_gate(0.901, 0.901 - band, band)[0])     # band ちょうどは通す
+        self.assertFalse(search_gate(0.901, 0.8646, band)[0])          # 1.17 問負け
+        self.assertTrue(promote_gate(0.901, 0.875, 0.76, 0.79, 0.0154, search_band=band)[0])
 
     def test_rejects_when_confirm_not_better(self):
         ok, why = promote_gate(0.5, 1.0, 0.5, 0.5, 0.05)
@@ -1011,16 +1051,20 @@ class TestPairedEvidenceSurvivesResume(ScriptedCase):
     推論でなく実測で固定する。"""
 
     def test_resumed_run_still_produces_paired_counts(self):
-        Scripted.WINS = {"a": set(), "b": {"qa1", "qa2", "qa4"}}
-        pool = {"a": _lane("a"), "b": _lane("b")}
+        # 1 走目で route:qa->b が昇格し、再開後に c(b の上位互換)が挑戦して confirm まで進む。
+        # search で帯を超えて負けた候補は confirm を測らない(対応のある証拠も出ない)ので、
+        # 見るのは confirm まで進んだ行だけ —— ただし 1 行も無ければ試験は空振りなので落とす。
+        Scripted.WINS = {"a": set(), "b": {"qa1", "qa2", "qa4"},
+                         "c": {"qa1", "qa2", "qa3", "qa4", "qa5", "qa6"}}
+        pool = {"a": _lane("a"), "b": _lane("b"), "c": _lane("c")}
         with tempfile.TemporaryDirectory() as d:
             led = Path(d) / "run.jsonl"
-            grow(pool, cases=_cases(8), generations=1, width=2, patience=5,
+            grow(pool, cases=_cases(8), generations=1, width=1, patience=5,
                  ledger_path=str(led), min_margin=0.05)
-            second = grow(pool, cases=_cases(8), generations=3, width=2, patience=5,
+            second = grow(pool, cases=_cases(8), generations=3, width=3, patience=5,
                           resume_from=str(led), min_margin=0.05)
-        challenged = [h for h in second["history"] if h.get("challenger")]
-        self.assertTrue(challenged, "resumed run never challenged anything")
+        challenged = [h for h in second["history"] if "challenger_confirm" in h]
+        self.assertTrue(challenged, "resumed run never measured a challenger on confirm")
         for h in challenged:
             counts = (h.get("paired_wins"), h.get("paired_losses"), h.get("paired_ties"))
             self.assertNotIn(None, counts, "paired evidence missing after resume")
@@ -1339,6 +1383,118 @@ class TestSelectionIsDeterministic(unittest.TestCase):
         self.assertLess(_structure_size(_lane_spec("b")), _structure_size(_tool_spec("b")))
 
 
+class TestSearchIsAFilterNotARace(ScriptedCase):
+    """run V の台帳: 候補が search で 0.5 問・0.83 問負けただけで、confirm で 4勝1敗・4勝0敗
+    (+1.6 問・+1.7 問)だったのに confirm を見ずに捨てられた。チャンピオンの search 点は昇格時の
+    一回きりの最大値で、同じ設計を測り直すと 1 問ぶん動く(0.8958 と 0.8646)。search は選抜と
+    足切りに使い、決めるのは confirm。"""
+
+    def _split(self):
+        cases = _cases(8)
+        sp = split_cases(cases)
+        return cases, [c.case_id for c in sp["search"]], [c.case_id for c in sp["confirm"]]
+
+    def test_trailing_by_less_than_a_case_on_search_still_reaches_confirm_and_can_win(self):
+        cases, search, confirm = self._split()
+        # a: search 全勝・confirm 全敗。b: search の 1 問だけ部分点(0.4)= 0.6 問負け、confirm 全勝
+        Scripted.WINS = {"a": set(search), "b": set(search[1:]) | set(confirm)}
+        Scripted.PARTIAL = {"b": {search[0]}}
+        pool = {"a": _lane("a"), "b": _lane("b")}
+        res = grow(pool, cases=cases, generations=1, width=1, patience=3, min_margin=0.05)
+        gen0 = res["history"][0]
+        self.assertEqual(gen0["challenger"], "route:qa->b")
+        self.assertLess(gen0["challenger_search"], gen0["champion_search"])
+        self.assertEqual(gen0["search_band"], round(1 / len(search), 4))
+        self.assertIn("challenger_confirm", gen0, "a within-band candidate was not measured")
+        self.assertEqual(gen0["reason"], "promote")
+        self.assertEqual(res["promotions"], 1)
+
+    def test_trailing_by_more_than_a_case_skips_confirm_and_settles_the_design(self):
+        cases, search, confirm = self._split()
+        # b は search で 2 問落とす(帯 1 問を超える)。confirm では全勝だが、そこは測らない
+        Scripted.WINS = {"a": set(search), "b": set(search[2:]) | set(confirm)}
+        pool = {"a": _lane("a"), "b": _lane("b")}
+        seen = []
+        res = grow(pool, cases=cases, generations=2, width=1, patience=3, min_margin=0.05,
+                   on_event=lambda r: seen.append(r))
+        gen0 = res["history"][0]
+        self.assertEqual(gen0["challenger"], "route:qa->b")
+        self.assertTrue(gen0["reason"].startswith("search-worse"), gen0["reason"])
+        self.assertNotIn("challenger_confirm", gen0)
+        self.assertNotIn("paired_wins", gen0)
+        # b の confirm は一度も焚かれていない(search で決着した候補に confirm を払わない)
+        self.assertEqual([c for t, c in Scripted.SEEN_BY if t == "b" and c in confirm], [])
+        # 決着済み: gen0 の checkpoint で settled に入り(confirm を測っていないので challenged
+        # ではない)、gen1 では提案されない
+        ck0 = next(r for r in seen if r["event"] == "checkpoint" and r["gen"] == 0)
+        self.assertIn(gen0["challenger_hash"], ck0["settled"])
+        self.assertNotIn(gen0["challenger_hash"], ck0["challenged"])
+        gen1_labels = [r["label"] for r in seen if r["event"] == "candidate" and r["gen"] == 1]
+        self.assertNotIn("route:qa->b", gen1_labels)
+        self.assertNotEqual(res["history"][1]["challenger"], "route:qa->b")
+        self.assertEqual(res["promotions"], 0)
+
+    def test_a_search_settlement_is_against_one_champion_and_clears_on_promotion(self):
+        # 新チャンピオンの search は旧より帯 1 つぶん低くてよい。旧に帯超えで負けて決着した設計が
+        # 新には帯の内側、ということが起きるので、決着は昇格で解ける(archive の点で再判定される)。
+        cases = _partial_cases(12)
+        sp = split_cases(cases)
+        S = [c.case_id for c in sp["search"]]
+        C = [c.case_id for c in sp["confirm"]]
+        # a: search 6/6・confirm 0。c: search 5/6(帯の内側)・confirm 0.6。b: search 4/6・confirm 1.0
+        Scripted.WINS = {"a": set(S), "c": set(S[1:]) | {C[0]}, "b": set(S[2:]) | set(C)}
+        Scripted.PARTIAL = {"c": set(C[1:])}
+        pool = {"a": _lane("a"), "b": _lane("b"), "c": _lane("c")}
+        seen = []
+        res = grow(pool, cases=cases, generations=2, width=2, patience=3, min_margin=0.05,
+                   on_event=lambda r: seen.append(r))
+        gen0, gen1 = res["history"][0], res["history"][1]
+        cands0 = {r["label"]: r for r in seen if r["event"] == "candidate" and r["gen"] == 0}
+        b_hash = cands0["route:qa->b"]["hash"]
+        ck = {r["gen"]: r for r in seen if r["event"] == "checkpoint"}
+        # gen0: b は旧チャンピオン(1.0)に 2 問負けて決着、tool:qa(a) は同点で挑戦して confirm で落ちる
+        self.assertEqual(ck[0]["settled"], [b_hash])
+        self.assertEqual(ck[0]["challenged"], [gen0["challenger_hash"]])
+        # gen1: c が 1 問負けの帯の内側から挑戦して昇格。決着は空になる
+        self.assertEqual((gen1["challenger"], gen1["reason"]), ("route:qa->c", "promote"))
+        self.assertEqual(ck[1]["settled"], [])
+        # 新チャンピオンの下では b は帯の内側(0.6667 vs 0.8333)で、次の propose に戻ってくる
+        band = 1 / len(S)
+        self.assertFalse(search_gate(ck[0]["champion_search"]["score"],
+                                     ck[1]["archive"][b_hash]["search"]["score"], band)[0])
+        self.assertTrue(search_gate(ck[1]["champion_search"]["score"],
+                                    ck[1]["archive"][b_hash]["search"]["score"], band)[0])
+        again = propose(ck[1]["champion"], pool, ["qa"], width=12,
+                        exclude=set(ck[1]["challenged"]) | set(ck[1]["settled"]), generation=2)
+        self.assertIn(b_hash, {spec_hash(c.spec) for c in again})
+
+    def test_a_within_band_runner_up_is_not_settled(self):
+        # gen0: search 同点の tool:qa(a) が最高点で挑戦し、confirm で落ちる。帯の内側にいた
+        # 次点 route:qa->c は決着済みにならず、gen1 に archive の点のまま挑戦して昇格する。
+        cases, search, confirm = self._split()
+        Scripted.WINS = {"a": set(search), "c": set(search[1:]) | set(confirm)}
+        pool = {"a": _lane("a"), "c": _lane("c")}
+        seen = []
+        res = grow(pool, cases=cases, generations=2, width=2, patience=3, min_margin=0.05,
+                   on_event=lambda r: seen.append(r))
+        gen0, gen1 = res["history"][0], res["history"][1]
+        self.assertEqual(gen0["challenger"], "tool:qa(a)", gen0)
+        self.assertNotEqual(gen0["reason"], "promote", gen0)
+        cands0 = {r["label"]: r for r in seen if r["event"] == "candidate" and r["gen"] == 0}
+        self.assertIn("route:qa->c", cands0)
+        self.assertLess(cands0["route:qa->c"]["search"]["score"], gen0["champion_search"])
+        ck0 = next(r for r in seen if r["event"] == "checkpoint" and r["gen"] == 0)
+        self.assertIn(gen0["challenger_hash"], ck0["challenged"])           # 落ちた方は決着
+        self.assertNotIn(cands0["route:qa->c"]["hash"], ck0["challenged"])  # 次点は踏み石
+        self.assertNotIn(cands0["route:qa->c"]["hash"], ck0["settled"])
+        self.assertEqual(gen1["challenger"], "route:qa->c", gen1)
+        self.assertEqual(gen1["reason"], "promote", gen1)
+        # gen1 の search は archive から: candidate イベントは新規測定のときだけ出るので、
+        # gen1 に route:qa->c の candidate 行が無い = 測り直していない
+        gen1_fresh = [r["label"] for r in seen if r["event"] == "candidate" and r["gen"] == 1]
+        self.assertNotIn("route:qa->c", gen1_fresh, gen1_fresh)
+
+
 class TestSaturatedClasses(ScriptedCase):
     """伸びしろの尽きたクラスに変異を当てるのは、確実に無駄と分かっている測定に実モデルを
     焚くこと。実測(run U seed): integration は 8/8 満点=伸びしろ 0.00 問なのに
@@ -1499,29 +1655,32 @@ class TestSaturatedClasses(ScriptedCase):
         for cls in res["headroom"]:
             self.assertIn(cls, {c.task_type for c in cases})
 
-    def test_a_class_the_champion_aces_on_search_is_not_mutated_either(self):
-        # 挑戦権は search で**厳密に**上回ること。チャンピオンがそのクラスの search case を
-        # 取り切っていれば、どの変異も 1 点も上げられず必ず search-not-better で落ちる。
-        # confirm 側の床とは別の理由なので、両方見ないと片方から漏れる(run U gen1 で実測)。
-        cases = _cases(8, "qa", "qa") + _cases(8, "research", "re")
-        # qa は search でも confirm でも満点、research は落とす
-        Scripted.WINS = {"a": {f"qa{i}" for i in range(1, 9)},
-                         "b": {f"qa{i}" for i in range(1, 9)}}
+    def test_a_class_the_champion_aces_on_search_is_still_mutated_when_confirm_has_room(self):
+        # 以前は「search を取り切ったクラスは変異が search を 1 点も上げられず、挑戦権が取れない」
+        # として飽和に数えていた。挑戦権が「厳密に上回ること」だった頃の算術で、今の門 ① は
+        # 同点を通す。run V では qa が confirm に 1.25 問残しながら search 側の理由だけで
+        # 5 世代とも試されなかった。取り切ったクラスでも confirm に余地があれば試す。
+        cases = _cases(8)
+        sp = split_cases(cases)
+        search_ids = {c.case_id for c in sp["search"]}
+        # a は search を取り切り confirm を全部落とす。b は全部取る(search は同点、confirm で勝つ)
+        Scripted.WINS = {"a": set(search_ids), "b": {c.case_id for c in cases}}
         pool = {"a": _lane("a"), "b": _lane("b")}
         seen = []
-        grow(pool, cases=cases, generations=1, width=6, patience=3, min_margin=0.05,
-             on_event=lambda r: seen.append(r))
-        sat = [r for r in seen if r["event"] == "saturated"]
-        self.assertTrue(sat, "a class the champion aces was not reported saturated")
-        self.assertIn("qa", sat[0]["classes"])
-        for r in (r for r in seen if r["event"] == "candidate"):
-            self.assertFalse(r["label"].endswith(":qa") or ":qa(" in r["label"]
-                             or r["label"].startswith("route:qa"),
-                             f"measured an additive mutation on an aced class: {r['label']}")
+        res = grow(pool, cases=cases, generations=1, width=1, patience=3, min_margin=0.05,
+                   on_event=lambda r: seen.append(r))
+        self.assertFalse([r for r in seen if r["event"] == "saturated"],
+                         "an aced-on-search class with confirm headroom was called saturated")
+        gen0 = res["history"][0]
+        self.assertEqual(gen0["challenger"], "route:qa->b")
+        self.assertEqual(gen0["challenger_search"], gen0["champion_search"])   # 同点で挑戦
+        self.assertEqual(gen0["reason"], "promote")
 
-    def test_search_saturation_still_applies_after_a_resume(self):
+    def test_saturation_still_applies_after_a_resume(self):
         # per_case を checkpoint から落としていたせいで、再開後に静かに死ぬ機能を 3 回作った。
         # 3 回目は「見せる形」と「続きを走らせる形」を分けて直したので、そこを固定する。
+        # 飽和は confirm の伸びしろで決まる(search 側の判定は挑戦権が同点を通すようになって
+        # 撤去した)。再開後もそれが効くことと、checkpoint が per_case を運ぶことを見る。
         cases = _cases(8, "qa", "qa") + _cases(8, "research", "re")
         Scripted.WINS = {"a": {f"qa{i}" for i in range(1, 9)},
                          "b": {f"qa{i}" for i in range(1, 9)}}
@@ -1531,24 +1690,15 @@ class TestSaturatedClasses(ScriptedCase):
             grow(pool, cases=cases, generations=1, width=6, patience=3,
                  ledger_path=str(led), min_margin=0.05)
             ck = load_checkpoint(led)
-            self.assertTrue(ck["champion_search"].get("per_case"),
-                            "the checkpoint dropped the per-case scores a resume needs")
+            for side in ("champion_search", "champion_confirm"):
+                self.assertTrue(ck[side].get("per_case"),
+                                f"the checkpoint dropped the per-case {side} scores a resume needs")
             seen = []
             grow(pool, cases=cases, generations=2, width=6, patience=3,
                  resume_from=str(led), min_margin=0.05, on_event=lambda r: seen.append(r))
         sat = [r for r in seen if r["event"] == "saturated"]
         self.assertTrue(sat, "saturation was not detected after a resume")
         self.assertIn("qa", sat[0]["classes"])
-
-    def test_a_default_swap_also_needs_search_headroom(self):
-        champ = {"backend": "gama", "kwargs": {
-            "backends": {"a": _lane("a"), "b": _lane("b")},
-            "routing_table": {}, "default": "a"}}
-        cls = ["qa", "research"]
-        room = {"qa": 3.0, "research": 3.0}
-        self.assertTrue(_default_swap_viable(champ, cls, room, 2.0, {"qa": 1.0, "research": 0.0}))
-        # search で取り切っているなら挑戦権が取れない = confirm に余地があっても通らない
-        self.assertFalse(_default_swap_viable(champ, cls, room, 2.0, {"qa": 0.0, "research": 0.0}))
 
     def test_the_cli_says_at_gen0_when_no_class_can_grow(self):
         # 走行の最後に「区別できなかった」と知るのは高い(実走で数時間)。打つ手が無いことは

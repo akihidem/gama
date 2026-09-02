@@ -424,7 +424,13 @@ def cmd_grow(args: argparse.Namespace) -> int:
             sys.stderr.write(
                 f"[gama] gen{row['gen']} challenger={row.get('challenger', '(none)')} "
                 f"search {row['champion_search']}->{row.get('challenger_search', '-')} "
-                f"confirm {row['champion_confirm']}->{row.get('challenger_confirm', '-')} "
+                # search で負けた候補の confirm は測らない(測っても門 ① で落ちる)ので、
+                # 無い値を "-" で見せるより「測らなかった」と分かる形にする。キーの有無で判定
+                # するのは、grow が challenger_confirm を**測った直後にだけ**書く(理由に関わらず
+                # 「無い = 測っていない」が成り立つ)から。
+                + (f"confirm {row['champion_confirm']}->{row['challenger_confirm']} "
+                   if "challenger_confirm" in row
+                   else f"confirm {row['champion_confirm']} (challenger not measured) ")
                 + (f"({gain:+} of {seen['n_confirm']} cases) " if gain is not None
                                                                     and seen.get("n_confirm")
                    else (f"({gain:+} cases) " if gain is not None else ""))

@@ -55,6 +55,7 @@ from .grow import (
     sign_test,
     ollama_pool,
     promote_gate,
+    search_gate,
     shrink_band,
     simplify_gate,
     propose,
@@ -101,7 +102,7 @@ __all__ = [
     "escalation_cost", "p_star", "dominates", "ladder", "market_over_records", "analyze",
     "mesh_gain", "mesh_correctness", "ignites", "failure_correlation", "mesh_analyze",
     "cofailure", "clopper_pearson", "verdict_from_counts", "cofailure_by_class",
-    "grow", "propose", "MeasurementFailure", "promote_gate", "simplify_gate", "shrink_band", "measure", "paired_gain", "sign_test", "split_cases", "suite_pool",
+    "grow", "propose", "MeasurementFailure", "promote_gate", "search_gate", "simplify_gate", "shrink_band", "measure", "paired_gain", "sign_test", "split_cases", "suite_pool",
     "seed_champion", "ollama_pool", "canonical", "spec_hash", "code_stamp", "load_checkpoint", "Candidate", "write_recipe",
     "__version__",
 ]

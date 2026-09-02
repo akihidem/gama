@@ -12,7 +12,10 @@ gama は「組み合わせ」を*測る*道具だった。``grow`` はその輪�
 ### なぜ split を 3 つに割るのか (search / confirm / sealed)
 
 1. **search** — 変異を測って挑戦者を選ぶ場。K 個の候補の *最大値* は上振れに偏る(多重比較)。
-   だから search で勝ったことは「昇格の根拠」にならず、「挑戦権」にしかならない。
+   だから search で勝ったことは「昇格の根拠」にならず、「挑戦権」にしかならない。逆も同じで、
+   search で **1 問ぶん以内**の負けは負けではない(search はその分解能を持たない。チャンピオン
+   の search 点は昇格時の一回きりの最大値で、測り直されない)。挑戦権を失うのは 1 問を超えて
+   負けたときだけで、その候補は confirm を測らずに落とす(``search_gate``)。
 2. **confirm** — 挑戦者とチャンピオンだけを測り直す held-out。昇格の可否はここだけで決める。
 3. **sealed** — 全世代を通して**一度も**判定に使わない封印。confirm も世代を跨いで再利用され続ける
    以上、じわじわ overfit する(判定に使った集合は、いずれ判定できなくなる)。最後に一度だけ開けて
@@ -98,9 +101,9 @@ def split_cases(cases: list[BenchCase],
 
     task_type ごとに独立に配分するので、**件数が足りるクラスはどの split にも入る**(クラスが
     片側に寄ると「search で強い = confirm で強い」の前提が壊れる)。2 件なら search/confirm、
-    1 件なら search だけ —— 全クラスが 3 分割される保証ではないので、``grow`` は confirm に
-    現れないクラスを変異対象から外して辻褄を合わせる。乱数は使わないので、同じ suite なら
-    誰が走らせても同じ split になる。
+    1 件なら ratio で最も重い split だけ —— 全クラスが 3 分割される保証ではないので、``grow`` は
+    confirm に現れないクラスを変異対象から外して辻褄を合わせる。乱数は使わないので、同じ suite
+    なら誰が走らせても同じ split になる。
     """
     if sum(ratio) <= 0 or any(r < 0 for r in ratio):
         raise ValueError(f"bad ratio {ratio!r}")
@@ -115,12 +118,15 @@ def split_cases(cases: list[BenchCase],
         for case, split in zip(group, _weave(_allocate(len(group), ratio))):
             out[split].append(case)
 
-    # fail-closed は肯定形で: 「confirm が在ると証明できた」ときだけ先へ進む。
+    # fail-closed は肯定形で: 「search と confirm が在ると証明できた」ときだけ先へ進む。
     # confirm が空のまま回ると、昇格判定が search の上振れをそのまま通す fail-open になる。
-    if not out["confirm"]:
-        raise ValueError(
-            "confirm split is empty — need at least ~4 cases per class-pool to grow honestly "
-            f"(got {len(cases)} cases across {len(by_class)} classes)")
+    # search が空になるのは全クラスが 1 件で ratio が confirm 寄りのときで、そのまま進むと
+    # 挑戦権の帯(1/n_search)が割り算で落ちる。「起きないはず」を配分の実装に頼らず、ここで止める。
+    for name in ("search", "confirm"):
+        if not out[name]:
+            raise ValueError(
+                f"{name} split is empty — need at least ~4 cases per class-pool to grow honestly "
+                f"(got {len(cases)} cases across {len(by_class)} classes)")
     return out
 
 
@@ -303,9 +309,11 @@ def propose(champion: dict, pool: dict[str, dict], classes: list[str],
     種類を round-robin で混ぜるのは、``width`` を絞ったときに ``route`` 変異だけで埋まって
     構造変異が一生試されない偏りを防ぐため。
 
-    ``exclude`` は「confirm で一度挑戦して負けた設計」のハッシュ集合。**search で測っただけの
-    設計は除外しない** — search で選ばれなかっただけの候補を永久追放すると、後で本命になりうる
-    踏み石(archive)を毎回捨てることになる。除外するのは決着がついた設計だけ。
+    ``exclude`` は「決着がついた設計」のハッシュ集合: confirm で挑戦して負けたもの(走行を通じて)、
+    および search でチャンピオンに帯(1 問)を超えて負けたもの(そのチャンピオンの間だけ。search は
+    替わるまで動かないので、その負けは覆らない)。**帯の内側にいて最高点でなかっただけの設計は除外しない** —
+    最高点の候補が confirm で落ちた次の世代に、archive の点のまま(追加コール無しで)挑戦者に
+    なれる踏み石だから。永久追放するのは、決着がついた設計だけ。
 
     ``generation`` は世代番号で、**クラスと種類の両方の巡回開始位置**をずらす。固定だと
     2 種類の飢餓が起きる(どちらも実測):
@@ -597,26 +605,61 @@ def sign_test(wins: int, losses: int) -> float:
 # --------------------------------------------------------------------------- #
 # The gate — 昇格を決める唯一の関数(肯定形: 「昇格してよいと証明できた」ときだけ True)
 # --------------------------------------------------------------------------- #
+# 3 つの門が共有する境界の遊び。score は ``summarize`` が 4 桁に丸めた値で、門の幅(1/n や
+# drift)は生の値。丸めた 2 点の差は真の差から最大 1e-4 ずれるので、「1 問ぶんちょうど」を
+# 通す約束は 1e-4 の遊びが無いと**丸めの向きで通ったり落ちたりする**(15 問なら 11/15 − 10/15
+# が 0.0666 と出て 0.066667 に届かない。72 問なら 0.0138 と 0.0139 の両方が起きる)。以前の
+# 1e-9 は浮動小数の表現誤差しか吸わず、この丸めには足りていなかった。1e-4 を超える差は
+# 4 桁の世界で「本当に違う」差なので、どちらの向きにも誤判定を作らない。
+SCORE_TOL = 1e-4
+
+
+def search_gate(champion_search: float, challenger_search: float,
+                band: float) -> tuple[bool, str]:
+    """① 挑戦権。search で **band を超えて**負けていなければ通す(上回る必要はない)。
+
+    search は挑戦者を**選ぶ**ための split で、昇格を決める split ではない(決めるのは confirm)。
+    だからここは証拠の門ではなく**コストの門**: confirm(search の 2 倍の問数)を焚く価値が
+    無いほど負けている候補だけを落とす。かつては「厳密に上回ること」を要求していたが、
+    それは 2 つの理由で挑戦者を不当に落としていた(どちらも run V の台帳で実測):
+
+    * チャンピオンの search 点は**昇格時の一回きりの測定**で、その後測り直されない。昇格時は
+      width 本の最大値なので上振れしている(同じ走で confirm 側は毎世代測り直され、
+      0.7838 → 0.7592 と下がり続けた。search 側の 0.901 だけがその補正を受けない)。
+    * search は 32 問しかなく、同じ設計を測り直すと丸 1 問ぶん動いた(0.8958 と 0.8646)。
+      その分解能で「0.5 問負け」を負けと読み、confirm で 4勝1敗・4勝0敗(+1.6 問・+1.7 問)
+      だった候補を confirm も見ずに捨てていた。
+
+    ``band`` は search の分解能(1 問ぶん = 1/n_search)。band ちょうどまでは通す(削減の門と
+    同じ向き)。band=0 なら「同点は通し、少しでも負けたら落とす」。
+    """
+    if (champion_search - challenger_search) > band + SCORE_TOL:
+        return False, f"search-worse(band={round(band, 4)})"
+    return True, "search"
+
+
 def promote_gate(champion_search: float, challenger_search: float,
                  champion_confirm: float, challenger_confirm: float,
                  delta: float, paired: Optional[tuple[int, int, int]] = None,
-                 max_paired_p: Optional[float] = None) -> tuple[bool, str]:
+                 max_paired_p: Optional[float] = None,
+                 search_band: float = 0.0) -> tuple[bool, str]:
     """3 条件が**すべて**証明できたときだけ昇格。理由は台帳に残せる文字列で返す。
 
-    ① 挑戦権: search で本当に上回ったか(上回っていない候補は挑戦者になれない)
-    ② held-out: confirm でも上回ったか(search の上振れは confirm を通らない)
+    ① 挑戦権: search で ``search_band`` を超えて負けていないか(``search_gate``)。search は
+       選抜用で 1 問未満の差を分けられないので、上回ることは要求しない。既定の band 0.0 でも
+       **同点は通る**(以前の「厳密に上回れ」は撤回。チャンピオンの search 点は昇格時の一回きりの
+       最大値なので、同点を負けと読むと上振れした古い点に永久に勝てない)。
+    ② held-out: confirm で上回ったか(search の上振れは confirm を通らない)
     ③ 幅超え: 差が δ 以上か。δ = max(confirm 1 問ぶん, チャンピオン自身の測り直しの揺れ)。
        1 問未満の差は部分点の揺らぎでしかなく、揺れの内側の差は改善ではない。
     """
-    if not challenger_search > champion_search:
-        return False, "search-not-better"
+    ok, why = search_gate(champion_search, challenger_search, search_band)
+    if not ok:
+        return False, why
     if not challenger_confirm > champion_confirm:
         return False, "confirm-not-better"
-    # 「1 問ぶんちょうど」は通す約束なので、比較には浮動小数の遊びを持たせる。scores は
-    # summarize が 4 桁に丸めた値、delta は 1/n の生の値なので、素の >= だと 0.0666 >= 0.066667
-    # が偽になり、**丸め方次第で同じ 1 問ぶんの改善が通ったり落ちたりする**。1e-9 は 4 桁丸めの
-    # 世界では絶対に効いてこない幅。
-    if (challenger_confirm - champion_confirm) < delta - 1e-9:
+    # 「1 問ぶんちょうど」は通す約束なので、比較には丸めの遊び(SCORE_TOL)を持たせる。
+    if (challenger_confirm - champion_confirm) < delta - SCORE_TOL:
         return False, f"below-margin(delta={round(delta, 4)})"
     # ④(任意) 対応のある証拠: 同一 case での勝敗が偶然に見えないか。既定は無効で、
     #    有効にすると門が一気に厳しくなる(実測: alpha=0.05 は 5勝0敗級を要求し、過去の
@@ -712,7 +755,7 @@ def simplify_gate(champion_confirm: float, challenger_confirm: float, band: floa
         return False, "not-simpler"
     # band ちょうどまでは通す(追加側が「δ ちょうどで昇格」なのと対称)。band が 0 の世代は
     # 「低下がゼロなら剥がしてよい」になり、コストだけが減る削除は最後まで許される。
-    if (champion_confirm - challenger_confirm) > band + 1e-9:
+    if (champion_confirm - challenger_confirm) > band + SCORE_TOL:
         return False, f"measurably-worse(band={round(band, 4)})"
     return True, "simplify"
 
@@ -872,7 +915,7 @@ def class_headroom(m: "Measurement", cases: list) -> dict:
 
 
 def _default_swap_viable(champion: dict, classes: list, headroom: dict,
-                         gate_cases: float, search_room: Optional[dict] = None) -> bool:
+                         gate_cases: float) -> bool:
     """既定レーンの差し替えが昇格しうるか。クラス単位の飽和では切れない唯一の変異。
 
     レーン変異は 1 クラスしか触らないので「そのクラスの伸びしろ < 門」で切れるが、既定の
@@ -891,12 +934,6 @@ def _default_swap_viable(champion: dict, classes: list, headroom: dict,
         return True
     if sum(headroom[c] for c in under) < gate_cases:
         return False
-    # search 側も合計で見る。既定を替えても search を 1 点も上げられないなら挑戦権が取れず、
-    # confirm の床とは別の理由で必ず落ちる(クラス単位の除外と同じ算術を合計に当てる)。
-    if search_room:
-        if all(c in search_room for c in under) and \
-                sum(search_room[c] for c in under) <= 0.0:
-            return False
     return True
 
 
@@ -1081,12 +1118,19 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
         emit({"event": "checkpoint", "gen": -1, "champion": champion,
               "champion_search": _state(champ_search),
               "champion_confirm": _state(champ_confirm),
-              "challenged": [], "archive": {}, "stale": 0, "served": served_map(),
-              "identity_blind": resumed_blind})
+              "challenged": [], "settled": [], "archive": {}, "stale": 0,
+              "served": served_map(), "identity_blind": resumed_blind})
 
     stale = resume["stale"] if resume else 0
     # confirm で決着がついた設計(勝っても負けても二度は問わない)
     challenged: set = set(resume["challenged"]) if resume else set()
+    # search で帯を超えて負けた設計。challenged と分けるのは、この負けが**チャンピオンの search 点
+    # に対する**負けだから: 新チャンピオンの search は旧より帯 1 つぶん低くてよいので、旧に帯超えで
+    # 負けた設計が新には帯の内側ということがある。昇格で空にし、archive の点のまま再挑戦させる
+    # (search を測り直さないので、再判定はコール 0 で済む)。古い checkpoint には無いキー。
+    # challenged の方は昇格で空にしない: confirm の基準は昇格で**上がる一方**なので、旧に confirm で
+    # 負けた設計は新にはなお負けている(search の基準が帯ぶん下がりうるのと逆向きの非対称)。
+    settled: set = set(resume.get("settled", [])) if resume else set()
     for gen in range(start_gen, generations):
         t0 = time.time()
         # 伸びしろの尽きたクラスは変異させない。実測(run U seed): integration は 8/8 満点で
@@ -1109,31 +1153,29 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
         # 飽和の閾値も δ で見る。床だけで見ると、揺れが床より大きい世代に「床は越えられるが
         # δ は越えられない」クラスが候補に残り、通りようのない測定を焚くことになる。
         gate_cases = delta * len(splits["confirm"])
+        # 挑戦権の帯は search の分解能(1 問ぶん)。search 側はチャンピオンを測り直さないので
+        # drift は取れず、床だけになる。
+        search_band = 1.0 / len(splits["search"])
         headroom = class_headroom(champ_confirm_now, splits["confirm"])
-        # search 側にも同じ算術が効く。挑戦権は「search で**厳密に**上回る」ことなので、
-        # チャンピオンがそのクラスの search case を取り切っていれば、そのクラスへの変異は
-        # どれも search を 1 点も上げられず、必ず search-not-better で落ちる(実測: run U の
-        # gen1 が `route:integration->kimi-hot` にそれを払った)。confirm の床とは別の理由で
-        # 通れないので、両方見ないと片方から漏れる。
-        search_room = class_headroom(champ_search, splits["search"])
-        saturated = sorted(c for c in classes
-                           if (c in headroom and headroom[c] < gate_cases)
-                           or (c in search_room and search_room[c] <= 0.0))
+        # search 側は見ない。以前は「チャンピオンが search のそのクラスを取り切っていれば、
+        # 変異は search を 1 点も上げられず挑戦権が取れない」として飽和に数えていたが、それは
+        # 挑戦権が「厳密に上回ること」だった頃の算術。今の門 ①(search_gate)は同点を通すので、
+        # 取り切ったクラスへの変異も confirm に伸びしろがある限り挑戦できる(run V では qa が
+        # confirm に 1.25 問残しながら search 側の理由だけで 5 世代とも試されなかった)。
+        saturated = sorted(c for c in classes if c in headroom and headroom[c] < gate_cases)
         if saturated:
             emit({"event": "saturated", "gen": gen,
                   "classes": {c: round(headroom.get(c, 0.0), 2) for c in saturated},
-                  "search_headroom": {c: round(search_room.get(c, 0.0), 2) for c in saturated},
                   "gate_cases": round(gate_cases, 2),
-                  "note": "no additive mutation on these classes can be promoted: either the "
-                          "confirm headroom is below the gate, or the champion already takes "
-                          "every search case there so no challenge can be earned"})
+                  "note": "no additive mutation on these classes can be promoted: the confirm "
+                          "headroom is below the gate"})
         # 飽和したクラスも propose には渡す。削る変異は「悪くならないこと」しか要求しないので、
         # むしろ満点のクラスこそ「その構造は何も買っていない」と言える場所になる。
-        cands = propose(champion, pool, classes, width=width, exclude=challenged,
+        cands = propose(champion, pool, classes, width=width, exclude=challenged | settled,
                         ensemble_strategy=ensemble_strategy, generation=gen,
                         additive_classes=[c for c in classes if c not in saturated],
                         allow_default=_default_swap_viable(champion, classes, headroom,
-                                                           gate_cases, search_room))
+                                                           gate_cases))
         if not cands:
             # ここまでに champion を confirm で測っている。止まるからといって捨てると、
             # 最終結果も再開状態も「測る前の値」のまま残る。checkpoint も**実際に出す**
@@ -1143,7 +1185,8 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
             emit({"event": "checkpoint", "gen": gen, "champion": champion,
                   "champion_search": _state(champ_search),
                   "champion_confirm": _state(champ_confirm),
-                  "challenged": sorted(challenged), "archive": archive, "stale": stale,
+                  "challenged": sorted(challenged), "settled": sorted(settled),
+                  "archive": archive, "stale": stale,
                   "served": served_map(), "identity_blind": resumed_blind})
             emit({"event": "stop", "gen": gen, "reason": "no-new-candidates"})
             break
@@ -1202,30 +1245,53 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
             # 構造の大きさは spec だけで決まり、追加コールを生んでいる当のものなので、
             # 「同点なら安い方」の意図もそのまま保つ(shrink 側の Occam と同じ向き)。
             challenger, chal_search = min(additive, key=lambda t: _challenger_key(*t))
-            chal_confirm = measure(challenger.spec, splits["confirm"], tier, repeats, unit_cost,
-                                   "challenger")
-            _guard_measurement(chal_confirm, f"challenger {challenger.label}")
-            w, l, t = paired_gain(champ_confirm_now, chal_confirm)
-            ok, reason = promote_gate(champ_search.score, chal_search.score,
-                                      champ_confirm_now.score, chal_confirm.score, delta,
-                                      paired=(w, l, t), max_paired_p=max_paired_p)
-            challenged.add(spec_hash(challenger.spec))
+            # search で band を超えて負けた設計は、**このチャンピオンの下では決着済み**:
+            # 挑戦権 ① は search だけで決まり、チャンピオンの search はチャンピオンが替わるまで
+            # 測り直されない(= 同じ hash の候補は archive の同じ点を返し続ける)。だから confirm を
+            # 測っても門 ① で必ず落ちるし、来世代に提案し直しても同じ負けを繰り返すだけ。
+            # 実測(run V gen1)では search で負けた候補に confirm 130 コール(9 分)を使ってから
+            # 落としていた。決着済みの設計は settled に入れて枠も焚かない(昇格で空になる)。
+            # 挑戦者 1 本だけでなく、この世代に search で測った**全候補**を見る: 次点以下も
+            # 同じチャンピオンの同じ点に負けているので、同じ結論が今この場で出せる。
+            # band の内側の候補は入れない(最高点が confirm で落ちた次の世代に、archive の点の
+            # まま挑戦者になれる踏み石)。**削る候補も入れない**(削減の門は search を見ないので、
+            # search で負けていても confirm で「悪くなっていない」を示せば通る)。
+            for c, m in additive:
+                if not search_gate(champ_search.score, m.score, search_band)[0]:
+                    settled.add(spec_hash(c.spec))
             row.update({"challenger": challenger.label, "kind": challenger.kind,
                         "challenger_hash": spec_hash(challenger.spec),
                         "challenger_search": chal_search.score,
-                        "challenger_confirm": chal_confirm.score,
-                        "gain_cases": round(
-                            (chal_confirm.score - champ_confirm_now.score) * n_confirm, 2)})
-            # 対応のある比較を**記録だけ**する(この時点では門にしない)。平均差の床
-            # (1/n と drift)は「どの問題が split に入ったか」という支配的な誤差を見ていない
-            # 疑いがあり、実測 3 走で confirm の伸びが sealed で 4〜6 倍しぼみ、小さい伸びでは
-            # 符号ごと反転した。門にする前に「今までの昇格が何本引っかかるか」を先に測る。
-            row.update({"paired_wins": w, "paired_losses": l, "paired_ties": t,
-                        "paired_p": round(sign_test(w, l), 4)})
+                        "search_band": round(search_band, 4)})
+            s_ok, s_why = search_gate(champ_search.score, chal_search.score, search_band)
+            if not s_ok:
+                # 門 ① を通れないと分かっている候補の confirm は測らない。理由は promote_gate が
+                # 返すのと同じ関数から取り、台帳の読み方を二通りにしない。
+                ok, reason = False, s_why
+            else:
+                chal_confirm = measure(challenger.spec, splits["confirm"], tier, repeats,
+                                       unit_cost, "challenger")
+                _guard_measurement(chal_confirm, f"challenger {challenger.label}")
+                w, l, t = paired_gain(champ_confirm_now, chal_confirm)
+                ok, reason = promote_gate(champ_search.score, chal_search.score,
+                                          champ_confirm_now.score, chal_confirm.score, delta,
+                                          paired=(w, l, t), max_paired_p=max_paired_p,
+                                          search_band=search_band)
+                challenged.add(spec_hash(challenger.spec))
+                row.update({"challenger_confirm": chal_confirm.score,
+                            "gain_cases": round(
+                                (chal_confirm.score - champ_confirm_now.score) * n_confirm, 2)})
+                # 対応のある比較を**記録だけ**する(この時点では門にしない)。平均差の床
+                # (1/n と drift)は「どの問題が split に入ったか」という支配的な誤差を見ていない
+                # 疑いがあり、実測 3 走で confirm の伸びが sealed で 4〜6 倍しぼみ、小さい伸びでは
+                # 符号ごと反転した。門にする前に「今までの昇格が何本引っかかるか」を先に測る。
+                row.update({"paired_wins": w, "paired_losses": l, "paired_ties": t,
+                            "paired_p": round(sign_test(w, l), 4)})
         row.update({"verdict": "promote" if ok else "reject", "reason": reason})
         if ok:
             champion, champ_search, champ_confirm = challenger.spec, chal_search, chal_confirm
             stale = 0
+            settled = set()          # search の決着は旧チャンピオンの点に対するものだった
         else:
             champ_confirm = champ_confirm_now       # 次世代の drift 基準は常に最新の実測
             stale += 1
@@ -1265,7 +1331,8 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
         emit({"event": "checkpoint", "gen": gen, "champion": champion,
               "champion_search": _state(champ_search),
               "champion_confirm": _state(champ_confirm),
-              "challenged": sorted(challenged), "archive": archive, "stale": stale,
+              "challenged": sorted(challenged), "settled": sorted(settled),
+              "archive": archive, "stale": stale,
               "served": served_map(), "identity_blind": resumed_blind})
         if stale >= patience:
             emit({"event": "stop", "gen": gen, "reason": f"no-promotion-for-{patience}-gens"})

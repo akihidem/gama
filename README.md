@@ -246,7 +246,7 @@ It pools `wide,hard,brutal` (56 cases) by default and splits them three ways:
 
 | split | what it may decide |
 |---|---|
-| `search` | measure candidates, pick **one** challenger per generation (the max of K noisy scores is biased upward, so this earns a challenge, not a promotion) |
+| `search` | measure candidates; the top one goes to `confirm` as the generation's **single** challenger (the max of K noisy scores is biased upward, so this earns a challenge, not a promotion). It is a filter with **one-case resolution**, not a race: a candidate that trails the champion by more than one search case is settled here for as long as that champion stands, and never costs a confirm measurement; one that ties or trails by less keeps its challenge, because the champion's own search score is a stale one-time maximum |
 | `confirm` | the only thing that can promote: the challenger must beat the champion here by at least **max(one confirm case, the champion's own re-measurement drift)** — a win smaller than one whole case, or smaller than your setup's noise, is not a win |
 | `sealed` | nothing. Never touched until the run ends, then opened once — so the headline number is the one no decision was fitted to |
 
@@ -414,6 +414,14 @@ The loop cannot fix this, but it should never have hidden it. Tool calls and suc
 counted per measurement now and reported, so "the tool lane scored badly" and "the tool lane was
 never used" stop looking identical.
 
+The obvious next step was to let the loop remove the lanes, and the prediction here was that it
+would. It did not, and on its own numbers it was right not to: seeded from the shipped champion
+with `crux` in the pool, `simplify:qa → bare` measured 0.729 against the champion's 0.761 on
+confirm and `simplify:research → bare` 0.743 against 0.759 — each tool lane still earns one to
+two confirm cases net, while failing every crux research case. A lane can be broken on the cases
+you built to expose it and still be paying for itself on the rest. The recipe keeps both, and the
+[`recipes/grown-aws-kimi48b`](recipes/grown-aws-kimi48b) notes record the run.
+
 #### Two things the loop was doing wrong and could not see
 
 **It was not deterministic.** Among candidates tied on `search`, the challenger was picked by
@@ -430,6 +438,19 @@ already name the model they came from, so the loop now checks that each destinat
 resolving to the same weights, at zero extra calls, and records what it measured into the recipe
 — "Kimi-48B" was never enough to reproduce a number when a different quantisation is a different
 model.
+
+**It raced `search` against a stale maximum.** Gate ① demanded that a challenger strictly beat
+the champion on `search`. But the champion's search score is measured once, at promotion, as the
+maximum over that generation's width — and never again, while its confirm score *is* re-measured
+every generation (one run: 0.784 → 0.779 → 0.764 → 0.761 → 0.759). Measuring the same spec twice
+on a 32-case search split moved it by exactly one case (0.896 and 0.865). At that resolution the
+loop was reading a half-case deficit as a loss, and it discarded — without ever measuring them
+on confirm, since confirm is only measured for the one challenger — candidates that had already
+been measured at **4 wins, 1 loss** and **4 wins, 0 losses** (p = 0.0625) on confirm. `search` now
+settles only what trails by more than one search case; ties and sub-case deficits keep the
+challenge, and the confirm gate decides. The side effect is a saving: a candidate settled on
+search costs nothing further, where before every generation's challenger paid a full confirm
+measurement whatever the verdict.
 
 ## Recipes — grow it together 🌱
 `recipes/` is a community library: each recipe is a `config.json` (a combination) +
