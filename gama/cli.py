@@ -391,7 +391,7 @@ def cmd_grow(args: argparse.Namespace) -> int:
                 need = sizes["confirm"] / sizes["sealed"]
                 sys.stderr.write(
                     f"[gama] the sealed split resolves one case, which is {need:.2f} confirm "
-                    f"cases: a champion that ends less than that above the seed on confirm "
+                    f"cases: a champion that ends no more than that above the seed on confirm "
                     "will be NOT SEPARABLE by construction, whatever it is worth.\n")
             if row.get("margin_floor_coarse"):
                 sys.stderr.write(

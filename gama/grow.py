@@ -1020,8 +1020,11 @@ def sealed_verdict(sealed: Optional[dict], claimed_gain_cases: Optional[float] =
     # 言わせられない設計だった。
     expected = power = None
     claimed, promoted = _num(claimed_gain_cases), _num(promoted_gain_cases)
-    if claimed is not None and isinstance(confirm_cases, int) \
-            and not isinstance(confirm_cases, bool) and confirm_cases > 0:
+    # confirm の問数は主張を sealed の問数に直す分母。無い/壊れている呼び出しでは主張の問数を
+    # 言わない(codex r3: 分母なしで `of None confirm cases` と印字する経路があった)。
+    has_confirm_n = (isinstance(confirm_cases, int) and not isinstance(confirm_cases, bool)
+                     and confirm_cases > 0)
+    if claimed is not None and has_confirm_n:
         # 判定は丸める前の値で。表示用に 2 桁へ丸めた値で分岐すると 1.004 問が 1.00 になって
         # 「検定力なし」に化ける(この repo が門で一度踏んだ罠と同じ形)。
         exact = claimed * s_n / confirm_cases
@@ -1056,7 +1059,7 @@ def sealed_verdict(sealed: Optional[dict], claimed_gain_cases: Optional[float] =
             note = (f"the held-out split cannot tell the champion from the seed, and it never "
                     f"could have: on confirm the champion stands {claimed:+.2f} of "
                     f"{confirm_cases} cases over the seed ({certified}), which is {expected:g} "
-                    f"of the {s_n} sealed cases, inside the one case this split resolves. This "
+                    f"of the {s_n} sealed cases, not beyond the one case this split resolves. This "
                     f"verdict was fixed before the split was opened. To be separable at this "
                     f"gain the sealed split needs at least {need_n} cases; on this split the "
                     f"champion would have to stand more than {need_g:g} confirm cases over "
@@ -1079,11 +1082,12 @@ def sealed_verdict(sealed: Optional[dict], claimed_gain_cases: Optional[float] =
         elif claimed is None and promoted is not None and promoted > 0:
             # 主張が読めない台帳(seed の confirm が残っていない再開)でも、門が認定を出した事実は
             # 読める。検定力は言えないので言わない。
+            of_n = f"of {confirm_cases} confirm cases" if has_confirm_n else "on confirm"
             note = (f"the held-out split cannot tell the champion from the seed at this case "
                     f"count, and whether it could have is not recorded: the promotions "
-                    f"certified {promoted:+.2f} of {confirm_cases} confirm cases at promotion "
-                    f"time, but the seed's confirm score was not carried to the end of this "
-                    f"run, so how much of that the champion still claims is unknown")
+                    f"certified {promoted:+.2f} {of_n} at promotion time, but the seed's "
+                    f"confirm score was not carried to the end of this run, so how much of "
+                    f"that the champion still claims is unknown")
         else:
             note = ("the held-out split cannot tell the champion from the seed at this case "
                     "count. The run neither proved nor disproved an improvement")
@@ -1568,10 +1572,17 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
     same_as_seed = spec_hash(champion) == spec_hash(seed)
     claim = confirm_claim(seed_scores, [] if same_as_seed else champ_scores, n_confirm,
                           None if same_as_seed else champ_promo)
-    claim_basis = ("the champion measured once, at its promotion, against "
-                   f"{claim['seed_measurements']} seed measurements" if claim["promotion_only"]
-                   else f"means of {claim['champion_measurements']} champion and "
-                        f"{claim['seed_measurements']} seed measurements")
+    # 主張の根拠を note に残す。種のままで終わった走行では「champion の測定」は種の測定その
+    # ものなので、別個に測った数のように読ませない(codex r3)。
+    if claim["same_as_seed"]:
+        claim_basis = (f"the champion is the seed, measured {claim['seed_measurements']} "
+                       f"times on confirm")
+    elif claim["promotion_only"]:
+        claim_basis = ("the champion measured once, at its promotion, against "
+                       f"{claim['seed_measurements']} seed measurements")
+    else:
+        claim_basis = (f"means of {claim['champion_measurements']} champion and "
+                       f"{claim['seed_measurements']} seed measurements")
     result = {
         "champion": champion, "champion_hash": spec_hash(champion),
         "seed": seed, "seed_hash": spec_hash(seed),
@@ -1706,9 +1717,13 @@ def write_recipe(result: dict, directory, name: Optional[str] = None,
     # 主張の材料(無いのは古い result)。この二つの差が、sealed が検定した仮説の大きさそのもの。
     claim = result.get("confirm_claim")
     if isinstance(claim, dict) and "seed_mean" in claim:
-        how = ("champion measured once, at its promotion" if claim.get("promotion_only") else
-               f"means over the run: {claim.get('seed_measurements')} seed / "
-               f"{claim.get('champion_measurements')} champion measurements")
+        if claim.get("same_as_seed"):
+            how = f"the champion is the seed: {claim.get('seed_measurements')} measurements"
+        elif claim.get("promotion_only"):
+            how = "champion measured once, at its promotion"
+        else:
+            how = (f"means over the run: {claim.get('seed_measurements')} seed / "
+                   f"{claim.get('champion_measurements')} champion measurements")
         lines.append(f"| confirm score the sealed claim was made from ({how}) | "
                      f"{claim.get('seed_mean')} | {claim.get('champion_mean')} |")
     lines += [

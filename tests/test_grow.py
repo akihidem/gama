@@ -1272,6 +1272,12 @@ class TestTheClaimSealedTests(ScriptedCase):
         self.assertEqual(sv["claimed_confirm_cases"], 0.0)
         self.assertEqual(sv["power"], "nothing-claimed")
         self.assertTrue(result["confirm_claim"]["same_as_seed"])
+        # the seed's own measurements are not presented as a separately measured champion
+        with tempfile.TemporaryDirectory() as d:
+            out = write_recipe(result, Path(d) / "r")
+            md = (Path(out) / "recipe.md").read_text(encoding="utf-8")
+        self.assertIn("the champion is the seed: 2 measurements", md)
+        self.assertNotIn("champion measurements", md)
 
 
 class TestBackendIdentity(unittest.TestCase):
@@ -1594,7 +1600,23 @@ class TestSealedVerdict(unittest.TestCase):
         self.assertIsNone(v["claimed_confirm_cases"])
         self.assertEqual(v["promoted_confirm_cases"], 2.0)
         self.assertIn("not recorded", v["note"])
-        self.assertIn("certified +2.00", v["note"])
+        self.assertIn("certified +2.00 of 64 confirm cases", v["note"])
+        # without a confirm count the note still reads, and never prints a None (codex r3)
+        v = sealed_verdict(self._s(0.85, 0.85, n=32), None, None, promoted_gain_cases=2.0)
+        self.assertIn("certified +2.00 on confirm", v["note"])
+        self.assertNotIn("None", v["note"])
+
+    def test_a_gain_that_would_show_as_exactly_one_case_is_still_underpowered(self):
+        # sealed calls "improved" only beyond the band, so an expectation of exactly one case
+        # cannot be separated either; the note must not say "less than" (codex r3)
+        v = sealed_verdict(self._s(0.85, 0.85, n=32), claimed_gain_cases=2.0, confirm_cases=64)
+        self.assertEqual(v["expected_cases"], 1.0)
+        self.assertEqual(v["power"], "underpowered")
+        self.assertIn("not beyond the one case", v["note"])
+        self.assertNotIn("less than", v["note"])
+        v = sealed_verdict(self._s(0.85, 0.85, n=32), claimed_gain_cases=2.0 + 1e-9,
+                           confirm_cases=64)
+        self.assertEqual(v["power"], "powered")
 
     def test_no_claimed_gain_keeps_the_plain_reading(self):
         v = sealed_verdict(self._s(0.85, 0.85), claimed_gain_cases=0.0, confirm_cases=56)
