@@ -1,4 +1,4 @@
-"""L0 for the source itself: a name defined twice in one scope is a defect, not a style nit.
+"""L0 for the source itself: a name defined twice in one body is a defect, not a style nit.
 
 Why this file exists (2026-09-02): ``gama/grow.py`` carried two ``_atomic_lane``
 definitions. Python raises nothing for that; the later one silently replaced the one
@@ -10,8 +10,11 @@ the shape of the source has to be checked directly, and a linter is not a depend
 this project has, so the check lives here on ``ast`` alone.
 
 The rule: within one module body, and within one class body, every ``def``/``class``
-name appears once. Decorated redefinitions (``@property`` then ``@x.setter``) are the
-one legitimate reason for a repeated name inside a class, and are allowed as such.
+name appears once. ``@property`` followed by ``@x.setter`` / ``@x.deleter`` is the one
+legitimate reason for a repeated name inside a class, so those are counted as their
+own kind of definition: a getter, one setter and one deleter of ``x`` are fine, and a
+second setter of ``x`` is the same silent replacement this file is here to catch.
+Bodies of functions are not scanned (a redefinition there is local and short-lived).
 """
 import ast
 import collections
@@ -23,31 +26,42 @@ PACKAGE = pathlib.Path(__file__).resolve().parent.parent / "gama"
 DEFS = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
 
 
-def _is_setter_pair(node):
-    # `@x.setter` / `@x.deleter` on `def x` re-use the property's name by design. The
-    # decorator has to name *this* function: `@y.setter` on `def x` is not that idiom,
-    # and letting any setter through would hide a genuine redefinition behind one.
-    for d in getattr(node, "decorator_list", []):
-        if (isinstance(d, ast.Attribute) and d.attr in ("setter", "deleter")
-                and isinstance(d.value, ast.Name) and d.value.id == node.name):
-            return True
-    return False
+def _role(node, in_class):
+    """``"setter"``/``"deleter"`` for the property idiom, ``""`` for a plain definition.
+
+    The decorator has to name *this* function (`@y.setter` on `def x` is not the idiom)
+    and the idiom only exists inside a class body. Giving the accessor its own role,
+    rather than skipping it, is what lets a *second* setter still count as a duplicate.
+    """
+    if in_class:
+        for d in getattr(node, "decorator_list", []):
+            if (isinstance(d, ast.Attribute) and d.attr in ("setter", "deleter")
+                    and isinstance(d.value, ast.Name) and d.value.id == node.name):
+                return d.attr
+    return ""
 
 
 def duplicate_definitions(path):
-    """Return ``[(scope, name, count)]`` for every name defined more than once in a scope."""
+    """Return ``[(scope, name, count)]`` for every name defined more than once in a body.
+
+    ``name`` carries the accessor role where one applies (``"x.setter"``), so the
+    report says which of the definitions was repeated.
+    """
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     found = []
 
-    def scan(body, scope):
-        counts = collections.Counter(
-            n.name for n in body if isinstance(n, DEFS) and not _is_setter_pair(n))
+    def scan(body, scope, in_class):
+        counts = collections.Counter()
+        for n in body:
+            if isinstance(n, DEFS):
+                role = _role(n, in_class)
+                counts[n.name + ("." + role if role else "")] += 1
         found.extend((scope, name, c) for name, c in counts.items() if c > 1)
         for n in body:
             if isinstance(n, ast.ClassDef):
-                scan(n.body, f"{scope}.{n.name}")
+                scan(n.body, f"{scope}.{n.name}", True)
 
-    scan(tree.body, path.stem)
+    scan(tree.body, path.stem, False)
     return found
 
 
@@ -84,6 +98,18 @@ class TestNoShadowedDefinitions(unittest.TestCase):
                "    def x(self):\n        return 1\n"
                "    @y.setter\n    def x(self, v):\n        pass\n")
         self.assertEqual(self._scan(src), [("probe.A", "x", 2)])
+
+    def test_a_second_setter_is_a_redefinition(self):
+        src = ("class A:\n    @property\n    def x(self):\n        return 1\n"
+               "    @x.setter\n    def x(self, v):\n        pass\n"
+               "    @x.setter\n    def x(self, v):\n        pass\n")
+        self.assertEqual(self._scan(src), [("probe.A", "x.setter", 2)])
+
+    def test_the_setter_idiom_does_not_exist_at_module_level(self):
+        src = ("class P:\n    pass\n\nx = P()\n\n"
+               "def x():\n    return 1\n\n"
+               "@x.setter\ndef x(v):\n    pass\n")
+        self.assertEqual(self._scan(src), [("probe", "x", 2)])
 
 
 if __name__ == "__main__":
