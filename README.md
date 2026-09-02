@@ -415,10 +415,20 @@ ceiling. `edge` aims one band over: 20 cases where **the obvious program is wron
 change on `[1, 3, 4]`, RPN division that truncates toward zero rather than down, `*` that needs
 backtracking, run-length counts with two digits, `next_permutation` over repeated letters; and
 for the classes a program cannot help with, readings that look settled and are not (how many
-times the hands of a clock coincide in a day). Writing code is no longer the whole skill there,
-so a tool lane cannot take the suite by itself. Every answer was derived by brute force or
+times the hands of a clock coincide in a day). Every answer was derived by brute force or
 checked against an independent computation, and each of the eight code cases carries at least
 one argument that separates a correct implementation from the plausible wrong one.
+
+**Measured against the model it was written for, half of that intent missed.** The first run
+to include it scored 0.679 on `edge` at the seed (against 0.385 on `crux` and 0.850 on `wide`),
+so it does add headroom — but not where it was aimed: of the 12 `edge` code calls in that
+measurement, 12 scored full marks. Kimi-48B writes a correct `min_coins`, `rpn`, `lis_length`,
+`next_permutation`, `decode_rle` and `covered_length`, discriminating arguments and all. The
+"obvious program is wrong" intuition was calibrated to a weaker model than the one on this box.
+What it did separate is `content` (0.00 of 2 calls), `integration` (0.00 of 2) and `research`
+(0.17 of 6) — the classes where the answer is a shape or a chain of steps rather than an
+algorithm. A suite is a hypothesis about where a model fails, and this one was half right; the
+next revision aims at the half that held.
 
 #### A tool lane has a precondition, and it can fail exactly where it would help
 

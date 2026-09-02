@@ -2909,6 +2909,29 @@ class TestSaturatedClasses(ScriptedCase):
         self.assertTrue(sat, "saturation was not detected after a resume")
         self.assertIn("qa", sat[0]["classes"])
 
+    def test_the_cli_calls_the_sealed_band_a_floor_rather_than_a_resolution(self):
+        # 「分解能」と書くと --repeats を上げれば下がると読める(sealed の点は 1/R 問きざみで
+        # 動く)。1 問なのは判定の床の方で、下げる手は sealed の問数を増やすこと。
+        from gama.benchmark import SUITES
+        Scripted.WINS = {"a": {"qa1"}, "b": {"qa1"}}
+        pool = {"a": _lane("a"), "b": _lane("b")}
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "pool.json").write_text(json.dumps(pool), encoding="utf-8")
+            SUITES["_band_probe"] = _cases(8)
+            try:
+                err = io.StringIO()
+                with contextlib.redirect_stderr(err):
+                    cli_main(["grow", "--pool", str(Path(d, "pool.json")),
+                              "--suites", "_band_probe", "--generations", "1", "--width", "1",
+                              "--ratio", "1:2:1", "--repeats", "2",
+                              "--out", str(Path(d, "l.jsonl"))])
+            finally:
+                SUITES.pop("_band_probe", None)
+        out = err.getvalue()
+        self.assertIn("the sealed verdict's band is one sealed case", out)
+        self.assertIn("The band is a floor, not the measurement's granularity", out)
+        self.assertNotIn("the sealed split resolves one case", out)
+
     def test_the_cli_says_at_gen0_when_no_class_can_grow(self):
         # 走行の最後に「区別できなかった」と知るのは高い(実走で数時間)。打つ手が無いことは
         # 候補を1つも測る前に分かるので、その時点で言う。実 suite は scripted backend では

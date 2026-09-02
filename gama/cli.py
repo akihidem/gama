@@ -403,10 +403,16 @@ def cmd_grow(args: argparse.Namespace) -> int:
             # 量るのは昇格時の認定の合計ではなく最終形の confirm 点(sealed が比べる相手と同じ)。
             if sizes.get("sealed") and sizes.get("confirm"):
                 need = sizes["confirm"] / sizes["sealed"]
+                # 「分解能」と書いていたが、それは正確でない: --repeats R なら sealed の点は
+                # 1/R 問きざみで動き、graded の case はもっと細かい。1 問なのは**帯**(判定の床)
+                # の方で、床である理由は分解能でなく「n 問の 1 回測定で 1 問未満の差は証拠に
+                # ならない」。読む人が「repeats を上げれば下がる」と誤読しないよう、床と呼ぶ。
                 sys.stderr.write(
-                    f"[gama] the sealed split resolves one case, which is {need:.2f} confirm "
+                    f"[gama] the sealed verdict's band is one sealed case = {need:.2f} confirm "
                     f"cases: a champion that ends no more than that above the seed on confirm "
-                    "will be NOT SEPARABLE by construction, whatever it is worth.\n")
+                    "will be NOT SEPARABLE by construction, whatever it is worth. The band is a "
+                    "floor, not the measurement's granularity — raise the sealed share of "
+                    "--ratio or add cases the champion can still win to lower it.\n")
             if row.get("margin_floor_coarse"):
                 sys.stderr.write(
                     f"[gama] WARNING: only {len(row['splits']['confirm'])} confirm cases, so "
