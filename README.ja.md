@@ -490,7 +490,10 @@ simplifier / seed)・split・case・点・トークン・返答の長さ・
 全文は持たない(切れた返答は 1 問 8〜9K 字。`crux` が答えを読むのは末尾)。台帳はそのままなので
 `--resume` と台帳を読む道具は触らず、trace は台帳に従う: 自分の台帳へ続ける走行では追記(先に
 `resumed` の行を置くので、checkpoint に届く前に落ちた世代の call と測り直しを読み分けられる)、
-台帳が空から始まる時は trace も空から。
+台帳が空から始まる時は trace も空から。走行は最後に自分の書いたファイルを数え直して、result・
+recipe・stderr の 3 か所に「トークン上限で切れた call が何件・どのクラスか」を言う
+(`per-call trace: <calls> calls; cut at the token limit (finish=length): <n> (<class>: <n>, ...)`)。
+止まった理由を言わない backend では「分からない」であって 0 ではない。
 
 ## レシピ ── みなで育てる 🌱
 `recipes/` はコミュニティ・ライブラリ。1 レシピ = `config.json`（組み合わせ）＋ `recipe.md`

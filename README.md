@@ -579,6 +579,10 @@ characters per case; the tail is where `crux` reads its answer. The ledger stays
 `--resume` and the tools that read it are untouched, and the trace follows it: appended when a
 run continues its own ledger (after a `resumed` row, so the calls of a generation that died
 before its checkpoint can be told from the re-measurement), started over when the ledger is.
+At the end the run counts the file it wrote and says, in the result, the recipe and on stderr,
+how many calls were cut at the token limit and in which classes (`per-call trace: <calls>
+calls; cut at the token limit (finish=length): <n> (<class>: <n>, ...)`); a backend that
+reports no finish reason gets "not known", not zero.
 
 ## Recipes — grow it together 🌱
 `recipes/` is a community library: each recipe is a `config.json` (a combination) +
