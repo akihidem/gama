@@ -75,20 +75,36 @@ def stranded_tests(path):
     A method pasted after a module-level function at that function's body indentation
     parses as a nested function of it (unreachable, after its ``return``): no error, no
     test, and the suite count moves by one less than expected, which nobody counts. The
-    runner only collects ``test_*`` methods on ``TestCase`` classes, so a ``test_*`` that
-    is not a direct child of a class body is a test that does not exist.
+    runner (``unittest discover``) collects ``test_*`` methods of module-level classes that
+    derive from ``TestCase``, and nothing else: a bare function, a method of a class with
+    no such base, a method of a nested class, are tests that do not exist. A ``test_*``
+    defined inside a *test method* is that method's local helper and is left alone; one
+    inside any other function is the pasting accident this floor exists for.
     """
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     found = []
+    classes = {n.name: n for n in tree.body if isinstance(n, ast.ClassDef)}
 
-    def scan(body, in_class):
+    def hosts_tests(cls, seen=()):
+        # ``unittest.TestCase`` / ``TestCase`` by name, or a module-level base that does.
+        for b in cls.bases:
+            text = ast.unparse(b)
+            if text.endswith("TestCase"):
+                return True
+            if text in classes and text not in seen and hosts_tests(classes[text], seen + (text,)):
+                return True
+        return False
+
+    def scan(body, in_host, in_test):
         for n in body:
             if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                if n.name.startswith("test_") and not in_class:
+                is_test = n.name.startswith("test_")
+                if is_test and not in_host and not in_test:
                     found.append((n.lineno, n.name))
-                scan(n.body, False)
+                scan(n.body, False, in_test or is_test)
             elif isinstance(n, ast.ClassDef):
-                scan(n.body, True)
+                # only a module-level TestCase subclass is collected; nested classes are not
+                scan(n.body, n.name in classes and hosts_tests(n), False)
             else:
                 # if/try/with/for/while: their statement lists stay in the enclosing scope
                 # (a def under ``if`` in a class body is still a method if the branch runs).
@@ -97,11 +113,11 @@ def stranded_tests(path):
                 for field in ("body", "orelse", "finalbody"):
                     sub = getattr(n, field, None)
                     if isinstance(sub, list):
-                        scan(sub, in_class)
+                        scan(sub, in_host, in_test)
                 for h in getattr(n, "handlers", None) or []:
-                    scan(h.body, in_class)
+                    scan(h.body, in_host, in_test)
 
-    scan(tree.body, False)
+    scan(tree.body, False, False)
     return found
 
 
@@ -171,28 +187,49 @@ class TestNoStrandedTests(unittest.TestCase):
             return stranded_tests(tmp)
 
     def test_the_check_sees_a_method_stranded_inside_a_helper(self):
-        src = ("def helper():\n    return 1\n\n\n"
+        src = ("import unittest\n"
+               "def helper():\n    return 1\n\n\n"
                "    def test_x(self):\n        pass\n\n"
-               "class A:\n    def test_y(self):\n        pass\n")
-        self.assertEqual(self._scan(src), [(5, "test_x")])
+               "class A(unittest.TestCase):\n    def test_y(self):\n        pass\n")
+        self.assertEqual(self._scan(src), [(6, "test_x")])
 
     def test_a_module_level_test_function_is_stranded_too(self):
         # unittest does not collect bare functions either
         self.assertEqual(self._scan("def test_x():\n    pass\n"), [(1, "test_x")])
 
     def test_a_test_under_a_module_level_if_is_stranded_but_one_in_a_class_is_not(self):
-        src = ("import sys\n"
+        src = ("import sys, unittest\n"
                "if sys.platform:\n    def test_x():\n        pass\n"
                "try:\n    import json\nexcept ImportError:\n    def test_y():\n        pass\n"
-               "class A:\n    if sys.platform:\n        def test_z(self):\n            pass\n")
+               "class A(unittest.TestCase):\n    if sys.platform:\n"
+               "        def test_z(self):\n            pass\n")
         self.assertEqual(self._scan(src), [(3, "test_x"), (8, "test_y")])
 
     def test_methods_and_helpers_are_left_alone(self):
-        src = ("def _make():\n    def inner():\n        pass\n    return inner\n\n"
-               "class A:\n    def test_y(self):\n        def test_local():\n"
+        src = ("import unittest\n"
+               "def _make():\n    def inner():\n        pass\n    return inner\n\n"
+               "class A(unittest.TestCase):\n    def test_y(self):\n        def test_local():\n"
                "            pass\n        pass\n")
-        # a test_* nested inside a test method is that method's business, not a stranded test
-        self.assertEqual(self._scan(src), [(8, "test_local")])
+        # a test_* nested inside a test method is that method's local helper (codex r7)
+        self.assertEqual(self._scan(src), [])
+
+    def test_a_class_the_runner_does_not_collect_strands_its_methods(self):
+        # no TestCase base, or nested in another class: unittest discover never sees them
+        src = ("import unittest\n"
+               "class Plain:\n    def test_x(self):\n        pass\n"
+               "class Outer(unittest.TestCase):\n"
+               "    class Inner(unittest.TestCase):\n        def test_y(self):\n            pass\n"
+               "    def test_z(self):\n        pass\n")
+        self.assertEqual(self._scan(src), [(3, "test_x"), (7, "test_y")])
+
+    def test_a_base_defined_in_the_file_carries_the_test_case_down(self):
+        src = ("import unittest\n"
+               "class Base(unittest.TestCase):\n    pass\n"
+               "class Derived(Base):\n    def test_x(self):\n        pass\n"
+               "class Loop(Loop2):\n    def test_l(self):\n        pass\n"
+               "class Loop2(Loop):\n    pass\n")
+        # Derived is collected through Base; a base cycle terminates and is not a host
+        self.assertEqual(self._scan(src), [(8, "test_l")])
 
 
 if __name__ == "__main__":

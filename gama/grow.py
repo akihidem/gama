@@ -819,8 +819,9 @@ def _ledger_splits(ledger_path) -> Optional[dict]:
                 row = json.loads(line)
             except ValueError:
                 continue
-            if row.get("event") in ("seed", "resumed"):
-                return row.get("splits")
+            # split の無い行(旧形式・手で直した行)は飛ばして、持っている最初の行を採る
+            if row.get("event") in ("seed", "resumed") and row.get("splits") is not None:
+                return row["splits"]
     except OSError:
         return None
     return None
