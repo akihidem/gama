@@ -89,10 +89,17 @@ def stranded_tests(path):
                 scan(n.body, False)
             elif isinstance(n, ast.ClassDef):
                 scan(n.body, True)
-            elif isinstance(n, (ast.If, ast.Try, ast.With, ast.For, ast.While)):
-                for attr in ("body", "orelse", "finalbody", "handlers"):
-                    for m in getattr(n, attr, []) or []:
-                        scan(getattr(m, "body", [m]), in_class)
+            else:
+                # if/try/with/for/while: their statement lists stay in the enclosing scope
+                # (a def under ``if`` in a class body is still a method if the branch runs).
+                # Scan the lists themselves, so a def found there is judged, not skipped
+                # into (codex r6).
+                for field in ("body", "orelse", "finalbody"):
+                    sub = getattr(n, field, None)
+                    if isinstance(sub, list):
+                        scan(sub, in_class)
+                for h in getattr(n, "handlers", None) or []:
+                    scan(h.body, in_class)
 
     scan(tree.body, False)
     return found
@@ -172,6 +179,13 @@ class TestNoStrandedTests(unittest.TestCase):
     def test_a_module_level_test_function_is_stranded_too(self):
         # unittest does not collect bare functions either
         self.assertEqual(self._scan("def test_x():\n    pass\n"), [(1, "test_x")])
+
+    def test_a_test_under_a_module_level_if_is_stranded_but_one_in_a_class_is_not(self):
+        src = ("import sys\n"
+               "if sys.platform:\n    def test_x():\n        pass\n"
+               "try:\n    import json\nexcept ImportError:\n    def test_y():\n        pass\n"
+               "class A:\n    if sys.platform:\n        def test_z(self):\n            pass\n")
+        self.assertEqual(self._scan(src), [(3, "test_x"), (8, "test_y")])
 
     def test_methods_and_helpers_are_left_alone(self):
         src = ("def _make():\n    def inner():\n        pass\n    return inner\n\n"

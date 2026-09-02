@@ -736,9 +736,10 @@ def build_parser() -> argparse.ArgumentParser:
                          "references, or its lanes cannot be simplified back")
     pg.add_argument("--resume", default=None, metavar="LEDGER",
                     help="continue an interrupted run from its JSONL ledger (a long run that "
-                         "dies has already paid for its measurements). Refused if the ledger "
-                         "used a different split, since its sealed cases would not be sealed "
-                         "under this one")
+                         "dies has already paid for its measurements). Give the same path as "
+                         "--out to continue in place: the ledger is appended to, not rewritten. "
+                         "Refused if the ledger used a different split, since its sealed cases "
+                         "would not be sealed under this one")
     pg.add_argument("--out", default=None, help="write the JSONL grow ledger")
     pg.add_argument("--write-recipe", default=None,
                     help="write the champion to this recipe directory (config.json + recipe.md)")

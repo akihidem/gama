@@ -44,6 +44,7 @@ from gama.grow import (
     sign_test,
     canonical,
     load_checkpoint,
+    _ledger_splits,
     code_stamp,
     shrink_band,
     simplify_gate,
@@ -784,6 +785,56 @@ class TestGrowLoop(ScriptedCase):
         self.assertEqual(second["history"][0]["gen"], 1)          # continued, did not restart
         self.assertEqual(second["seed_hash"], first["champion_hash"])
 
+    def test_resuming_into_the_same_ledger_keeps_the_first_segment(self):
+        # --resume L --out L is the natural way to continue. The ledger used to be truncated
+        # right after its checkpoint was read: the seed row and every generation before the
+        # crash were gone, and the ledger, "the only evidence behind the numbers", kept only
+        # the second half of the run.
+        Scripted.WINS = {"a": set(), "b": {"qa1", "qa2", "qa4"}}
+        pool = {"a": _lane("a"), "b": _lane("b")}
+        with tempfile.TemporaryDirectory() as d:
+            led = Path(d) / "run.jsonl"
+            grow(pool, cases=_cases(8), generations=1, width=2, patience=5,
+                 ledger_path=str(led), min_margin=0.05)
+            splits = _ledger_splits(led)
+            with led.open("a", encoding="utf-8") as fh:
+                fh.write('{"event": "gener')          # the half-written line a kill leaves
+            grow(pool, cases=_cases(8), generations=3, width=2, patience=5,
+                 ledger_path=str(led), resume_from=str(led), min_margin=0.05)
+            rows, broken = [], 0
+            for line in led.read_text(encoding="utf-8").splitlines():
+                try:
+                    rows.append(json.loads(line))
+                except ValueError:
+                    broken += 1
+            self.assertEqual(broken, 1, "the half-written line is kept as is, nothing else breaks")
+            events = [r["event"] for r in rows]
+            self.assertEqual(events.count("seed"), 1)
+            self.assertEqual(events.count("resumed"), 1)
+            self.assertLess(events.index("seed"), events.index("resumed"))
+            gens = [r["gen"] for r in rows if r["event"] == "generation"]
+            self.assertEqual(gens, [0, 1, 2])              # both segments, in order
+            self.assertEqual(load_checkpoint(led)["gen"], 2)  # the newest checkpoint wins
+            self.assertEqual(_ledger_splits(led), splits)  # and the split guard still has its row
+            # the row that follows the broken one must start on its own line
+            text = led.read_text(encoding="utf-8")
+            self.assertIn('{"event": "gener\n{"event": "resumed"', text)
+
+    def test_a_ledger_that_begins_with_a_resumed_row_still_guards_its_split(self):
+        # resuming into a different file leaves a ledger whose first row is "resumed", and
+        # resuming from that one skipped the split check (it looked for a seed row only)
+        Scripted.WINS = {"a": set(), "b": {"qa1"}}
+        pool = {"a": _lane("a"), "b": _lane("b")}
+        with tempfile.TemporaryDirectory() as d:
+            first, second = Path(d) / "one.jsonl", Path(d) / "two.jsonl"
+            grow(pool, cases=_cases(4), generations=1, width=1, ledger_path=str(first))
+            grow(pool, cases=_cases(4), generations=2, width=1,
+                 ledger_path=str(second), resume_from=str(first))
+            self.assertEqual(json.loads(second.read_text().splitlines()[0])["event"], "resumed")
+            self.assertIsNotNone(_ledger_splits(second))
+            with self.assertRaises(ValueError):
+                grow(pool, cases=_cases(8), generations=3, width=1, resume_from=str(second))
+
     def test_a_run_that_dies_before_its_first_generation_still_resumes(self):
         # The gap the per-generation checkpoints did not cover, and the one that actually cost a
         # run: dying during the seed measurement left a zero-row ledger, so the 120 calls that
@@ -1202,6 +1253,10 @@ class TestConfirmClaim(unittest.TestCase):
             # the champion's side is still recorded (codex r5)
             self.assertEqual((c["champion_mean"], c["champion_measurements"]), (0.85, 2))
             self.assertFalse(c["same_as_seed"])
+        # no champion material at all is the seed itself, readable seed or not (codex r6)
+        c = confirm_claim([], [], 40)
+        self.assertTrue(c["same_as_seed"])
+        self.assertIsNone(c["cases"])
         sealed = {"seed": {"score": 0.85, "cases": 32}, "champion": {"score": 0.85, "cases": 32}}
         v = sealed_verdict(sealed, c["cases"], 40, promoted_gain_cases=1.0)
         self.assertIsNone(v["power"])

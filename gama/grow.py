@@ -807,14 +807,19 @@ def load_checkpoint(ledger_path) -> Optional[dict]:
 
 
 def _ledger_splits(ledger_path) -> Optional[dict]:
-    """再開先の台帳が使っていた split(case id)。分割が違えば再開してはいけない。"""
+    """再開先の台帳が使っていた split(case id)。分割が違えば再開してはいけない。
+
+    seed 行だけでなく resumed 行からも読む: 別ファイルへ再開した台帳(と、この修正より前に
+    同じファイルへ再開して truncate された台帳)は resumed 行から始まり、そこから再開すると
+    split の検査が空振りしていた。
+    """
     try:
         for line in Path(ledger_path).read_text(encoding="utf-8").splitlines():
             try:
                 row = json.loads(line)
             except ValueError:
                 continue
-            if row.get("event") == "seed":
+            if row.get("event") in ("seed", "resumed"):
                 return row.get("splits")
     except OSError:
         return None
@@ -939,7 +944,7 @@ def confirm_claim(seed_scores: list, champion_scores: list, n_confirm: int,
                 "seed_measurements": len(seed_scores),
                 "champion_mean": None if seed_mean is None else round(seed_mean, 4),
                 "champion_measurements": 0,
-                "promotion_only": False, "same_as_seed": seed_mean is not None}
+                "promotion_only": False, "same_as_seed": True}
     promotion_only = not champion_scores
     champ_mean = promotion_score if promotion_only else _mean(champion_scores)
     # 種が読めなければ主張は「読めない」(None)。champion 側の材料は捨てずに残す(codex r5)。
@@ -1270,9 +1275,26 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
     archive: dict[str, dict] = {}
     history: list[dict] = []
     ledger = Path(ledger_path) if ledger_path else None
+    # 同じ台帳へ続ける再開(--out と --resume が同じファイル)では前半の行を消さない。台帳は
+    # この走行の唯一の証拠で、checkpoint を読んだ直後に truncate すると seed 行と前半の世代が
+    # 消え、2 回目の再開では split の検査まで空振りする(seed 行が無いので)。落ちた時の
+    # 書きかけ行の末尾に足すと再開行まで壊れるので、改行で区切ってから足す。
+    continuing = bool(ledger and resume_from and ledger.exists()
+                      and ledger.resolve() == Path(resume_from).resolve())
     if ledger:
         ledger.parent.mkdir(parents=True, exist_ok=True)
-        ledger.write_text("", encoding="utf-8")
+        if continuing:
+            with ledger.open("rb") as fh:
+                try:
+                    fh.seek(-1, 2)
+                    last = fh.read(1)
+                except OSError:          # 空の台帳: 区切る行が無い
+                    last = b"\n"
+            if last != b"\n":
+                with ledger.open("a", encoding="utf-8") as fh:
+                    fh.write("\n")
+        else:
+            ledger.write_text("", encoding="utf-8")
 
     def emit(row: dict) -> None:
         if ledger:
@@ -1592,7 +1614,7 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
                           None if same_as_seed else champ_promo)
     # 主張の根拠を note に残す。種のままで終わった走行では「champion の測定」は種の測定その
     # ものなので、別個に測った数のように読ませない(codex r3)。
-    if claim["same_as_seed"]:
+    if same_as_seed:
         claim_basis = (f"the champion is the seed, measured {claim['seed_measurements']} "
                        f"times on confirm")
     elif claim["promotion_only"]:
