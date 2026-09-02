@@ -50,7 +50,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from .benchmark import SUITES, BenchCase, run_bench, summarize
-from .backends import (note_served, reset_served, reset_tool_stats,
+from .backends import (_BACKENDS, ToolBackend, note_served, reset_served, reset_tool_stats,
                        served_conflicts, served_map, tool_stats)
 from .config import build_backend
 from .models import ModelTier
@@ -214,7 +214,21 @@ def validate_pool(pool: dict[str, dict]) -> None:
             "mesh(...)); rename them in the pool")
 
 
-_DERIVED_LANE = re.compile(r"^(tool|ens|mesh)\(.*\)$")
+# grow が鋳造するレーン名。括弧の後ろの ``+tool`` / ``+pf`` は同じレーンへの上乗せ(deepen・prefill)。
+_DERIVED_LANE = re.compile(r"^(tool|ens|mesh)\(.*\)(\+\w+)*$")
+
+
+def _prefillable(inner_spec) -> bool:
+    """prefill を受け取れる inner か。backend クラスの ``supports_prefill``(肯定形の宣言)で判定する。
+
+    構築せずに spec から引くのは、propose が決定的・オフラインだから。合成(ensemble 等)は
+    登録表に無いので False —— ToolBackend も同じ条件で構築を拒むから、ここで出さない候補は
+    ちょうど「作れない候補」に一致する(提案してから build で落ちる、を作らない)。
+    """
+    if not isinstance(inner_spec, dict):
+        return False
+    cls = _BACKENDS.get(inner_spec.get("backend"))
+    return bool(getattr(cls, "supports_prefill", False))
 
 
 def _lane_for(champion: dict, task_type: str) -> str:
@@ -243,7 +257,7 @@ def _atomic_lane(champion: dict, lane: str) -> Optional[str]:
     # していた(deepen レーンに乗ったクラスは simplify も tool も一切提案されない袋小路だった)。
     if not _DERIVED_LANE.match(lane):
         return None
-    inner = lane[lane.index("(") + 1:-1]
+    inner = lane[lane.index("(") + 1:lane.rindex(")")]
     return inner.replace("->", "+").split("+")[0] if inner else None
 
 
@@ -330,19 +344,35 @@ def propose(champion: dict, pool: dict[str, dict], classes: list[str],
 
     for task_type in ordered_classes:
         cur = _lane_for(champion, task_type)
+        cur_spec = champion["kwargs"]["backends"].get(cur) or {}
         base = _atomic_lane(champion, cur) or cur          # 合成レーンなら中身の素モデルを基準に
         for lane in lanes:                                  # ① 別モデルへ振り替える
             if lane != cur:
                 buckets["route"].append((task_type, Candidate(
                     f"route:{task_type}->{lane}", "route",
                     _with_lane(champion, task_type, lane, copy.deepcopy(pool[lane])))))
-        if base in pool and not cur.startswith("tool("):     # ② PAL(コードを書かせて実行)で包む
+        if base in pool and cur_spec.get("backend") != "tool":  # ② PAL(コードを書かせて実行)で包む
             name = f"tool({base})"
             buckets["tool"].append((task_type, Candidate(
                 f"tool:{task_type}({base})", "tool",
                 _with_lane(champion, task_type, name,
                            {"backend": "tool", "_grow_base": base,
                             "kwargs": {"inner": copy.deepcopy(pool[base])}}))))
+        elif base in pool and not (cur_spec.get("kwargs") or {}).get("prefill") \
+                and _prefillable((cur_spec.get("kwargs") or {}).get("inner")):
+            # ②' すでに tool レーンなら、次の 1 手は「返答の冒頭に ```python を置く」(prefill)。
+            # 素のモデルに戻す・別モデルに振り替える・合議にする、のどれも「コードを書かない」
+            # 症状には効かない(run V: crux research で tool レーンが 1 度もコードを出さず、素の
+            # 思考文が採点されていた)。prefill は実測で 0/3 → 2-3/3 のコード到達だが、もともと
+            # コードを書けている問題群でどう転ぶかは未測定なので、既定にせず 1 手の変異にして
+            # 門に通す。中身(inner)はそのまま、足すのは prefill だけ(2 手同時にしない)。
+            name = f"{cur}+pf"
+            buckets["tool"].append((task_type, Candidate(
+                f"tool:{task_type}({base})+prefill", "tool",
+                _with_lane(champion, task_type, name,
+                           {"backend": "tool", "_grow_base": base,
+                            "kwargs": {"inner": copy.deepcopy(cur_spec["kwargs"]["inner"]),
+                                       "prefill": ToolBackend.PREFILL}}))))
         # ③ 2 モデルの合議。既定は synthesize —— majority は**自由文では機能しない**。逐語一致が
         # まず起きないので Counter が全部 1 になり、most_common が「最初に入れたメンバー」を返す。
         # 実測(graded 20 問): majority 0.705 に対し素の 3B 単体が 0.830、synthesize は 0.975
@@ -408,9 +438,11 @@ def propose(champion: dict, pool: dict[str, dict], classes: list[str],
     for task_type in ordered_classes:
         cur = _lane_for(champion, task_type)
         base = _atomic_lane(champion, cur)
-        if not base or base not in pool or cur.startswith("tool("):
+        if not base or base not in pool:
             continue
         spec = copy.deepcopy(champion["kwargs"]["backends"][cur])
+        if spec.get("backend") == "tool":
+            continue                                        # 素の tool レーンは包む段が無い
         wrapped = {"backend": "tool", "kwargs": {"inner": copy.deepcopy(pool[base])}}
         kw = spec.get("kwargs") or {}
         stages = kw.get("tiers") or kw.get("members")

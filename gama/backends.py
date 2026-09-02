@@ -70,6 +70,12 @@ class ModelBackend(ABC):
     # Token usage of the most recent complete() call, if the provider reports it:
     # {"prompt_tokens", "completion_tokens", "total_tokens"} or None.
     last_usage: dict | None = None
+    # Whether complete(prefill=...) is honoured: the text is handed to the model as the START of
+    # its own reply (a trailing assistant message on chat endpoints). Positive form on purpose —
+    # every adapter takes **kwargs, so an unsupported prefill would otherwise be dropped in
+    # silence and the lane measured as if it had it. ToolBackend refuses to wrap a backend that
+    # doesn't declare this when a prefill is configured.
+    supports_prefill: bool = False
 
     @abstractmethod
     def complete(self, prompt: str, tier: ModelTier, **kwargs) -> str:  # pragma: no cover
@@ -231,6 +237,7 @@ class SshOpenAIBackend(ModelBackend):
 
     name = "ssh-openai"
     available = True
+    supports_prefill = True
 
     def __init__(self, ssh_host: str | None = None, port: int = 8080,
                  path: str = "/v1/chat/completions", model_by_tier: dict | None = None,
@@ -272,9 +279,16 @@ class SshOpenAIBackend(ModelBackend):
         if not self.ssh_host:
             raise RuntimeError("SshOpenAIBackend requires ssh_host")
         model = self.model_by_tier.get(tier) or self.model_by_tier.get(ModelTier.LARGE)
+        messages = [{"role": "user", "content": prompt}]
+        # Prefill = the opening of the reply, sent as a trailing assistant turn. What the server
+        # does with it is template-dependent: llama.cpp (2026-09-02, Kimi-48B IQ2_M) starts a
+        # NEW assistant turn after it rather than continuing the text, but the model then opens
+        # the fence itself (0/3 → 2-3/3 code on crux research); vLLM/Anthropic-style servers
+        # continue the text. The caller (ToolBackend) handles both shapes on the way back.
+        if kwargs.get("prefill"):
+            messages.append({"role": "assistant", "content": kwargs["prefill"]})
         payload = dict(self.extra_body)
-        payload.update({"model": model, "messages": [{"role": "user", "content": prompt}],
-                        "stream": False})
+        payload.update({"model": model, "messages": messages, "stream": False})
         if self.max_tokens:
             payload["max_tokens"] = self.max_tokens
         if self.temperature is not None:
@@ -627,6 +641,14 @@ def reset_tool_stats() -> None:
         _TOOL[k] = 0
 
 
+def _parses(code: str) -> bool:
+    try:
+        compile(code, "<tool>", "exec")
+        return True
+    except (SyntaxError, ValueError):
+        return False
+
+
 class ToolBackend(ModelBackend):
     """Program-aided (PAL) wrapper — the model solves by WRITING Python that prints the
     answer; we run it and return stdout. Closes 'shared blind spot' gaps a small model
@@ -641,22 +663,71 @@ class ToolBackend(ModelBackend):
     name = "tool"
 
     _PY_FENCE = re.compile(r"```(?:python|py)?\n(.*?)```", re.DOTALL)
+    _OPEN_FENCE = re.compile(r"```(?:python|py)?\n")
+    # The prefill this wrapper knows how to read back. It is the opening of the fence the
+    # extractor looks for, so the two must move together — which is why it lives here and
+    # grow imports it instead of spelling the string again.
+    PREFILL = "```python\n"
 
-    def __init__(self, backend, timeout: int = 15):
+    def __init__(self, backend, timeout: int = 15, prefill: str | None = None):
+        # prefill: hand the model the start of its reply (see ModelBackend.supports_prefill).
+        # Why: a reasoning-tuned model asked for "ONLY the code" may still narrate its way to
+        # the token limit and never open a fence (Kimi-48B IQ2_M on crux research: 0/3 at any
+        # temperature or max_tokens up to 8192). Opening the fence FOR it turned that into
+        # 2-3/3 replies with runnable code. Opt-in per lane, because on prompts where the model
+        # already writes code it is an unmeasured change, and grow should decide from the
+        # ledger, not from here.
+        if prefill and not getattr(backend, "supports_prefill", False):
+            raise ValueError(
+                f"ToolBackend(prefill=...) over {getattr(backend, 'name', type(backend).__name__)!r}: "
+                "that backend does not declare supports_prefill, so the prefill would be dropped "
+                "silently and the lane measured as if it had it")
         self.backend = backend
         self.timeout = timeout
+        self.prefill = prefill or None
         self.available = getattr(backend, "available", False)
         self.last_usage = None
         self.last_code = None
+
+    def _extract(self, raw: str) -> tuple[str, bool]:
+        """The program in ``raw`` and whether one was fenced at all.
+
+        Three reply shapes reach here and all three must yield the code, because the
+        difference between them is the *server's* handling of a prefill, not the model's work:
+          1. a closed block anywhere (no prefill, or a server that re-opened the fence);
+          2. the continuation of OUR fence: body then ``\`\`\``` with no opening fence in the reply —
+             re-attach the prefill before matching (never when the reply opens one itself, or the
+             match is the empty block between the two fences — found exactly that: three replies
+             full of code all scoring 0);
+          3. an opened fence that never closes (length stop): what follows it is the program.
+        """
+        text = raw or ""
+        # Whether the fence in `text` is the model's own. When it is ours (re-attached), the fence
+        # says nothing about what the model wrote, so "had code" is decided by whether the body
+        # parses as Python: prose after our fence is the model declining to write code (no_code),
+        # not code that failed (empty_out) — the two are fixed in opposite places.
+        own_fence = "```" in text
+        if self.prefill and not text.lstrip().startswith("```"):
+            text = self.prefill + text
+        blocks = self._PY_FENCE.findall(text)
+        if blocks:
+            code = max(blocks, key=len)
+        else:
+            m = self._OPEN_FENCE.search(text)
+            if not m:
+                return raw or "", False
+            code = text[m.end():]
+        return code, (own_fence or _parses(code))
 
     def complete(self, prompt: str, tier: ModelTier, **kwargs) -> str:
         pal = (f"{prompt}\n\nSolve by writing a short Python 3 program that computes the "
                "answer and prints ONLY the final answer with print(). Return ONLY the "
                "code in a ```python code block.")
+        if self.prefill:
+            kwargs = dict(kwargs, prefill=self.prefill)
         raw = self.backend.complete(pal, tier, **kwargs)
         self.last_usage = getattr(self.backend, "last_usage", None)
-        blocks = self._PY_FENCE.findall(raw or "")
-        code = max(blocks, key=len) if blocks else (raw or "")
+        code, had_code = self._extract(raw)
         self.last_code = code
         try:
             # Run in a throwaway directory: a model asked for CSV happily writes
@@ -670,14 +741,14 @@ class ToolBackend(ModelBackend):
                                       text=True, timeout=self.timeout, cwd=sandbox)
             out = proc.stdout.strip()
             if out:
-                note_tool(ran=True, had_code=bool(blocks))
+                note_tool(ran=True, had_code=had_code)
                 return out
         except Exception:
             pass
         # ここに来たら道具は働いていない。返すのは素の返答だが、**その事実を数える**
         # (黙って低い点になるだけだと、道具が壊れているのかモデルが弱いのか区別できない)。
         # コードが在ったかどうかも一緒に残す —— 直し方が正反対なので混ぜない。
-        note_tool(ran=False, had_code=bool(blocks))
+        note_tool(ran=False, had_code=had_code)
         return raw  # fall back to the model's direct answer
 
 

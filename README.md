@@ -403,6 +403,7 @@ What it is not, measured rather than assumed:
 | the prompts conflict (case says "reply with only the integer", the PAL wrapper says "only code") | resolve the conflict explicitly | still no code block |
 | the token budget is too small | 1536 / 4096 / 8192 | 1536, 4096 and **8097** completion tokens, no code block in any; at 8192 it stopped on its own |
 | greedy decoding is stuck in a loop | temperature 0.0 vs 0.8, 3 cases each | 0 of 3 against 1 of 3 — inside noise, not a fix |
+| the model will not *open* the fence | send ` ```python ` as the start of its reply (a trailing assistant turn) | **2–3 of 3 replies contain code**; 1 of 3 correct |
 
 So the honest reading is about the model: `Kimi-Linear-48B-A3B-Instruct-IQ2_M` is a roughly
 two-bit quantization, and reliably emitting a fenced code block on a multi-sentence prompt is
@@ -422,7 +423,19 @@ two confirm cases net, while failing every crux research case. A lane can be bro
 you built to expose it and still be paying for itself on the rest. The recipe keeps both, and the
 [`recipes/grown-aws-kimi48b`](recipes/grown-aws-kimi48b) notes record the run.
 
-#### Two things the loop was doing wrong and could not see
+The last row of the table is the one thing that moved the model, and it is a change to the
+*lane*, not the prompt: `ToolBackend(prefill="```python\n")` hands the model the opening of its
+own reply, so the only thing left to decide is what goes inside the fence. It is opt-in per
+lane, because on the suites where this model already writes code it is an unmeasured change —
+and the loop is the thing that measures. So it is a mutation: once a class sits on a `tool`
+lane, the next one-step refinement the loop proposes is `tool:<class>(model)+prefill`, gated
+like everything else. Two of three probes reached code and one of three was right; whether that
+buys a confirm case is for the ledger to say. (The reply comes back in one of three shapes
+depending on how the server treats a trailing assistant turn — continued, re-opened, or opened
+and never closed — and the extractor reads all three, since the difference is the server's, not
+the model's.)
+
+#### Three things the loop was doing wrong and could not see
 
 **It was not deterministic.** Among candidates tied on `search`, the challenger was picked by
 measured latency — wall clock, which moves with someone else's load on a shared box. Two runs
@@ -451,6 +464,16 @@ settles only what trails by more than one search case; ties and sub-case deficit
 challenge, and the confirm gate decides. The side effect is a saving: a candidate settled on
 search costs nothing further, where before every generation's challenger paid a full confirm
 measurement whatever the verdict.
+
+**A deepened lane was a dead end.** The loop can nest a `tool` stage inside a `mesh` or
+`ensemble` lane (`mesh(a->b)+tool`). Two copies of the function that finds a composite lane's
+base model sat in the same file — one reading the spec, one parsing the name — and the
+name-parsing one won by definition order. It recognised `tool(a)` and `mesh(a->b)` but not
+`mesh(a->b)+tool`, so a class that had been deepened could never be simplified back, wrapped
+differently, or recombined: only routed away. Every direction a mutation can take must stay
+reachable from every shape the loop can produce, or the loop drifts one way and calls it a
+result. The spec is read first now; names are parsed only inside the namespace the loop itself
+mints.
 
 ## Recipes — grow it together 🌱
 `recipes/` is a community library: each recipe is a `config.json` (a combination) +

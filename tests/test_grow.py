@@ -385,6 +385,49 @@ class TestPropose(ScriptedCase):
         self.assertEqual(inner["backend"], "tool")     # the cheap tier now writes code
         build_backend(deep[0].spec)
 
+    def test_a_tool_lane_gets_a_prefill_as_its_next_step_only_where_it_can_land(self):
+        # Kimi-48B on crux research never opened a fence (0/3 at any temperature / max_tokens);
+        # opening it for the model did. That is a one-step refinement OF a tool lane, offered
+        # only when the inner backend declares it honours a prefill — a candidate the loop can
+        # propose but not build is worse than none.
+        class Chatty(Scripted):
+            name = "chatty"
+            supports_prefill = True
+
+        backends_mod._BACKENDS["chatty"] = Chatty
+        try:
+            pool = {"a": {"backend": "chatty", "kwargs": {"tag": "a"}}, "b": _lane("b")}
+            champ = seed_champion(pool, "a")
+            champ["kwargs"]["backends"]["tool(a)"] = {
+                "backend": "tool", "_grow_base": "a", "kwargs": {"inner": pool["a"]}}
+            champ["kwargs"]["routing_table"]["qa"] = "tool(a)"
+            tools = {c.label: c for c in propose(canonical(champ), pool, ["qa"], width=20)
+                     if c.kind == "tool"}
+            self.assertEqual(list(tools), ["tool:qa(a)+prefill"])
+            spec = tools["tool:qa(a)+prefill"].spec
+            lane = spec["kwargs"]["routing_table"]["qa"]
+            self.assertEqual(lane, "tool(a)+pf")
+            self.assertEqual(spec["kwargs"]["backends"][lane]["kwargs"]["prefill"], "```python\n")
+            self.assertEqual(spec["kwargs"]["backends"][lane]["_grow_base"], "a")
+            be = build_backend(spec)
+            self.assertEqual(be.backends[lane].prefill, "```python\n")
+            # a lane that already carries it is not offered it again, but can still be simplified
+            kinds = {c.kind: c for c in propose(spec, pool, ["qa"], width=20)}
+            self.assertNotIn("tool", kinds)
+            self.assertEqual(kinds["simplify"].label, "simplify:qa->a")
+            # and a user pool lane in that minted namespace is refused like the others
+            with self.assertRaises(ValueError):
+                validate_pool({"a": _lane("a"), "tool(a)+pf": _lane("b")})
+        finally:
+            backends_mod._BACKENDS.pop("chatty", None)
+        # an inner that does not declare support (Scripted) gets no prefill candidate at all
+        champ = seed_champion(self.pool, "a")
+        champ["kwargs"]["backends"]["tool(a)"] = {
+            "backend": "tool", "_grow_base": "a", "kwargs": {"inner": _lane("a")}}
+        champ["kwargs"]["routing_table"]["qa"] = "tool(a)"
+        self.assertFalse([c for c in propose(canonical(champ), self.pool, ["qa"], width=20)
+                          if c.kind == "tool"])
+
     def test_a_deepened_lane_is_not_a_dead_end(self):
         # Until 2026-09-02 a name-parsing copy of _atomic_lane shadowed the spec-reading one, and
         # `mesh(a->b)+tool` matched neither pattern: a class that had been deepened could never be
