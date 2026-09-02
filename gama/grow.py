@@ -1865,6 +1865,30 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
 # --------------------------------------------------------------------------- #
 # Recipe emission — 育った成果を gama の recipe library に還す
 # --------------------------------------------------------------------------- #
+def _seed_label(seed: Optional[dict]) -> str:
+    """recipe の表で sealed の差の相手を名指しする。
+
+    素のモデルなら "seed (no structure)"、振り分けや合成の default を持つ種なら「素のモデルでは
+    ない」と言い、振り分けの数を添える。--start-from 由来か手書きかは spec からは分からないので
+    「育った」とは言わない。sealed が言えるのは「この種より上」までで、種が素のモデルでなければ
+    素のモデルとの差は測っていない。
+    """
+    if not isinstance(seed, dict):
+        return "seed"
+    # 既定レーンへの振り分けは no-op(canonical が落とす)。手書きの spec が来ても、素のモデルと
+    # 同じ振る舞いを「育った設計」と呼ばないように、数える前に正規形にする。
+    kw = canonical(seed).get("kwargs") or {}
+    # _structure_size は合成レーンへの振り分けしか数えない(縮小の門の物差し)。ここで言いたい
+    # のは「種は何かを決めていたか」なので、別の素のモデルへの振り分けも数に入れる。
+    n = len(kw.get("routing_table") or {})
+    if n == 0:
+        # 振り分けが無くても default が合成レーンなら育った設計(default->ens の昇格だけ通った走行)。
+        if _structure_size(seed) == 0:
+            return "seed (no structure)"
+        return "seed (a composite default lane; not the bare model)"
+    return f"seed (routes {n} class{'es' if n != 1 else ''}; not the bare model)"
+
+
 def write_recipe(result: dict, directory, name: Optional[str] = None,
                  hardware: str = "(fill in: box, RAM, GPU)") -> Path:
     """勝ったチャンピオンを ``config.json`` + ``recipe.md`` として書き出す。
@@ -1909,7 +1933,10 @@ def write_recipe(result: dict, directory, name: Optional[str] = None,
         "",
         verdict["note"] + ".",
         "",
-        "| | seed (no structure) | grown champion |",
+        # 種は素のモデルとは限らない(--start-from で育った設計から続ける run W の種は 2 クラスを
+        # 振り分けていた)。「no structure」を無条件に書くと、sealed の差が「素のモデルに対して」
+        # と読まれる。差の相手が何かは表の見出しで言う。
+        f"| | {_seed_label(result.get('seed'))} | grown champion |",
         "|---|---|---|",
     ]
     if sealed:

@@ -290,7 +290,7 @@ That comparison is the whole argument for running the loop rather than copying a
 | box | champion |
 |---|---|
 | WSL2 CPU, `llama3.2:3b` | `qa → tool`, `research → mesh(3b→coder7b)` |
-| AWS L4, `Kimi-48B` | `qa → ensemble(temperatures)`, `research → tool` |
+| AWS L4, `Kimi-48B` | `qa → ensemble(temperatures)`, `research → tool` (run R; the recipe now ships run W's `qa → tool`, `research → ensemble`) |
 
 Both classes changed hands. See [`recipes/grown-aws-kimi48b`](recipes/grown-aws-kimi48b), which
 also records why `tool:qa` fell from 1.25 cases to zero: the `qa` class stopped being purely
@@ -338,12 +338,17 @@ reported `promotions: 1`, and its held-out cases said the champion was *worse* t
 the number was in the ledger and nothing looked at it. A run now ends with a three-valued
 verdict banded by sealed's own resolution of one case: **improved**, **regressed**, or **not
 separable**. Refusing to round "cannot tell" up to "improved" is the whole point, and it changes
-what this repo can claim: of the seven completed runs, **six come back NOT SEPARABLE**. Only the
-WSL/`llama3.2:3b` run clears the band (0.6375 → 0.8542 on 20 sealed cases, +4.33).
+what this repo can claim: of the nine completed runs, **seven come back NOT SEPARABLE**. The
+WSL/`llama3.2:3b` run clears the band (0.6375 → 0.8542 on 20 sealed cases, +4.33), and so does
+run W on the 48B (0.7484 → 0.8214 on 32 sealed cases, +2.34), with a qualification that matters:
+W was seeded from the previous champion, so the separation is from that champion, not from the
+bare model, and the first link of that chain was never separable.
 
 So the honest headline is narrower than "the loop grows better combinations". On a small model
-with a saturated-nothing suite it demonstrably did. On a 48B, seven runs of promotions have not
-produced a champion its held-out cases can tell apart from where it started.
+with a saturated-nothing suite it demonstrably did. On a 48B, seven runs of promotions (every
+ledger on that box that reached a final row, the discarded one included) did not produce a
+champion its held-out cases could tell apart from where it started; the eighth did, after harder
+cases (`crux`) were added and the seed was already grown.
 
 #### Where the headroom actually is
 

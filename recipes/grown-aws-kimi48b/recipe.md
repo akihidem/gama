@@ -4,20 +4,24 @@ The second recipe in this library grown by `gama grow`, and the reason it is wor
 to [`grown-wsl-ollama`](../grown-wsl-ollama): **same suites, same mutation set, same gates —
 and a different answer.**
 
-**Held-out verdict: NOT SEPARABLE.** Every completed run on this box — six of them —
-ends the same way: the sealed split cannot tell the grown champion from the seed it
-started from. The lane choices below are what `confirm` selected, and `confirm` is
-selected against every generation, so read them as the loop's best guess rather than a
-demonstrated improvement. The reason is measured and is not the gates: across 56
-confirm cases there are 7.48 cases of score left to win, 46 are already perfect, and
-`integration` is at 8 out of 8. **This suite is saturated for a 48B**, and a saturated
-suite cannot resolve structures. Use this recipe as a starting configuration, not as
-evidence that it beats the bare model.
+**Held-out verdict: IMPROVED over the previous recipe, by +2.34 of 32 sealed cases (run W,
+band 1.0).** The champion shipped here is `qa → tool`, `research → ensemble(cold + hot)`. It was
+grown from the previous champion of this file (`qa → tool`, `research → tool`), and that is the
+seed the sealed split compares it against. Seven runs before it on this box ended NOT SEPARABLE
+(O to V, every ledger that reached a final row; S is the discarded one, U stopped early and is
+not counted), including every run that started from the bare model, so the chain reads: bare
+model → first
+champion (never separable), first champion → this one (separable by 2.34 sealed cases). The gap to
+the bare model was not measured. The earlier reason still stands for the first link: across 56
+confirm cases of the original suite there were 7.48 cases of score left to win, 46 already
+perfect, `integration` at 8 of 8. **That suite is saturated for a 48B**; the `crux` cases added
+for runs V and W are what gave the loop something to move. Read the sections below in order; the
+numbers of the early runs are on the 96-case suite, run W's on 129.
 
 | box | champion the loop settled on |
 |---|---|
 | WSL2, CPU, `llama3.2:3b` | `qa → tool`, `research → mesh(3b → qwen2.5-coder:7b)` |
-| **AWS L4, `Kimi-Linear-48B-A3B`** | **`qa → tool`, `research → tool`** (the `qa` lane is a coin-flip between `tool` and an ensemble — see below) |
+| **AWS L4, `Kimi-Linear-48B-A3B`** | **`qa → tool`, `research → ensemble(cold + hot)`** (run W; the `qa` lane is a coin-flip between `tool` and an ensemble — see below. Runs R–T settled on `research → tool`) |
 
 Both classes changed hands. Structure is not portable; the loop is how you find out what your
 box wants.
@@ -28,7 +32,7 @@ box wants.
 - **No second model was loaded.** The two lanes are the same weights at `temperature` 0.0 and
   0.8, so the pool costs nothing extra on a GPU somebody else is using. Sub-second per call.
 - Cases: `wide,graded,steep,qadeep` (96) at `--ratio 1:2:1` → **24 search / 48 confirm / 24
-  sealed**, `--repeats 2`.
+  sealed**, `--repeats 2`. Runs V and W add `researchdeep,crux` (129) → **32 / 65 / 32**.
 
 ## Result
 
@@ -119,7 +123,7 @@ Seeded from this recipe, with the `crux` suite added to the pool (129 cases, spl
 | 3 | `ensemble:content` | 0.761 → 0.787 (**+1.7**) | **4 / 0**, p = 0.0625 | search-not-better |
 | 4 | `route:content → kimi-cold` | 0.759 → 0.767 | 2 / 1 | search-not-better |
 
-Sealed: seed 0.748, champion 0.747 — **not separable** (the eighth run in a row on this box).
+Sealed: seed 0.748, champion 0.747 — **not separable** (the seventh completed run in a row on this box).
 Re-read with the run's own confirm numbers in hand: the gate certified +1.1 of 65 confirm cases
 at gen 0, and the champion, re-measured every generation after (0.784 at promotion, then 0.779,
 0.764, 0.761, 0.759 against a seed measured twice at 0.767), ended **0.08 cases below the seed**
@@ -148,6 +152,53 @@ Three things this run showed, none of them about the model:
   fail on the rounding direction alone (11/15 − 10/15 arrives as 0.0666 against 0.066667).
 
 The champion of this run is not shipped: one promotion inside the band, no sealed separation.
+
+## Run W: the first sealed separation on this box, and what it is worth
+
+Same seed, same 129 cases and the same split as run V (the case ids are identical), the search
+gate now a band, the tool lane able to propose `+prefill`. Ledger: `grow-w-prefill.jsonl`.
+
+| gen | challenger | confirm champion → challenger | paired | verdict |
+|---|---|---|---|---|
+| 0 | `route:content → kimi-hot` | 0.767 → 0.753 (−0.9 cases) | 1 w / 3 l | rejected |
+| 1 | `ensemble:research(cold + hot)` | 0.767 → 0.782 (**+1.0**) | 3 / 2, p = 0.5 | **promoted** |
+| 2 | `tool:research(cold)` (= the seed again) | 0.790 → 0.767 (−1.5) | 1 / 2 | rejected |
+| 3 | `ensemble:integration(cold + hot)` | 0.790 → 0.802 (+0.77) | 2 / 2 | below the 1-case floor |
+| 4 | `deepen:research(tool inside ens)` | 0.780 → 0.775 (−0.38) | 1 / 1 | rejected |
+
+Sealed: seed 0.7484, champion 0.8214, **+2.34 cases of 32, band 1.0: improved.** The confirm
+side of the same claim, taken the way the loop now takes it (the seed's three measurements, all
+0.7669, against the champion's three re-measurements after promotion, 0.790 / 0.790 / 0.780):
+**+1.29 of 65 cases.** Both splits agree on the sign; the promotion itself was carried by one
+case at 3 wins to 2, p = 0.5, the weakest evidence the gate accepts. This champion ships because
+the split that was never used for a decision separates it from the seed, and it ships with
+that p-value next to it.
+
+What the run showed about the loop, not the model:
+
+- **One confirm measurement of a stochastic lane cannot hold a one-case floor.** Row 0 is the
+  mutation run V promoted at generation 0: `route:content → kimi-hot`, the same 65 confirm cases,
+  the same seed. Run V measured it at 0.7838 (+1.1 cases, 2 wins / 0 losses); run W measured it
+  at 0.7531 (−0.9 cases, 1 / 3). `kimi-hot` samples at temperature 0.8, and two measurements of
+  the same design on the same cases landed two cases apart, one on each side of the champion.
+  The seed, whose lanes are all at temperature 0, measured 0.7669 three times in a row. A
+  floor of one case is below the spread of a single measurement of a lane that samples; the
+  gate needs the lane's own spread before it can read a one-case gain from it.
+- **The prescription was never measured.** The seed's tool lanes returned no code on 10 of
+  their 108 search + confirm calls; run X, which measures the same seed on the same split with
+  the per-class count (`b78fb81`), puts 8 of the 10 on `research` and 2 on `qa`. The `+prefill`
+  refinement that treats exactly that was listed once, in generation 1, for `qa`, by the
+  rotation's order, and lost the tie to the ensemble on label order. After
+  generation 1 the `research` class was no longer a tool lane, so its `+prefill` was no longer
+  a one-step mutation and could not be proposed at all. `grow` now reads the diagnosis
+  (`cc985ab`), keeps every measured design in the running at zero cost (`07e9543`) and gives
+  the prescribed design the first seat and the tie; run X measures whether that buys a case.
+- **The recipe named the wrong code.** The process started at `907a976`. Its seed row says
+  `e7e5e63` and the `recipe.md` it wrote says `ffdb5bf`: both were read from `HEAD` at write
+  time, while commits landed during the run. The first is harmless (test-only commits, the
+  package byte-identical), the second is not (388 lines of `gama/` between them). `config.json`
+  here carries `907a976` by hand, with the note. The stamp is taken once per run now (`7d995fa`),
+  and it says when the tree differed from the commit.
 
 ## A run that had to be thrown away
 

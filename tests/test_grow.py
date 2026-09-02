@@ -1156,6 +1156,38 @@ class TestWriteRecipe(ScriptedCase):
             self.assertEqual(json.loads((out / "config.json").read_text(
                 encoding="utf-8"))["grow"]["splits"], res["splits"])
 
+    def test_the_table_names_what_the_sealed_difference_is_against(self):
+        # Run W was seeded from the shipped recipe (two routed classes) and its recipe.md said
+        # "seed (no structure)": a reader takes +2.34 sealed cases as a gain over the bare
+        # model, which was never measured. The heading must say what the seed was.
+        Scripted.WINS = {"a": set(), "c": {"qa1", "qa2", "qa3"}}
+        res = grow({"a": _lane("a"), "c": _lane("c")}, cases=_cases(4), generations=2, width=2)
+        self.assertEqual(res["promotions"], 1)
+        with tempfile.TemporaryDirectory() as d:
+            md = (write_recipe(res, Path(d) / "bare") / "recipe.md").read_text(encoding="utf-8")
+            self.assertIn("| | seed (no structure) | grown champion |", md)
+            again = grow({"a": _lane("a"), "c": _lane("c")}, cases=_cases(4), generations=1,
+                         width=1, seed_spec=res["champion"])
+            md2 = (write_recipe(again, Path(d) / "continued") / "recipe.md").read_text(
+                encoding="utf-8")
+            self.assertIn("| | seed (routes 1 class; not the bare model) | grown champion |",
+                          md2)
+            self.assertNotIn("no structure", md2)
+        # No routing at all but a composite default lane is still not the bare model (codex).
+        from gama.grow import _seed_label
+        ens = {"backend": "ensemble", "kwargs": {"members": [_lane("a"), _lane("c")]}}
+        self.assertEqual(_seed_label({"backend": "gama", "kwargs": {
+            "backends": {"a": _lane("a"), "ens": ens}, "routing_table": {}, "default": "ens"}}),
+            "seed (a composite default lane; not the bare model)")
+        self.assertEqual(_seed_label({"backend": "gama", "kwargs": {
+            "backends": {"a": _lane("a")}, "routing_table": {}, "default": "a"}}),
+            "seed (no structure)")
+        # A route to the default lane is a no-op, not a decision (canonical drops it).
+        self.assertEqual(_seed_label({"backend": "gama", "kwargs": {
+            "backends": {"a": _lane("a")}, "routing_table": {"qa": "a"}, "default": "a"}}),
+            "seed (no structure)")
+        self.assertEqual(_seed_label(None), "seed")
+
 
 # --------------------------------------------------------------------------- #
 # 7. CLI

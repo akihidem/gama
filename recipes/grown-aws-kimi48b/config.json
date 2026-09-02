@@ -1,9 +1,99 @@
 {
-  "_comment": "GROWN by `gama grow`. Ships the cheaper of two statistically tied `qa` lanes (see recipe.md): tool is 1 call and deterministic, the ensemble is 3 calls and stochastic, and they trade places within one case. The `research` lane survived an audit that killed the same lane on `qa`.",
+  "_comment": "GROWN by `gama grow` — champion 08e70a2e6146. Numbers below are from a sealed split never used for any decision.",
   "system": {
     "backend": "gama",
     "kwargs": {
       "backends": {
+        "ens(kimi-cold+kimi-hot)": {
+          "backend": "ensemble",
+          "_grow_base": "kimi-cold",
+          "kwargs": {
+            "members": [
+              {
+                "backend": "ssh-openai",
+                "kwargs": {
+                  "ssh_host": "aws-mf",
+                  "port": 8000,
+                  "path": "/v1/chat/completions",
+                  "model_by_tier": {
+                    "small": "kimi",
+                    "medium": "kimi",
+                    "large": "kimi"
+                  },
+                  "max_tokens": 1536,
+                  "temperature": 0.0,
+                  "ssh_opts": [
+                    "-o",
+                    "BatchMode=yes",
+                    "-o",
+                    "ConnectTimeout=15",
+                    "-o",
+                    "ControlMaster=auto",
+                    "-o",
+                    "ControlPath=/tmp/gama-ssh-%r@%h:%p",
+                    "-o",
+                    "ControlPersist=10m"
+                  ]
+                }
+              },
+              {
+                "backend": "ssh-openai",
+                "kwargs": {
+                  "ssh_host": "aws-mf",
+                  "port": 8000,
+                  "path": "/v1/chat/completions",
+                  "model_by_tier": {
+                    "small": "kimi",
+                    "medium": "kimi",
+                    "large": "kimi"
+                  },
+                  "max_tokens": 1536,
+                  "temperature": 0.8,
+                  "ssh_opts": [
+                    "-o",
+                    "BatchMode=yes",
+                    "-o",
+                    "ConnectTimeout=15",
+                    "-o",
+                    "ControlMaster=auto",
+                    "-o",
+                    "ControlPath=/tmp/gama-ssh-%r@%h:%p",
+                    "-o",
+                    "ControlPersist=10m"
+                  ]
+                }
+              }
+            ],
+            "strategy": "synthesize",
+            "aggregator": {
+              "backend": "ssh-openai",
+              "kwargs": {
+                "ssh_host": "aws-mf",
+                "port": 8000,
+                "path": "/v1/chat/completions",
+                "model_by_tier": {
+                  "small": "kimi",
+                  "medium": "kimi",
+                  "large": "kimi"
+                },
+                "max_tokens": 1536,
+                "temperature": 0.8,
+                "ssh_opts": [
+                  "-o",
+                  "BatchMode=yes",
+                  "-o",
+                  "ConnectTimeout=15",
+                  "-o",
+                  "ControlMaster=auto",
+                  "-o",
+                  "ControlPath=/tmp/gama-ssh-%r@%h:%p",
+                  "-o",
+                  "ControlPersist=10m"
+                ]
+              }
+            }
+          }
+        },
         "kimi-cold": {
           "backend": "ssh-openai",
           "kwargs": {
@@ -67,21 +157,23 @@
       },
       "routing_table": {
         "qa": "tool(kimi-cold)",
-        "research": "tool(kimi-cold)"
+        "research": "ens(kimi-cold+kimi-hot)"
       },
       "default": "kimi-cold"
     }
   },
   "grow": {
-    "seed_hash": "bcf736853c27",
-    "promotions": 2,
+    "seed_hash": "927039f7b541",
+    "promotions": 1,
     "generations_run": 5,
     "params": {
       "suites": [
         "wide",
         "graded",
         "steep",
-        "qadeep"
+        "qadeep",
+        "researchdeep",
+        "crux"
       ],
       "ratio": [
         1,
@@ -93,32 +185,33 @@
       "width": 4,
       "generations": 5,
       "patience": 5,
-      "min_margin": 0.0208,
+      "min_margin": 0.0154,
       "min_margin_source": "auto(one confirm case)",
       "ensemble_strategy": "synthesize",
+      "max_paired_p": null,
       "code": {
         "version": "0.1.0",
-        "commit": "149a889"
+        "commit": "907a976",
+        "dirty": null
       }
-    },
-    "bound_by": {
-      "floor": 5,
-      "drift": 0
     },
     "splits": {
       "search": [
-        "g-code-divide",
+        "crux-code-josephus",
+        "g-code-range",
         "steep-code-lru",
         "wide-code-balanced",
         "wide-code-rotate",
-        "g-content-lines",
-        "steep-content-every-third",
-        "wide-content-alliteration",
+        "g-content-b5",
+        "steep-content-acrostic",
+        "wide-content-acrostic",
         "wide-content-sevenwords",
-        "g-tool-json4",
-        "steep-tool-computed",
-        "wide-tool-csv",
+        "crux-int-daycount",
+        "g-tool-csv2",
+        "steep-tool-checksum",
+        "wide-tool-call",
         "wide-tool-json-squares",
+        "crux-qa-modpow",
         "g-qa-div60",
         "qad-compute-choose",
         "qad-compute-gcd",
@@ -127,36 +220,48 @@
         "steep-qa-modpow2",
         "wide-qa-divisors",
         "wide-qa-pow2",
+        "crux-research-collatz",
         "g-research-geometric",
+        "rd-compute-atleastone",
+        "rd-compute-oddsum",
+        "rd-reason-category",
+        "rd-reason-oddoneout",
         "steep-research-lcm",
         "wide-research-arrangements",
         "wide-research-knave"
       ],
       "confirm": [
+        "crux-code-editdist",
         "g-code-chunk",
-        "g-code-title",
+        "g-code-divide",
         "steep-code-csv",
-        "steep-code-topo",
+        "steep-code-roman",
         "wide-code-anagram",
         "wide-code-flatten",
         "wide-code-roman",
         "wide-code-twosum",
-        "g-content-b5",
+        "crux-content-triples",
+        "g-content-sun-moon",
         "g-content-three-words",
-        "steep-content-acrostic",
+        "steep-content-every-third",
         "steep-content-ordered",
-        "wide-content-acrostic",
+        "wide-content-alliteration",
         "wide-content-lipogram",
         "wide-content-reverse",
         "wide-content-weekdays",
-        "g-tool-csv2",
+        "crux-int-base",
+        "crux-int-sundays",
+        "crux-int-transform",
+        "g-tool-jsonlist3",
         "g-tool-kv4",
-        "steep-tool-checksum",
+        "steep-tool-computed",
         "steep-tool-sorted",
-        "wide-tool-call",
+        "wide-tool-csv",
         "wide-tool-json-nested",
         "wide-tool-json-null",
         "wide-tool-kv",
+        "crux-qa-digitsum",
+        "crux-qa-nthprime",
         "g-qa-bases",
         "g-qa-powers",
         "qad-compute-base7",
@@ -173,8 +278,18 @@
         "wide-qa-lcm",
         "wide-qa-modpow",
         "wide-qa-sum50",
+        "crux-research-amicable",
+        "crux-research-josephus",
         "g-research-banana",
         "g-research-primes",
+        "rd-compute-angles",
+        "rd-compute-diagonals",
+        "rd-compute-handshakes",
+        "rd-compute-primeseq",
+        "rd-reason-analogy",
+        "rd-reason-contradiction",
+        "rd-reason-negation",
+        "rd-reason-referent",
         "steep-research-anagrams",
         "steep-research-schedule",
         "wide-research-ages",
@@ -183,18 +298,21 @@
         "wide-research-tallest"
       ],
       "sealed": [
-        "g-code-range",
-        "steep-code-roman",
+        "crux-code-paths",
+        "g-code-title",
+        "steep-code-topo",
         "wide-code-bsearch",
         "wide-code-topword",
-        "g-content-sun-moon",
+        "g-content-lines",
         "steep-content-lipogram3",
         "wide-content-bullets",
         "wide-content-toad",
-        "g-tool-jsonlist3",
+        "crux-int-dijkstra",
+        "g-tool-json4",
         "steep-tool-escaped",
         "wide-tool-json-list",
         "wide-tool-json-user",
+        "crux-qa-multiples",
         "g-qa-gcdlcm",
         "qad-compute-count",
         "qad-compute-modpow",
@@ -203,7 +321,12 @@
         "steep-qa-primesum",
         "wide-qa-gcd",
         "wide-qa-seconds",
+        "crux-research-derange",
         "g-research-order",
+        "rd-compute-banana",
+        "rd-compute-palindromes",
+        "rd-reason-cause",
+        "rd-reason-order",
         "steep-research-prob",
         "wide-research-choose",
         "wide-research-seq"
@@ -211,52 +334,78 @@
     },
     "sealed": {
       "seed": {
-        "score": 0.8611,
-        "success_rate": 0.875,
-        "latency_s": 2.4869,
-        "n": 48,
-        "cases": 24
+        "score": 0.7484,
+        "success_rate": 0.75,
+        "latency_s": 4.6363,
+        "n": 64,
+        "cases": 32,
+        "errors": 0,
+        "error_rate": 0.0,
+        "tool_calls": 36,
+        "tool_ran": 28,
+        "tool_no_code": 6,
+        "tool_empty_out": 2
       },
       "champion": {
-        "score": 0.875,
-        "success_rate": 0.875,
-        "latency_s": 4.3871,
-        "n": 48,
-        "cases": 24
+        "score": 0.8214,
+        "success_rate": 0.8125,
+        "latency_s": 4.5863,
+        "n": 64,
+        "cases": 32,
+        "errors": 0,
+        "error_rate": 0.0,
+        "tool_calls": 18,
+        "tool_ran": 10,
+        "tool_no_code": 6,
+        "tool_empty_out": 2
       }
     },
     "history": [
       {
         "gen": 0,
-        "challenger": "ensemble:qa(kimi-cold+kimi-hot)",
-        "gain_cases": 3.0,
-        "reason": "promote"
+        "challenger": "route:content->kimi-hot",
+        "gain_cases": -0.9,
+        "reason": "confirm-not-better"
       },
       {
         "gen": 1,
-        "challenger": "tool:qa(kimi-cold)",
-        "gain_cases": 0.0,
-        "reason": "confirm-not-better"
+        "challenger": "ensemble:research(kimi-cold+kimi-hot)",
+        "gain_cases": 1.0,
+        "paired": "3w/2l p=0.5",
+        "reason": "promote"
       },
       {
         "gen": 2,
         "challenger": "tool:research(kimi-cold)",
-        "gain_cases": 1.37,
-        "reason": "promote"
+        "gain_cases": -1.5,
+        "reason": "confirm-not-better (this is the seed design again)"
       },
       {
         "gen": 3,
-        "challenger": "ensemble:content(kimi-cold+kimi-hot)",
-        "gain_cases": -0.12,
-        "reason": "confirm-not-better"
+        "challenger": "ensemble:integration(kimi-cold+kimi-hot)",
+        "gain_cases": 0.77,
+        "reason": "below-margin (floor 1 case)"
       },
       {
         "gen": 4,
-        "challenger": "deepen:qa(tool inside ens)",
-        "gain_cases": 0.0,
-        "reason": "search-not-better"
+        "challenger": "deepen:research(tool inside ens)",
+        "gain_cases": -0.38,
+        "reason": "confirm-not-better"
       }
     ],
+    "confirm_claim": {
+      "seed_mean": 0.7669,
+      "seed_measurements": 3,
+      "champion_mean": 0.7868,
+      "champion_measurements": 3,
+      "cases": 1.29,
+      "note": "computed by hand from the ledger with the definition of confirm_claim() (seed: all measurements; champion: re-measurements after promotion only); the run predates the field"
+    },
+    "seed_was": {
+      "config": "the previous champion shipped in this recipe (qa->tool, research->tool); its spec hashes to 927039f7b541, which is W's seed_hash",
+      "note": "the sealed difference is against that design, not the bare model"
+    },
+    "code_note": "params.code.commit is HEAD when the process started (14:16, ledger grow-w-prefill.jsonl); the loop stamped e7e5e63 in its seed row and ffdb5bf in the recipe it wrote, because code_stamp() re-read HEAD at write time while commits landed during the run. The package is byte-identical from 907a976 through e7e5e63 (test-only commits); ffdb5bf is not. Whether the tree was clean at start was not recorded (dirty: null). Fixed in 7d995fa: one stamp per run plus a dirty flag.",
     "runs": {
       "R (96 cases, qadeep added)": {
         "champion": "qa->ensemble, research->tool",
@@ -272,12 +421,32 @@
           0.8393,
           0.8214
         ]
+      },
+      "V (129 cases, crux added; seed = this recipe's previous champion)": {
+        "champion": "content->kimi-hot promoted at gen0 (+1.1 confirm cases) then evaporated to -0.08 by gen4",
+        "sealed": [
+          0.748,
+          0.747
+        ],
+        "verdict": "not separable; not shipped"
+      },
+      "W (129 cases, same split as V; search gate a band, tool +prefill proposable)": {
+        "champion": "qa->tool, research->ensemble(cold+hot)",
+        "sealed": [
+          0.7484,
+          0.8214
+        ],
+        "verdict": "improved, +2.34 of 32 sealed cases, band 1.0; SHIPPED"
       }
     },
     "undecided": {
       "qa_lane": {
         "note": "confirm favoured tool by +1.25 cases, sealed favoured the ensemble by 0.5 — both inside one case, sign flipped. Removing the lane entirely was refused in both runs, so qa needs A lane; which one is not resolved at this case count.",
         "shipped": "tool (cheaper: 1 call vs 3, deterministic vs stochastic)"
+      },
+      "research_lane": {
+        "note": "W: ensemble(cold+hot) over tool(cold) by +1.0 confirm cases at promotion (3w/2l, p=0.5), the revert to tool(cold) refused at -1.5 cases in gen2, sealed +2.34; the tool lane's +prefill refinement was never measured in W (run X does)",
+        "shipped": "ensemble (what the sealed split separates)"
       }
     }
   }
