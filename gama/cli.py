@@ -24,8 +24,8 @@ from .config import (
     trinity_from_config,
 )
 from .decorrelation import analyze as mesh_analyze
-from .grow import (MeasurementFailure, grow, ollama_pool, trace_diff, trace_lines,
-                   trace_rows, trace_summary, write_recipe)
+from .grow import (MeasurementFailure, grow, next_lever_lines, ollama_pool, trace_diff,
+                   trace_lines, trace_rows, trace_summary, write_recipe)
 from .logger import ExecutionLogger
 from .market import analyze as market_analyze
 from .models import ModelTier
@@ -611,6 +611,13 @@ def cmd_grow(args: argparse.Namespace) -> int:
             continue
         sys.stderr.write(f"[gama] promotion gen{e.get('gen')} {e.get('challenger')}: "
                          f"gated on {e['gain_cases']:+} cases, " + ", ".join(parts) + "\n")
+
+    # 次にどこを狙うか。走行が終わった時点で、残っている伸びしろと、そこに見えている症状は
+    # 手元にある。次の走行の設定(suite・pool・処方)はその分布から決まるので、走行自身に
+    # 言わせる(台帳を再生して人が読み直す作業を毎回させない)。
+    # 文言も判定も recipe と同じ関数から取る(二つ書くと、片方だけ直したときに黙って食い違う)
+    for line in next_lever_lines(result):
+        sys.stderr.write(f"[gama] {line[2:] if line.startswith('- ') else line}\n")
 
     # 走行の合否は昇格数ではなく、封をした split が言う。run T は sealed が下がっているのに
     # 「昇格 1・成功」として champion を出していた。数字は出ていたが、誰も判定していなかった。

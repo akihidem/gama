@@ -3194,6 +3194,44 @@ class TestSaturatedClasses(ScriptedCase):
         self.assertTrue(sat, "saturation was not detected after a resume")
         self.assertIn("qa", sat[0]["classes"])
 
+    def test_the_run_names_the_next_lever_in_the_recipe_and_on_stderr(self):
+        from gama.benchmark import SUITES
+        from gama.grow import next_lever_lines
+        # 伸びしろが床(1 問)以上あるクラスは狙える。症状が見えていればそれも言う
+        res = {"headroom": {"research": 4.62, "content": 4.58},
+               "confirm": {"cut_by_class": {"research": 7}, "preamble_by_class": {"content": 12}}}
+        line = next_lever_lines(res)[0]
+        self.assertIn("most room left: `research` 4.62 confirm cases (cut 7)", line)
+        self.assertIn("above the one-case floor", line)
+        # 床に届かないクラスしか残っていなければ、そう言う(狙っても通らない)
+        thin = next_lever_lines({"headroom": {"qa": 0.5}, "confirm": {}})[0]
+        self.assertIn("no known symptom", thin)
+        self.assertIn("cannot be promoted", thin)
+        self.assertEqual(next_lever_lines({}), [])
+        # CLI の行は同じ関数から作る(文言が二重化していれば、この対応が壊れる)
+        Scripted.WINS = {"a": {"qa1"}, "b": {"qa1", "qa2"}}
+        pool = {"a": _lane("a"), "b": _lane("b")}
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "pool.json").write_text(json.dumps(pool), encoding="utf-8")
+            had_suite = SUITES.get("_lever_probe")
+            SUITES["_lever_probe"] = _cases(8)
+            try:
+                err, out = io.StringIO(), io.StringIO()
+                with contextlib.redirect_stderr(err), contextlib.redirect_stdout(out):
+                    cli_main(["grow", "--pool", str(Path(d, "pool.json")),
+                              "--suites", "_lever_probe", "--generations", "1", "--width", "2",
+                              "--ratio", "1:2:1", "--min-margin", "0.05",
+                              "--out", str(Path(d, "l.jsonl"))])
+                res = json.loads(out.getvalue())
+            finally:
+                if had_suite is None:
+                    SUITES.pop("_lever_probe", None)
+                else:
+                    SUITES["_lever_probe"] = had_suite
+        expected = next_lever_lines(res)
+        self.assertTrue(expected, "the run reported no headroom to aim at")
+        self.assertIn(f"[gama] {expected[0][2:]}", err.getvalue())
+
     def test_the_seed_row_says_where_it_loses_and_what_the_diagnosis_sees(self):
         # 走行を 3 時間回してから「content で落ちていた」と知るのは遅い。種の測定の時点で、
         # クラス別の伸びしろと、そこに見えている症状を並べて出す(次に何を変えるかの材料)。
@@ -3211,6 +3249,7 @@ class TestSaturatedClasses(ScriptedCase):
         from gama.benchmark import SUITES
         had = backends_mod._BACKENDS.get("sick2")
         backends_mod._BACKENDS["sick2"] = Sick
+        had_suite = SUITES.get("_room_probe")
         SUITES["_room_probe"] = _cases(8, "qa", "qa") + _cases(8, "research", "re")
         try:
             with tempfile.TemporaryDirectory() as d:
@@ -3225,7 +3264,10 @@ class TestSaturatedClasses(ScriptedCase):
                 rows = [json.loads(ln) for ln in
                         Path(d, "l.jsonl").read_text(encoding="utf-8").splitlines()]
         finally:
-            SUITES.pop("_room_probe", None)
+            if had_suite is None:
+                SUITES.pop("_room_probe", None)
+            else:
+                SUITES["_room_probe"] = had_suite
             if had is None:
                 backends_mod._BACKENDS.pop("sick2", None)
             else:
@@ -3247,6 +3289,7 @@ class TestSaturatedClasses(ScriptedCase):
         pool = {"a": _lane("a"), "b": _lane("b")}
         with tempfile.TemporaryDirectory() as d:
             Path(d, "pool.json").write_text(json.dumps(pool), encoding="utf-8")
+            had_suite = SUITES.get("_band_probe")
             SUITES["_band_probe"] = _cases(8)
             try:
                 err = io.StringIO()
@@ -3256,7 +3299,10 @@ class TestSaturatedClasses(ScriptedCase):
                               "--ratio", "1:2:1", "--repeats", "2",
                               "--out", str(Path(d, "l.jsonl"))])
             finally:
-                SUITES.pop("_band_probe", None)
+                if had_suite is None:
+                    SUITES.pop("_band_probe", None)
+                else:
+                    SUITES["_band_probe"] = had_suite
         out = err.getvalue()
         self.assertIn("the sealed verdict's band is one sealed case", out)
         self.assertIn("The band is a floor, not the measurement's granularity", out)

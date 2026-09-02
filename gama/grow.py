@@ -2589,6 +2589,34 @@ def _prescription_lines(result: dict) -> list[str]:
     return lines
 
 
+def next_lever_lines(result: dict) -> list[str]:
+    """次の走行で狙う場所(残った伸びしろの最大と、そこに見えている症状)。
+
+    recipe を読む人が最初に聞くのは「次に何を変えるか」で、その材料は走行が持っている。
+    伸びしろが 1 問に満たないクラスは、どんな追加変異を当てても昇格の床を越えられない。
+    """
+    # 読めない値(古い result・手組み)は落とす。表示のための行が例外で走行の報告を止めない
+    room = {c: v for c, v in (result.get("headroom") or {}).items()
+            if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)}
+    if not room:
+        return []
+    conf = result.get("confirm") or {}
+    sym: dict[str, dict[str, int]] = {}      # クラス → {症状名: 回数}
+    for field, label in (("cut_by_class", "cut"), ("preamble_by_class", "preamble"),
+                         ("tool_no_code_by_class", "no code")):
+        for c, n in (conf.get(field) or {}).items():
+            sym.setdefault(c, {})[label] = n
+    top = max(room, key=lambda c: (room[c], c))
+    detail = "; ".join(f"{k} {v}" for k, v in sorted((sym.get(top) or {}).items()))
+    # 1 問は**必要条件**の側の床(昇格の δ は drift でこれ以上になりうる)。だから届かない側は
+    # 「どうやっても通らない」と言い切れ、届く側は「床は越えられる」までしか言わない。
+    reach = ("above the one-case floor, so a mutation there can be promoted at all"
+             if room[top] >= 1.0 else
+             "below the one-case floor, so even a perfect fix there cannot be promoted")
+    return [f"- most room left: `{top}` {room[top]:g} confirm cases "
+            f"({detail or 'no known symptom'}) — {reach}"]
+
+
 def trace_lines(result: dict) -> list[str]:
     """call ごとの記録の要約を 1 行にする(recipe と CLI の終了行の両方がこれを使う: 数え方が
     二つあると読み手には別の事実に見える)。trace の無い走行(古い result・台帳無し)では何も
@@ -2693,6 +2721,7 @@ def write_recipe(result: dict, directory, name: Optional[str] = None,
         f"({result['archive_size']} designs measured)",
         *_prescription_lines(result),
         *trace_lines(result),
+        *next_lever_lines(result),
         "- every promotion required a held-out `confirm` win larger than the champion's own "
         "re-measurement drift; no LLM judged anything.",
         f"- grown with: {json.dumps(result.get('params', {}), ensure_ascii=False)}",
