@@ -274,6 +274,79 @@ class Candidate:
     # 鋳造した側が書く: 処方かどうかは並び順だけでなく confirm の挑戦者の優先順位にも効くので、
     # ラベルの末尾を読み直して決めない(ラベルの形が変わっても、この欄は変わらない)。
     remedy: Optional[str] = field(default=None, compare=False)
+    # どの症状に対する治療か("no_code" / "cut")。クラスだけで突き合わせると、症状が別でも
+    # 同じクラスなら処方に化ける(codex 指摘: 切断の症状だけ出ている世代に、no_code の治療で
+    # ある prefill が処方として先頭の席を取る)。診断と治療は対で判定する。
+    treats: Optional[str] = field(default=None, compare=False)
+
+
+MAX_TOKENS_CAP = 8192
+
+
+def _max_tokens_all(spec) -> list:
+    """レーンの中の ``max_tokens`` を全部(深さは問わない)。"""
+    found = []
+
+    def walk(node):
+        if isinstance(node, dict):
+            for k, v in node.items():
+                if k == "max_tokens" and isinstance(v, int) and not isinstance(v, bool):
+                    found.append(v)
+                else:
+                    walk(v)
+        elif isinstance(node, list):
+            for v in node:
+                walk(v)
+
+    walk(spec)
+    return found
+
+
+def _raised_to(before, after) -> Optional[int]:
+    """今回**上がった**枠の新しい値のうち最大(ラベルに書く数)。
+
+    レーン全体の最大を書くと、既に上限に達している内側の枠がある構成で「x8192」と名乗り、
+    実際に治療した不足枠(1536 → 3072)が読めない(codex 指摘)。
+    """
+    grew = Counter(_max_tokens_all(after)) - Counter(_max_tokens_all(before))
+    return max(grew) if grew else None
+
+
+def _with_more_tokens(spec, cap: int = MAX_TOKENS_CAP):
+    """レーンの中の ``max_tokens`` を全部 2 倍(上限で頭打ち)にした写しを返す。上げられる枠が
+    1 つも無ければ ``None``。
+
+    ``max_tokens`` という鍵は backend spec では常に「1 回の生成の上限」を意味する前提で、
+    どの深さにあっても同じ意味として扱う(spec の形はこの repo が決めている)。
+
+    「返答が max_tokens で切れて満点に届かない」症状に対する処方。合成レーン(tool の inner、
+    ensemble の members と aggregator)の中まで一様に上げるのは、これが**レーン 1 本のつまみ**
+    だから: 内側だけ上げても外側で切れる。上限を置くのは、症状が消えない限り毎世代 2 倍を
+    提案できてしまい、箱の文脈長と待ち時間の方が先に壊れるため(上限に達したら処方は出ない
+    ので、ループは別の手を試す)。
+    """
+    raised = [False]
+
+    def walk(node):
+        if isinstance(node, dict):
+            out = {}
+            for k, v in node.items():
+                if k == "max_tokens" and isinstance(v, int) and not isinstance(v, bool):
+                    # 上限に達している枠はそのまま残し、まだ上げられる枠だけ上げる。1 つでも
+                    # 上限済みなら候補ごと捨てる形にすると、内側が既に大きいだけで**外側の
+                    # 明らかに足りない枠**まで治療不能になる(codex 指摘)。2 倍が上限を超える
+                    # 枠は上限まで上げる: 「まだ上限に届いていないのに上げない」帯を作らない。
+                    out[k] = min(v * 2, cap)
+                    raised[0] = raised[0] or out[k] != v
+                else:
+                    out[k] = walk(v)
+            return out
+        if isinstance(node, list):
+            return [walk(v) for v in node]
+        return node
+
+    grown = walk(copy.deepcopy(spec))
+    return grown if raised[0] else None
 
 
 def _with_lane(champion: dict, task_type: str, lane_name: str, lane_spec: dict) -> dict:
@@ -316,6 +389,7 @@ def propose(champion: dict, pool: dict[str, dict], classes: list[str],
             additive_classes: Optional[list[str]] = None,
             allow_default: bool = True,
             no_code_by_class: Optional[dict] = None,
+            cut_by_class: Optional[dict] = None,
             archived: Optional[set[str]] = None) -> list[Candidate]:
     """チャンピオンから 1 手だけ動かした候補を、種類を混ぜて**新顔** ``width`` 本返す。
 
@@ -377,8 +451,13 @@ def propose(champion: dict, pool: dict[str, dict], classes: list[str],
     # 巡回させるため — クラス順に詰めたまま width で切ると、辞書順で先頭のクラスだけが延々
     # 探索され、残りのクラスは一度も触られない(小さい width ほど効く偏り)。
     buckets: dict[str, list] = {k: [] for k in
-                                ("route", "tool", "ensemble", "meshflow", "simplify",
+                                ("route", "tool", "tokens", "ensemble", "meshflow", "simplify",
                                  "default", "deepen")}
+    # 切断の症状(クラス → max_tokens で切られて満点に届かなかった call 数)。他の変異と違い、
+    # 症状のあるクラスにしか鋳造しない: 枠を増やすのは待ち時間とコールの費用を確実に上げる
+    # 一方、切れていないクラスでは効きようがない。探索でなく治療なので、症状が根拠になる。
+    cut = {c: n for c, n in (cut_by_class or {}).items()
+           if isinstance(n, int) and not isinstance(n, bool) and n > 0}
 
     for task_type in ordered_classes:
         cur = _lane_for(champion, task_type)
@@ -414,7 +493,16 @@ def propose(champion: dict, pool: dict[str, dict], classes: list[str],
                            {"backend": "tool", "_grow_base": base,
                             "kwargs": {"inner": copy.deepcopy(cur_spec["kwargs"]["inner"]),
                                        "prefill": ToolBackend.PREFILL}}),
-                remedy=task_type)))
+                remedy=task_type, treats="no_code")))
+        if task_type in cut:                                # ②'' 返答の枠を 2 倍にする
+            bigger = _with_more_tokens(cur_spec)
+            if bigger is not None:
+                name = f"{cur}+tok"
+                got = _raised_to(cur_spec, bigger)
+                buckets["tokens"].append((task_type, Candidate(
+                    f"tokens:{task_type}({base})x{got}", "tokens",
+                    _with_lane(champion, task_type, name, bigger),
+                    remedy=task_type, treats="cut")))
         # ③ 2 モデルの合議。既定は synthesize —— majority は**自由文では機能しない**。逐語一致が
         # まず起きないので Counter が全部 1 になり、most_common が「最初に入れたメンバー」を返す。
         # 実測(graded 20 問): majority 0.705 に対し素の 3B 単体が 0.830、synthesize は 0.975
@@ -502,7 +590,7 @@ def propose(champion: dict, pool: dict[str, dict], classes: list[str],
     # 足す変異だけを additive なクラスに絞る(削る変異 ⑤ はそのまま全クラスに残す)。
     # ここで一括して落とすのは、①〜④⑦ の生成側に条件を撒くと足し忘れた種類から穴が開くため。
     add_set = set(additive)
-    for kind in ("route", "tool", "ensemble", "meshflow", "deepen"):
+    for kind in ("route", "tool", "tokens", "ensemble", "meshflow", "deepen"):
         buckets[kind] = [(tt, c) for (tt, c) in buckets[kind] if tt in add_set]
     # ⑥ 既定レーンの差し替えだけはクラス単位で切れない。**既定に落ちている全クラスへ同時に
     # 効く**ので、「各クラス単独では門を越えないが合計では越える」場合がある(confirm 20 問・
@@ -512,21 +600,32 @@ def propose(champion: dict, pool: dict[str, dict], classes: list[str],
     if not allow_default:
         buckets["default"] = []
 
+    # ``tokens`` は種類の巡回(order)に入れない。症状のあるクラスにしか鋳造されないので必ず
+    # 処方であり、席は下の処方枠で取る。巡回に足すと、既存の種類の**開始位置**まで動いて
+    # 症状と無関係な世代の候補構成が変わる(実測: 既存の巡回テストが 2 本落ちた)。末尾に
+    # 置くのはクラス巡回の offset を既存の種類と同じに保つため。
     queues = {k: _by_class_rotation(buckets[k], ordered_classes, offset + generation)
-              for offset, k in enumerate(order)}
+              for offset, k in enumerate([*order, "tokens"])}
     # 診断で先頭に出すのは prefill だけ(no_code は tool レーンの症状で、処方も prefill だけ)。
     # 症状の多いクラスから、同数はクラス名順。他の種類の順は触らない(診断が名指しするのは
     # 治療 1 本で、「どの種類を試すか」の根拠ではない)。処方の席は下で、巡回の前に取る。
     symptoms = {c: n for c, n in (no_code_by_class or {}).items()
                 if isinstance(n, int) and not isinstance(n, bool) and n > 0}
-    n_lead = 0
-    if symptoms and queues["tool"]:
-        rank = {c: (-n, c) for c, n in symptoms.items()}
-        first = sorted((c for c in queues["tool"] if _prescribed(c, rank)),
+    # 処方は 2 種類ある: no_code → tool レーンの prefill、切断 → 枠を 2 倍。どちらも
+    # 「測定が名指しした治療」なので同じ扱いにする(種類の巡回を待たせない)。
+    leads: list[tuple[tuple, str, "Candidate"]] = []
+    for kind, sym, treats in (("tool", symptoms, "no_code"), ("tokens", cut, "cut")):
+        if not sym or not queues[kind]:
+            continue
+        rank = {c: (-n, c) for c, n in sym.items()}
+        first = sorted((c for c in queues[kind] if _prescribed(c, rank, treats)),
                        key=lambda c: rank[c.remedy])
         lead = {id(c) for c in first}             # 同一性で除く(Candidate は値で等しくなりうる)
-        queues["tool"] = first + [c for c in queues["tool"] if id(c) not in lead]
-        n_lead = len(first)
+        queues[kind] = first + [c for c in queues[kind] if id(c) not in lead]
+        leads += [(rank[c.remedy], kind, c) for c in first]
+    # 席の順は症状の重い順、同数はクラス名順、それも同じなら種類名順(決定的に)
+    leads.sort(key=lambda t: (t[0], t[1]))
+    n_lead = len(leads)
 
     champ_hash = spec_hash(champion)
     archived = set() if archived is None else archived      # spec_hash の集合(exclude と同じ)
@@ -538,10 +637,10 @@ def propose(champion: dict, pool: dict[str, dict], classes: list[str],
     # だと gen3〜5 には tool の席が無く、その世代に昇格した champion の処方は gen6 まで待つ。
     # width 2 なら gen0 の席は simplify と route で、処方は次の世代)。席を食うのは新顔の処方
     # だけ: 測定済みなら消費せず、却下されれば exclude で消えるので、幅を食うのは一度きり。
-    for _ in range(n_lead):
+    for _, kind, _cand in leads:
         if new >= width:
             break
-        cand = queues["tool"].pop(0)
+        cand = queues[kind].pop(0)
         h = spec_hash(cand.spec)
         if h == champ_hash or h in exclude or h in emitted:
             continue
@@ -571,7 +670,7 @@ def propose(champion: dict, pool: dict[str, dict], classes: list[str],
             break
     # 幅を使い切った後も、測定済みの踏み石は残らず出す。巡回の位置次第で出たり出なかったり
     # すると、「archive の点のまま挑戦できる」が実際には巡回の運になる(上の docstring の実測)。
-    for kind in order:
+    for kind in [*order, "tokens"]:      # tokens は巡回の外なので、ここで明示的に含める
         for cand in queues[kind]:
             h = spec_hash(cand.spec)
             if h in archived and h != champ_hash and h not in exclude and h not in emitted:
@@ -637,6 +736,15 @@ class Measurement:
     # 処方(prefill はクラス単位の変異)を向ける先が読めない。空 dict は「tool レーンを通った
     # call でコードが出なかった事は無い」で、古い checkpoint(この欄が無い)も同じ形で復元する。
     tool_no_code_by_class: dict = field(default_factory=dict)
+    # クラス別の「max_tokens で切られて満点に届かなかった」記録(case × repeat)の数。数える
+    # 単位が call でなく記録なのは、finish_reason が 1 記録につき 1 つしか無いから: 合議は
+    # None を名乗り(内側の切断はここに出ない)、tool レーンは自分の内側の理由を名乗る。
+    # つまりこの数は「切断のある構成の下限」で、症状の在り処を指すには足りるが、
+    # 「切れた call の総数」ではない。切断は tool レーンに限らず
+    # どのレーンでも起きるので no_code とは別の症状で、治療も別(枠を増やす / 先頭に道具を置く)。
+    # 満点の切断を数えないのは、処方の席を「切れても正解している」クラスに使わないため
+    # (run Z seed 実測: qa は 4 本切れて全部 1.0、integration は 4 本切れて全部 0.0)。
+    cut_by_class: dict = field(default_factory=dict)
     # 平均点の標準誤差(repeats 間の散らばりから)。同じ設計を同じ case で測り直したとき平均が
     # どれだけ動くかの見積もり。門の δ は「チャンピオン自身の測り直しの揺れ」を実測して使うが、
     # それはチャンピオンの揺れであって挑戦者の揺れではない。この pool のチャンピオン(temperature
@@ -692,12 +800,15 @@ def measure(spec: dict, cases: list[BenchCase], tier: ModelTier = ModelTier.LARG
     # reset を挟み忘れた呼び出し経路からずれが入る(codex diag-r1)。
     ts = {"calls": 0, "ran": 0, "no_code": 0, "empty_out": 0}
     no_code_by_class: dict[str, int] = {}
+    cut_by_class: dict[str, int] = {}
     for r in records:
         d = r.get("tool") or {}
         for k in ts:
             ts[k] += d.get(k, 0)
         if d.get("no_code"):
             no_code_by_class[r["task_type"]] = no_code_by_class.get(r["task_type"], 0) + d["no_code"]
+        if r.get("finish_reason") == "length" and (r.get("score") or 0.0) < 1.0:
+            cut_by_class[r["task_type"]] = cut_by_class.get(r["task_type"], 0) + 1
     return Measurement(score=agg["score"], success_rate=agg["success_rate"],
                        latency_s=agg["latency_s"], n=agg["n"], cases=len(cases),
                        # 丸めは 6 桁。4 桁だと大きい測定で「非ゼロだが 0.0」に潰れ、止める閾値
@@ -707,6 +818,7 @@ def measure(spec: dict, cases: list[BenchCase], tier: ModelTier = ModelTier.LARG
                        tool_calls=ts["calls"], tool_ran=ts["ran"],
                        tool_no_code=ts["no_code"], tool_empty_out=ts["empty_out"],
                        tool_no_code_by_class=dict(sorted(no_code_by_class.items())),
+                       cut_by_class=dict(sorted(cut_by_class.items())),
                        sem=sem)
 
 
@@ -1421,20 +1533,26 @@ def _restore(d: dict) -> "Measurement":
     # 診断の無い古い checkpoint は空で復元する。confirm は毎世代測り直すので、再開後の最初の
     # 世代から診断は戻る。search 側の分だけは次の昇格(champ_search の測り直し)まで無い。
     d.setdefault("tool_no_code_by_class", {})
+    d.setdefault("cut_by_class", {})     # この欄より前の checkpoint は「切断は観測されていない」
     # 揺れの見積もりが無い古い checkpoint は「見積もれなかった」で復元する(0 ではない)。
     d.setdefault("sem", None)
     return Measurement(**d)
 
 
-def _prescribed(cand: "Candidate", symptoms: dict) -> bool:
+def _prescribed(cand: "Candidate", symptoms: dict, treats: Optional[str] = None) -> bool:
     """その候補が、チャンピオンの診断が指した処方か(症状のあるクラスへの ``+prefill``)。
 
     診断は tool レーンの「コードが出なかった call 数」(クラス別)で、処方は今のところ prefill
     だけ。propose の並び順と挑戦者の同点処理が**同じ判定**を使うために分けてある(片方だけ
     直すと、列の先頭に出した処方が同点処理で後回しになる、という食い違いが起きる)。
     どのクラスを治療する候補かは鋳造時に ``Candidate.remedy`` へ書かれていて、ここはそれと
-    診断を突き合わせるだけ(ラベルは人が読む単位で、判定の根拠にしない)。
+    診断を突き合わせるだけ(ラベルは人が読む単位で、判定の根拠にしない)。``treats`` を渡すと
+    症状の種類まで一致を要求する: 診断が 2 種類(no_code と切断)になったので、クラスだけで
+    突き合わせると「切断しか出ていない世代に prefill が処方として席を取る」식の取り違えが
+    起きる(codex 指摘)。
     """
+    if treats is not None and cand.treats != treats:
+        return False
     return cand.remedy is not None and cand.remedy in symptoms
 
 
@@ -1886,9 +2004,12 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
         # むしろ満点のクラスこそ「その構造は何も買っていない」と言える場所になる。
         # 診断は search と confirm の両方から(どちらも今のチャンピオンの測定)。
         symptoms: dict[str, int] = {}
+        cut_symptoms: dict[str, int] = {}
         for m in (champ_search, champ_confirm_now):
             for c, n in (m.tool_no_code_by_class or {}).items():
                 symptoms[c] = symptoms.get(c, 0) + n
+            for c, n in (m.cut_by_class or {}).items():
+                cut_symptoms[c] = cut_symptoms.get(c, 0) + n
         # 測定済み(archive)は幅の外で全部戻ってくる: search の点は設計に付くものでチャンピオンが
         # 替わっても動かないので、帯の内側に残った設計はコール 0 で毎世代挑戦者の候補になる。
         # 世代の初めに写しを取るのは、この世代に測った新顔と、前から archive に居た踏み石を
@@ -1899,7 +2020,7 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
                         additive_classes=[c for c in classes if c not in saturated],
                         allow_default=_default_swap_viable(champion, classes, headroom,
                                                            gate_cases),
-                        no_code_by_class=symptoms, archived=archived_before)
+                        no_code_by_class=symptoms, cut_by_class=cut_symptoms, archived=archived_before)
         if not cands:
             # ここまでに champion を confirm で測っている。止まるからといって捨てると、
             # 最終結果も再開状態も「測る前の値」のまま残る。checkpoint も**実際に出す**
@@ -1973,7 +2094,12 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
                # この世代の診断と、それが指した処方のうち候補に並んだもの。処方が「並んだが席を
                # 取れなかった」のか「測られて負けた」のかを、後から台帳だけで読み分けるため。
                "symptoms": dict(sorted(symptoms.items())),
-               "prescribed": sorted(c.label for c in cands if _prescribed(c, symptoms))}
+               # 切断の症状は no_code と別に残す(治療が別なので、混ぜると台帳から
+               # 「どちらの処方が並んだのか」が読めなくなる)。
+               "cut_symptoms": dict(sorted(cut_symptoms.items())),
+               "prescribed": sorted(c.label for c in cands
+                                    if _prescribed(c, symptoms, "no_code")
+                                    or _prescribed(c, cut_symptoms, "cut"))}
         # 分数のままだと大きさが読めない。床は「1 問ぶん」なので、**case 相当数**で出す。
         # ここが効くのは、床 1/n と効果 S/n の比が **S そのもの**で n に依存しない点:
         # 触っていないクラスの case を足しても比は 1 ミリも動かない。増やして意味があるのは
@@ -1990,8 +2116,9 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
             # 構造の大きさは spec だけで決まり、追加コールを生んでいる当のものなので、
             # 「同点なら安い方」の意図もそのまま保つ(shrink 側の Occam と同じ向き)。
             challenger, chal_search = min(
-                additive, key=lambda t: _challenger_key(*t, prescribed=_prescribed(t[0],
-                                                                                    symptoms)))
+                additive, key=lambda t: _challenger_key(
+                    *t, prescribed=(_prescribed(t[0], symptoms, "no_code")
+                                    or _prescribed(t[0], cut_symptoms, "cut"))))
             # search で band を超えて負けた設計は、**このチャンピオンの下では決着済み**:
             # 挑戦権 ① は search だけで決まり、チャンピオンの search はチャンピオンが替わるまで
             # 測り直されない(= 同じ hash の候補は archive の同じ点を返し続ける)。だから confirm を
@@ -2016,7 +2143,9 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
                         # 挑戦者は必ずこの世代の cands から選ぶ(archive 由来でも cands に並んで
                         # いる)ので、処方の挑戦者は上の prescribed に必ず入っている。台帳の
                         # challenged が listed を超えることはない。
-                        "challenger_prescribed": _prescribed(challenger, symptoms),
+                        "challenger_prescribed": (
+                            _prescribed(challenger, symptoms, "no_code")
+                            or _prescribed(challenger, cut_symptoms, "cut")),
                         "search_band": round(search_band, 4)})
             s_ok, s_why = search_gate(champ_search.score, chal_search.score, search_band)
             if not s_ok:
@@ -2254,33 +2383,46 @@ def _prescription_lines(result: dict) -> list[str]:
     run W の「処方は一度も測られなかった」は手で recipe に書いた。走行が自分で言えることを
     人が後から書き足す形にしない。古い result(欄が無い)では何も言わない。
     """
-    seen = {}
+    seen, cut_seen = {}, {}
     rows = result.get("history") or []
-    diagnosed = 0
+    diagnosed = cut_diagnosed = 0
     for h in rows:
         if h.get("symptoms"):
             diagnosed += 1
+        if h.get("cut_symptoms"):
+            cut_diagnosed += 1
         for c, n in (h.get("symptoms") or {}).items():
             seen[c] = max(seen.get(c, 0), n)
+        # 切断の診断は別に数える。処方が別(枠を 2 倍 / 先頭に道具)なので、混ぜると recipe が
+        # 「どちらの症状で何が並んだのか」を言えなくなる。古い result には欄が無く、空のまま。
+        for c, n in (h.get("cut_symptoms") or {}).items():
+            cut_seen[c] = max(cut_seen.get(c, 0), n)
     # 欄そのものが無い result(途中の履歴だけ・手組み)は世代行から数え直す。欄が無いことを
     # 「処方が無かった」と読むと、並んだ処方を recipe が消す側に倒れる
     ledger = result.get("prescriptions")
     if ledger is None:
         ledger = prescription_ledger(rows)
-    if not seen and not ledger:
+    if not seen and not cut_seen and not ledger:
         return []
     # 「何世代で診断が出たか」と「最悪の世代でいくつか」を両方書く。台帳は世代数で数えるので、
     # 診断の世代数が無いと listed の分母が読めない
     what = (f"in {diagnosed} of {len(rows)} generation(s); most in one generation: "
             + ", ".join(f"{c}: {n}" for c, n in sorted(seen.items())))
+    cut_what = (f"in {cut_diagnosed} of {len(rows)} generation(s); most in one generation: "
+                + ", ".join(f"{c}: {n}" for c, n in sorted(cut_seen.items())))
+    saw = []
+    if seen:
+        saw.append(f"code-less tool replies ({what})")
+    if cut_seen:
+        saw.append(f"replies cut at the token limit ({cut_what})")
     if not ledger:
-        return [f"- the champion's diagnosis saw code-less tool replies ({what}), "
+        return [f"- the champion's diagnosis saw {' and '.join(saw)}, "
                 f"but no prescription was ever listed as a candidate"]
-    if not seen:
+    if not saw:
         # 台帳だけ持つ result(症状の欄が落ちた・手組み): 台帳は消さずに出す
         lines = ["- what became of the prescriptions:"]
     else:
-        lines = [f"- the champion's diagnosis saw code-less tool replies ({what}); "
+        lines = [f"- the champion's diagnosis saw {' and '.join(saw)}; "
                  f"what became of the prescriptions:"]
     for label, e in sorted(ledger.items()):
         # 欠けた段は 0 として書く: 欄が一つ欠けた result で recipe 全体を落とさない

@@ -499,6 +499,29 @@ the generations it was listed in, the confirm measurements it got and the promot
 recipe prints that count. Run W's "the prescription was never measured" was found by replaying
 the ledger and written into the recipe by hand; a run says it itself now.
 
+#### A second symptom, and a second prescription
+
+The trace answers a question the ledger cannot, and the first run to have one asked it
+immediately: of its seed measurement's calls, 26 came back cut at the token limit — 16 on `qa`,
+8 on `integration`, 2 on `content`. The 4 `integration` cuts in the first 76 calls scored 0.0,
+every one of them; the 4 `qa` cuts scored 1.0, every one of them. Same symptom, opposite meaning:
+`qa` runs through a tool lane whose code block had already closed before the budget ran out, and
+`integration` answers with a number at the end of a reply that never arrived.
+
+So truncation is a per-class symptom with a per-class remedy, and the loop now reads it the way
+it reads code-less tool replies. `Measurement.cut_by_class` counts the records that were cut
+*and* missed full marks — a cut that still scores 1.0 is not a symptom and does not earn a seat —
+and `propose` mints one candidate for a symptomatic class: every `max_tokens` in that class's
+lane, at any depth, doubled (capped at 8192, which ends the escalation rather than letting it
+run every generation). It is minted only where the symptom is, because a bigger budget costs
+latency and calls everywhere and can only pay where replies are being cut. It takes a
+prescription's seat, ahead of the kind rotation, and the gates decide it like any other mutation.
+
+Diagnosis and treatment are matched as a pair, not by class: with only truncation showing, a
+`+prefill` for that class is not a prescription and does not take the seat. Getting that wrong
+would hand the first seat of the generation to a treatment for a symptom the measurement did not
+report.
+
 #### Things the loop was doing wrong and could not see
 
 **It was not deterministic.** Among candidates tied on `search`, the challenger was picked by

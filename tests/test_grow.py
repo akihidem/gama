@@ -34,6 +34,7 @@ from gama.config import build_backend, system_from_config
 from gama.backends import (note_served, note_tool, reset_served, reset_tool_stats,
                            served_conflicts, served_map, tool_stats)
 from gama.grow import (
+    MAX_TOKENS_CAP,
     MeasurementFailure,
     sealed_verdict,
     promoted_gain_cases,
@@ -453,6 +454,97 @@ class TestPropose(ScriptedCase):
         champ["kwargs"]["routing_table"]["qa"] = "tool(a)"
         self.assertFalse([c for c in propose(canonical(champ), self.pool, ["qa"], width=20)
                           if c.kind == "tool"])
+
+    def test_a_class_being_cut_at_the_token_limit_gets_a_bigger_budget_proposed(self):
+        # run Z's seed measurement, live: 8 of 76 calls hit the token limit — 4 on `integration`,
+        # every one of them scoring 0.0, and 4 on `qa`, every one of them scoring 1.0 (the tool
+        # lane's code block had already closed). The remedy is per class for exactly that reason,
+        # and it is only minted where the symptom is: a bigger budget costs latency everywhere.
+        lane = {"backend": "ssh-openai", "kwargs": {"ssh_host": "h", "max_tokens": 1536}}
+        pool = {"a": lane, "b": _lane("b")}
+        champ = canonical(seed_champion(pool, "a"))
+        classes = ["integration", "qa"]
+
+        def tokens(**kw):
+            return [c.label for c in propose(champ, pool, classes, width=30, **kw)
+                    if c.kind == "tokens"]
+
+        self.assertEqual(tokens(), [], "no symptom, no prescription")
+        self.assertEqual(tokens(cut_by_class={"qa": 0, "integration": False}), [])
+        self.assertEqual(tokens(cut_by_class={"integration": 4}), ["tokens:integration(a)x3072"])
+        # the remedy is a prescription: it takes a seat ahead of the kind rotation
+        first = propose(champ, pool, classes, width=1, cut_by_class={"integration": 4})
+        self.assertEqual([c.kind for c in first], ["tokens"])
+        # a saturated class is not treated: an additive mutation there cannot be promoted
+        self.assertEqual(tokens(cut_by_class={"integration": 4}, additive_classes=["qa"]), [])
+        # a budget between half the cap and the cap is raised to the cap, not left alone
+        odd = dict(lane, kwargs=dict(lane["kwargs"], max_tokens=MAX_TOKENS_CAP - 1000))
+        champ_odd = canonical(seed_champion({"a": odd, "b": _lane("b")}, "a"))
+        self.assertEqual([c.label for c in propose(champ_odd, {"a": odd}, classes, width=30,
+                                                   cut_by_class={"qa": 2})
+                          if c.kind == "tokens"], [f"tokens:qa(a)x{MAX_TOKENS_CAP}"])
+        # a lane whose inner is already at the cap still gets its other budgets raised
+        from gama.grow import _with_more_tokens
+        pair = {"kwargs": {"members": [{"kwargs": {"max_tokens": MAX_TOKENS_CAP}},
+                                       {"kwargs": {"max_tokens": 1536}}]}}
+        mixed = _with_more_tokens(pair)
+        self.assertEqual([m["kwargs"]["max_tokens"] for m in mixed["kwargs"]["members"]],
+                         [MAX_TOKENS_CAP, 3072])
+        # the label names the budget that was actually raised, not the lane's maximum
+        from gama.grow import _raised_to
+        self.assertEqual(_raised_to(pair, mixed), 3072)
+        # every max_tokens in the lane moves together, and the cap ends the escalation
+        big = dict(lane, kwargs=dict(lane["kwargs"], max_tokens=MAX_TOKENS_CAP // 2))
+        champ_big = canonical(seed_champion({"a": big, "b": _lane("b")}, "a"))
+        self.assertEqual([c.label for c in propose(champ_big, {"a": big}, classes, width=30,
+                                                   cut_by_class={"qa": 2})
+                          if c.kind == "tokens"], [f"tokens:qa(a)x{MAX_TOKENS_CAP}"])
+        maxed = dict(lane, kwargs=dict(lane["kwargs"], max_tokens=MAX_TOKENS_CAP))
+        champ_maxed = canonical(seed_champion({"a": maxed, "b": _lane("b")}, "a"))
+        self.assertEqual([c.kind for c in propose(champ_maxed, {"a": maxed}, classes, width=30,
+                                                  cut_by_class={"qa": 2})
+                          if c.kind == "tokens"], [], "the cap stops the escalation")
+        # an archived tokens prescription comes back outside the width, like every other kind
+        made = propose(champ, pool, classes, width=30, cut_by_class={"integration": 4})
+        tok = [c for c in made if c.kind == "tokens"][0]
+        again = propose(champ, pool, classes, width=1, cut_by_class={"integration": 4},
+                        archived={spec_hash(tok.spec)})
+        self.assertIn(tok.label, [c.label for c in again],
+                      "a measured tokens prescription was dropped by the width")
+        # a lane with no budget to raise has no remedy of this kind
+        self.assertEqual([c.kind for c in propose(canonical(seed_champion({"b": _lane("b")}, "b")),
+                                                  {"b": _lane("b")}, classes, width=30,
+                                                  cut_by_class={"qa": 2}) if c.kind == "tokens"],
+                         [])
+
+    def test_a_cut_call_that_still_scores_full_marks_is_not_a_symptom(self):
+        # the qa half of the same measurement: cut and correct. Prescribing there would spend a
+        # seat and real latency on calls that are already right.
+        from gama.models import ModelTier
+
+        class Cut(ModelBackend):
+            available = True
+
+            def __init__(self, tag="x"):
+                self.tag, self.last_usage = tag, None
+                self.last_finish_reason = None
+
+            def complete(self, prompt, tier, **kw):
+                # 理由は call ごとに名乗る(harness は call の前に木ごと消す)
+                self.last_finish_reason = "length"
+                return "GOOD" if "qa1" in prompt else "BAD"
+
+        had = backends_mod._BACKENDS.get("cut")     # 既にあった登録を消して戻らない形にしない
+        backends_mod._BACKENDS["cut"] = Cut
+        try:
+            m = measure({"backend": "cut"}, _cases(2), ModelTier.LARGE, 1, {}, "seed")
+        finally:
+            if had is None:
+                backends_mod._BACKENDS.pop("cut", None)
+            else:
+                backends_mod._BACKENDS["cut"] = had
+        # both calls were cut; only the one that lost a point is a symptom
+        self.assertEqual(m.cut_by_class, {"qa": 1})
 
     def test_the_diagnosis_puts_the_prefill_for_the_symptomatic_class_first(self):
         # run W: the seed's confirm measurement said no_code 8/72 (all research), and gen1's tool
@@ -2577,6 +2669,31 @@ class TestSearchIsAFilterNotARace(ScriptedCase):
                    "prescriptions": {"p": {"listed": 1}}}
         self.assertIn("`p`: listed in 1 generation(s), confirm-measured 0 time(s), promoted 0",
                       _prescription_lines(partial)[1])
+        # the truncation diagnosis is reported next to the code-less one, with its own count
+        cut_rows = [{"gen": 0, "symptoms": {}, "cut_symptoms": {"integration": 4},
+                     "prescribed": ["tokens:integration(a)x3072"],
+                     "challenger": "tokens:integration(a)x3072", "challenger_prescribed": True,
+                     "challenger_confirm": 0.8, "verdict": "promote"}]
+        cut_lines = _prescription_lines({"history": cut_rows,
+                                         "prescriptions": prescription_ledger(cut_rows)})
+        self.assertIn("replies cut at the token limit (in 1 of 1 generation(s); "
+                      "most in one generation: integration: 4)", cut_lines[0])
+        self.assertNotIn("code-less", cut_lines[0])
+        self.assertIn("  - `tokens:integration(a)x3072`: listed in 1 generation(s), "
+                      "confirm-measured 1 time(s), promoted 1", cut_lines)
+        both = _prescription_lines({"history": rows + cut_rows,
+                                    "prescriptions": prescription_ledger(rows + cut_rows)})
+        # each diagnosis counts its own generations: 3 of 5 saw code-less replies, 1 of 5 cuts
+        self.assertIn("code-less tool replies (in 3 of 5 generation(s)", both[0])
+        self.assertIn("replies cut at the token limit (in 1 of 5 generation(s)", both[0])
+        # a treatment only counts as the prescription for the symptom it treats
+        from gama.grow import Candidate
+        pf = Candidate("tool:qa(a)+prefill", "tool", {}, remedy="qa", treats="no_code")
+        tk = Candidate("tokens:qa(a)x3072", "tokens", {}, remedy="qa", treats="cut")
+        self.assertTrue(_prescribed(pf, {"qa": 1}, "no_code"))
+        self.assertFalse(_prescribed(pf, {"qa": 1}, "cut"))
+        self.assertTrue(_prescribed(tk, {"qa": 1}, "cut"))
+        self.assertFalse(_prescribed(tk, {"qa": 1}, "no_code"))
         # a ledger without any symptoms row still prints (the ledger is not dropped)
         self.assertEqual(_prescription_lines({"history": [], "prescriptions": {
             "p": {"listed": 1, "challenged": 0, "promoted": 0}}})[0],
