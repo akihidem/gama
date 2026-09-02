@@ -193,6 +193,9 @@ What the run showed about the loop, not the model:
   a one-step mutation and could not be proposed at all. `grow` now reads the diagnosis
   (`cc985ab`), keeps every measured design in the running at zero cost (`07e9543`) and gives
   the prescribed design the first seat and the tie; run X measures whether that buys a case.
+  This paragraph was written by hand after replaying the ledger; the ledger now counts what
+  became of each prescription itself (`prescriptions` in the result, one line per prescription
+  in the recipe), so the next run's recipe carries it without a person reading the rows.
 - **The recipe named the wrong code.** The process started at `907a976`. Its seed row says
   `e7e5e63` and the `recipe.md` it wrote says `ffdb5bf`: both were read from `HEAD` at write
   time, while commits landed during the run. The first is harmless (test-only commits, the

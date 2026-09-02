@@ -477,7 +477,12 @@ after, and the challenger goes to `route:content`, `ensemble:research`, `default
 `route:qa`: five generations, never the prescription. So the diagnosis names a *prescription*, and
 the prescription takes the first seat of the generation, ahead of the kind rotation, and wins ties
 for the confirm measurement. It costs one measurement, once: measured, it stays in the pool at zero
-calls; rejected, it is excluded. Whether it buys a confirm case is for the ledger to say.
+calls; rejected, it is excluded. Whether it buys a confirm case is for the ledger to say, and the
+ledger now says it without help: each generation row records the diagnosis and which prescriptions
+were listed, the challenger row says whether it was one, and the result counts per prescription
+the generations it was listed in, the confirm measurements it got and the promotions it won. The
+recipe prints that count. Run W's "the prescription was never measured" was found by replaying
+the ledger and written into the recipe by hand; a run says it itself now.
 
 #### Things the loop was doing wrong and could not see
 

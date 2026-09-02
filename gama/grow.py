@@ -1057,6 +1057,37 @@ def _num(v) -> Optional[float]:
             and math.isfinite(v) else None)
 
 
+def prescription_ledger(history: list) -> dict:
+    """処方(チャンピオン自身の診断が指した候補)が走行の中でどこまで進んだかを世代行から数える。
+
+    run W では診断が research の +prefill を指していたのに、5 世代・5 回の confirm 測定のうち処方が
+    測られた回数は 0 だった。台帳のどこにも「処方が何回列に並び、何回席を取り、何回測られたか」
+    は無く、recipe には手で書くしかなかった。「提案した」は「測った」の必要条件でしかないので、
+    段階ごとに数える: listed = 候補に並んだ世代数 / challenged = confirm を測られた回数 /
+    promoted = 通った回数。search で負けて confirm に届かなかった回は listed にだけ残る。
+    世代行から後で数える(走行中の累積を checkpoint に持たせない): 再開で消えるものを増やさない。
+    鍵は候補の hash でなくラベル(=手): チャンピオンが替わると同じ手でも spec は別物になるが、
+    recipe が答える問いは「この手は測られたか」なので、世代をまたいで同じ手として通算する。
+    """
+    out: dict[str, dict] = {}
+
+    def _entry(label):
+        return out.setdefault(label, {"listed": 0, "challenged": 0, "promoted": 0})
+
+    for h in history or []:
+        for label in h.get("prescribed") or []:
+            _entry(label)["listed"] += 1
+        if h.get("challenger_prescribed") and h.get("challenger"):
+            e = _entry(h["challenger"])
+            # promote は confirm 測定の後にしか出ない。measured の内側で数えて、欠けた行から
+            # challenged 0 / promoted 1 という自己矛盾の台帳を作らない
+            if h.get("challenger_confirm") is not None:
+                e["challenged"] += 1
+                if h.get("verdict") == "promote":
+                    e["promoted"] += 1
+    return out
+
+
 def confirm_claim(seed_scores: list, champion_scores: list, n_confirm: int,
                   promotion_score: Optional[float] = None) -> dict:
     """最終形が confirm で種より何問上に立つか = sealed が検定する仮説の confirm 側の大きさ。
@@ -1698,7 +1729,11 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
                # candidates は挑戦者の候補に並んだ数、new_candidates がこの世代に search を
                # 測った数(= 焚いたコールの側。上の測定ループで実際に数える)。同点だらけの
                # 走行では前者だけ増えていく。
-               "candidates": len(cands), "new_candidates": measured}
+               "candidates": len(cands), "new_candidates": measured,
+               # この世代の診断と、それが指した処方のうち候補に並んだもの。処方が「並んだが席を
+               # 取れなかった」のか「測られて負けた」のかを、後から台帳だけで読み分けるため。
+               "symptoms": dict(sorted(symptoms.items())),
+               "prescribed": sorted(c.label for c in cands if _prescribed(c, symptoms))}
         # 分数のままだと大きさが読めない。床は「1 問ぶん」なので、**case 相当数**で出す。
         # ここが効くのは、床 1/n と効果 S/n の比が **S そのもの**で n に依存しない点:
         # 触っていないクラスの case を足しても比は 1 ミリも動かない。増やして意味があるのは
@@ -1738,6 +1773,10 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
                         # 踏み石から上がった挑戦者か、この世代の新顔か。archive の点で挑戦する
                         # 設計はこの世代に search を測っていない、と台帳だけで読めるように。
                         "challenger_from": "archive" if chal_hash in archived_before else "new",
+                        # 挑戦者は必ずこの世代の cands から選ぶ(archive 由来でも cands に並んで
+                        # いる)ので、処方の挑戦者は上の prescribed に必ず入っている。台帳の
+                        # challenged が listed を超えることはない。
+                        "challenger_prescribed": _prescribed(challenger, symptoms),
                         "search_band": round(search_band, 4)})
             s_ok, s_why = search_gate(champ_search.score, chal_search.score, search_band)
             if not s_ok:
@@ -1913,6 +1952,10 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
         # 偽の警告を出さない。
         "identity_verified": not (resumed_blind and bool(served_map())),
         "history": history, "archive_size": len(archive),
+        # 処方の行方(この区間の世代行から)。0 のまま終わったら recipe がそう言う。派生値だが
+        # claim と同じく result に置く(読む人が最初に開くのは result の JSON)。recipe 側は欄が
+        # 無ければ世代行から数え直すので、欠けても消えない
+        "prescriptions": prescription_ledger(history),
         # 昇格した手の対応のある証拠。平均差だけ見ていると「confirm では伸びたが sealed では
         # しぼんだ/反転した」が説明できない。弱い証拠のまま通った手をここで名指しする。
         "promotion_evidence": [
@@ -1952,6 +1995,48 @@ def _seed_label(seed: Optional[dict]) -> str:
             return "seed (no structure)"
         return "seed (a composite default lane; not the bare model)"
     return f"seed (routes {n} class{'es' if n != 1 else ''}; not the bare model)"
+
+
+def _prescription_lines(result: dict) -> list[str]:
+    """recipe に処方の行方を書く。診断が何も指さなかった走行では何も書かない。
+
+    run W の「処方は一度も測られなかった」は手で recipe に書いた。走行が自分で言えることを
+    人が後から書き足す形にしない。古い result(欄が無い)では何も言わない。
+    """
+    seen = {}
+    rows = result.get("history") or []
+    diagnosed = 0
+    for h in rows:
+        if h.get("symptoms"):
+            diagnosed += 1
+        for c, n in (h.get("symptoms") or {}).items():
+            seen[c] = max(seen.get(c, 0), n)
+    # 欄そのものが無い result(途中の履歴だけ・手組み)は世代行から数え直す。欄が無いことを
+    # 「処方が無かった」と読むと、並んだ処方を recipe が消す側に倒れる
+    ledger = result.get("prescriptions")
+    if ledger is None:
+        ledger = prescription_ledger(rows)
+    if not seen and not ledger:
+        return []
+    # 「何世代で診断が出たか」と「最悪の世代でいくつか」を両方書く。台帳は世代数で数えるので、
+    # 診断の世代数が無いと listed の分母が読めない
+    what = (f"in {diagnosed} of {len(rows)} generation(s); most in one generation: "
+            + ", ".join(f"{c}: {n}" for c, n in sorted(seen.items())))
+    if not ledger:
+        return [f"- the champion's diagnosis saw code-less tool replies ({what}), "
+                f"but no prescription was ever listed as a candidate"]
+    if not seen:
+        # 台帳だけ持つ result(症状の欄が落ちた・手組み): 台帳は消さずに出す
+        lines = ["- what became of the prescriptions:"]
+    else:
+        lines = [f"- the champion's diagnosis saw code-less tool replies ({what}); "
+                 f"what became of the prescriptions:"]
+    for label, e in sorted(ledger.items()):
+        # 欠けた段は 0 として書く: 欄が一つ欠けた result で recipe 全体を落とさない
+        lines.append(f"  - `{label}`: listed in {e.get('listed', 0)} generation(s), "
+                     f"confirm-measured {e.get('challenged', 0)} time(s), "
+                     f"promoted {e.get('promoted', 0)}")
+    return lines
 
 
 def write_recipe(result: dict, directory, name: Optional[str] = None,
@@ -2031,6 +2116,7 @@ def write_recipe(result: dict, directory, name: Optional[str] = None,
         f"{result['search']['score']} |", "",
         f"- promotions: {result['promotions']} over {result['generations_run']} generations "
         f"({result['archive_size']} designs measured)",
+        *_prescription_lines(result),
         "- every promotion required a held-out `confirm` win larger than the champion's own "
         "re-measurement drift; no LLM judged anything.",
         f"- grown with: {json.dumps(result.get('params', {}), ensure_ascii=False)}",

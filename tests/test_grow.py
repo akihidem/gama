@@ -2379,8 +2379,87 @@ class TestSearchIsAFilterNotARace(ScriptedCase):
             # without the diagnosis the same width gives the rotation's seats and no prescription
             plain = [c.label for c in propose(canonical(seed), pool, ["qa"], width=2)]
             self.assertNotIn("tool:qa(a)+prefill", plain, plain)
+            # The ledger says what became of the prescription, stage by stage. Run W's recipe
+            # had to say "never measured" by hand; a run says it itself now.
+            self.assertGreater(gen0["symptoms"].get("qa", 0), 0, gen0)
+            self.assertEqual(gen0["prescribed"], ["tool:qa(a)+prefill"])
+            self.assertTrue(gen0["challenger_prescribed"])
+            self.assertEqual(res["prescriptions"],
+                             {"tool:qa(a)+prefill": {"listed": 1, "challenged": 1,
+                                                     "promoted": 0}})
+            # the challenger is always one of the generation's candidates (archive members
+            # included), so a prescription is never measured without having been listed
+            for e in res["prescriptions"].values():
+                self.assertLessEqual(e["promoted"], e["challenged"])
+                self.assertLessEqual(e["challenged"], e["listed"])
+            with tempfile.TemporaryDirectory() as d:
+                text = (write_recipe(res, d) / "recipe.md").read_text(encoding="utf-8")
+            self.assertIn("`tool:qa(a)+prefill`: listed in 1 generation(s), confirm-measured "
+                          "1 time(s), promoted 0", text)
         finally:
             backends_mod._BACKENDS.pop("chatty", None)
+
+    def test_the_prescription_ledger_counts_each_stage_from_the_rows(self):
+        from gama.grow import prescription_ledger, _prescription_lines
+        rows = [
+            # listed, took the seat, lost on search: no confirm measurement
+            {"gen": 0, "symptoms": {"research": 6}, "prescribed": ["tool:research(x)+prefill"],
+             "challenger": "tool:research(x)+prefill", "challenger_prescribed": True,
+             "challenger_confirm": None, "verdict": "reject"},
+            # listed, but a tie went to another design (run W gen1)
+            {"gen": 1, "symptoms": {"research": 8, "qa": 2},
+             "prescribed": ["tool:research(x)+prefill", "tool:qa(x)+prefill"],
+             "challenger": "ensemble:research(x+y)", "challenger_prescribed": False,
+             "challenger_confirm": 0.78, "verdict": "promote"},
+            # measured and promoted
+            {"gen": 2, "symptoms": {"qa": 2}, "prescribed": ["tool:qa(x)+prefill"],
+             "challenger": "tool:qa(x)+prefill", "challenger_prescribed": True,
+             "challenger_confirm": 0.8, "verdict": "promote"},
+            # no diagnosis this generation: nothing prescribed, nothing counted
+            {"gen": 3, "symptoms": {}, "prescribed": [], "challenger": "route:qa->y",
+             "challenger_prescribed": False, "challenger_confirm": 0.7, "verdict": "reject"},
+        ]
+        self.assertEqual(prescription_ledger(rows), {
+            "tool:research(x)+prefill": {"listed": 2, "challenged": 0, "promoted": 0},
+            "tool:qa(x)+prefill": {"listed": 2, "challenged": 1, "promoted": 1}})
+        lines = _prescription_lines({"history": rows,
+                                     "prescriptions": prescription_ledger(rows)})
+        self.assertIn("in 3 of 4 generation(s); most in one generation: qa: 2, research: 8",
+                      lines[0])
+        # a promote row that never got a confirm measurement is not this loop's; it counts
+        # as neither measured nor promoted rather than as a contradiction (challenged 0 / promoted 1)
+        odd = [{"gen": 0, "symptoms": {"qa": 1}, "prescribed": ["p"], "challenger": "p",
+                "challenger_prescribed": True, "challenger_confirm": None, "verdict": "promote"}]
+        self.assertEqual(prescription_ledger(odd),
+                         {"p": {"listed": 1, "challenged": 0, "promoted": 0}})
+        # one line per label, sorted by label, so the never-measured one reads the same way
+        self.assertIn("  - `tool:research(x)+prefill`: listed in 2 generation(s), confirm-measured "
+                      "0 time(s), promoted 0", lines)
+        self.assertIn("  - `tool:qa(x)+prefill`: listed in 2 generation(s), confirm-measured "
+                      "1 time(s), promoted 1", lines)
+        # symptoms but nothing ever listed (the lane became an ensemble: no +prefill lands)
+        only = [{"gen": 0, "symptoms": {"research": 6}, "prescribed": [], "challenger": "x",
+                 "challenger_prescribed": False, "challenger_confirm": 0.5, "verdict": "reject"}]
+        self.assertEqual(prescription_ledger(only), {})
+        self.assertIn("no prescription was ever listed",
+                      _prescription_lines({"history": only, "prescriptions": {}})[0])
+        # a result without the ledger field counts the rows itself (a partial result must
+        # not read as "nothing was listed"); a partial entry prints its missing stages as 0
+        self.assertEqual(_prescription_lines({"history": rows}),
+                         _prescription_lines({"history": rows,
+                                              "prescriptions": prescription_ledger(rows)}))
+        partial = {"history": [dict(only[0], prescribed=["p"])],
+                   "prescriptions": {"p": {"listed": 1}}}
+        self.assertIn("`p`: listed in 1 generation(s), confirm-measured 0 time(s), promoted 0",
+                      _prescription_lines(partial)[1])
+        # a ledger without any symptoms row still prints (the ledger is not dropped)
+        self.assertEqual(_prescription_lines({"history": [], "prescriptions": {
+            "p": {"listed": 1, "challenged": 0, "promoted": 0}}})[0],
+            "- what became of the prescriptions:")
+        # an old result or a run with no symptoms says nothing
+        self.assertEqual(_prescription_lines({"history": [{"gen": 0}]}), [])
+        self.assertEqual(_prescription_lines({}), [])
+        self.assertEqual(prescription_ledger([]), {})
 
 
 class TestSaturatedClasses(ScriptedCase):
