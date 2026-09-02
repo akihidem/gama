@@ -1,4 +1,4 @@
-"""L0 for the source itself: a name defined twice in one body is a defect, not a style nit.
+"""L0 for the source itself: an unconditional ``def``/``class`` repeated in one body is a defect.
 
 Why this file exists (2026-09-02): ``gama/grow.py`` carried two ``_atomic_lane``
 definitions. Python raises nothing for that; the later one silently replaced the one
@@ -14,7 +14,11 @@ name appears once. ``@property`` followed by ``@x.setter`` / ``@x.deleter`` is t
 legitimate reason for a repeated name inside a class, so those are counted as their
 own kind of definition: a getter, one setter and one deleter of ``x`` are fine, and a
 second setter of ``x`` is the same silent replacement this file is here to catch.
-Bodies of functions are not scanned (a redefinition there is local and short-lived).
+What this floor does *not* promise: definitions nested under ``if``/``try``/``with``
+(a conditional definition is usually a deliberate fallback, and the two branches of
+one ``try`` are not a redefinition), rebinding by assignment or import (``f = ...``),
+and function bodies (a redefinition there is local and short-lived). The defect this
+was written for is the plain, unconditional second ``def`` that an edit left behind.
 """
 import ast
 import collections
