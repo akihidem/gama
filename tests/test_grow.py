@@ -3194,6 +3194,51 @@ class TestSaturatedClasses(ScriptedCase):
         self.assertTrue(sat, "saturation was not detected after a resume")
         self.assertIn("qa", sat[0]["classes"])
 
+    def test_the_seed_row_says_where_it_loses_and_what_the_diagnosis_sees(self):
+        # 走行を 3 時間回してから「content で落ちていた」と知るのは遅い。種の測定の時点で、
+        # クラス別の伸びしろと、そこに見えている症状を並べて出す(次に何を変えるかの材料)。
+        class Sick(ModelBackend):
+            available = True
+
+            def __init__(self, tag="x"):
+                self.tag, self.last_usage = tag, None
+                self.last_finish_reason = None
+
+            def complete(self, prompt, tier, **kw):
+                self.last_finish_reason = "length"
+                return "Sure! Here's the answer: BAD"
+
+        from gama.benchmark import SUITES
+        had = backends_mod._BACKENDS.get("sick2")
+        backends_mod._BACKENDS["sick2"] = Sick
+        SUITES["_room_probe"] = _cases(8, "qa", "qa") + _cases(8, "research", "re")
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                Path(d, "pool.json").write_text(
+                    json.dumps({"x": {"backend": "sick2"}, "y": {"backend": "sick2"}}),
+                    encoding="utf-8")
+                err = io.StringIO()
+                with contextlib.redirect_stderr(err):
+                    cli_main(["grow", "--pool", str(Path(d, "pool.json")),
+                              "--suites", "_room_probe", "--generations", "1", "--width", "1",
+                              "--ratio", "1:2:1", "--out", str(Path(d, "l.jsonl"))])
+                rows = [json.loads(ln) for ln in
+                        Path(d, "l.jsonl").read_text(encoding="utf-8").splitlines()]
+        finally:
+            SUITES.pop("_room_probe", None)
+            if had is None:
+                backends_mod._BACKENDS.pop("sick2", None)
+            else:
+                backends_mod._BACKENDS["sick2"] = had
+        seed = [r for r in rows if r["event"] == "seed"][0]
+        # 全問落とすので、伸びしろは confirm のクラス別 case 数そのもの
+        self.assertEqual(set(seed["headroom"]), {"qa", "research"})
+        self.assertGreater(sum(seed["headroom"].values()), 0)
+        out = err.getvalue()
+        self.assertIn("where the seed loses, in confirm cases:", out)
+        self.assertIn("cut", out)
+        self.assertIn("preamble", out)
+
     def test_the_cli_calls_the_sealed_band_a_floor_rather_than_a_resolution(self):
         # 「分解能」と書くと --repeats を上げれば下がると読める(sealed の点は 1/R 問きざみで
         # 動く)。1 問なのは判定の床の方で、下げる手は sealed の問数を増やすこと。

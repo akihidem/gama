@@ -2062,6 +2062,12 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
           "margin_floor": round(margin_floor, 4),
           "margin_floor_source": "auto(one confirm case)" if min_margin is None else "explicit",
           "margin_floor_coarse": coarse,
+          # 種がどのクラスで何問落としているか(confirm の伸びしろ)。台帳の行は要約しか
+          # 持たない(per_case は落とす)ので、ここに無いと「どこで負けているか」を後から
+          # 台帳だけでは言えない。次の走行で何を変えるかは、まずこの分布で決まる。
+          "headroom": {c: round(v, 2)
+                       for c, v in sorted(class_headroom(champ_confirm,
+                                                         splits["confirm"]).items())},
           "splits": {k: [c.case_id for c in v] for k, v in splits.items()}})
 
     # 種の測定が終わった時点でも checkpoint を打つ。世代ごとの checkpoint だけだと、

@@ -397,6 +397,28 @@ def cmd_grow(args: argparse.Namespace) -> int:
                                  + ", ".join(f"{c} {symptoms[c]}" for c in order)
                                  + " (calls, search+confirm); their +prefill is proposed "
                                    "before the other tool mutations\n")
+            # どのクラスで何問落としていて、そのうち診断が見えている症状はどれか。走行を
+            # 3 時間回してから「content で落ちていた」と知るのは遅い。次に何を変えるか
+            # (suite・レーン・処方)は、この 1 行が指す場所から決まる。
+            room = row.get("headroom") or {}
+            if room:
+                seen_sym = {}
+                for _k in ("search", "confirm"):
+                    m = row.get(_k) or {}
+                    for _field, _label in (("cut_by_class", "cut"),
+                                           ("preamble_by_class", "preamble"),
+                                           ("tool_no_code_by_class", "no code")):
+                        for _c, _n in (m.get(_field) or {}).items():
+                            seen_sym.setdefault(_c, {})
+                            seen_sym[_c][_label] = seen_sym[_c].get(_label, 0) + _n
+                parts = []
+                for c in sorted(room, key=lambda c: (-room[c], c)):
+                    sym = seen_sym.get(c) or {}
+                    detail = ("; ".join(f"{k} {v}" for k, v in sorted(sym.items()))
+                              if sym else "no known symptom")
+                    parts.append(f"{c} {room[c]:g} ({detail})")
+                sys.stderr.write("[gama] where the seed loses, in confirm cases: "
+                                 + ", ".join(parts) + "\n")
             # sealed が何を言えるかは封を開ける前に決まっている。1 問の帯を confirm の問数に
             # 直した量より小さくしか種の上に立てなかった最終形は、転移していても NOT SEPARABLE
             # で終わる。run T/V がそれで、走行後に「分からない」と読むのは 3 時間遅い。
