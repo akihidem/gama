@@ -406,6 +406,20 @@ Those are skipped now. Shrink mutations are *not* skipped there: the gates are a
 (additions must be better, removals need only be not worse), so a saturated class is the best
 place to show a structure is buying nothing, not a place to stop looking.
 
+**`--suite edge` is what to add when `crux` saturates in turn.** It did: the run seeded from the
+shipped champion (which already routes `qa` through a tool lane) reported `code_implementation`
+down to 0.5 cases of headroom and `qa` to 0.25 on the search split, and skipped both classes for
+additive mutations from its third generation on. That is `crux` working as designed — it aimed
+at problems a program solves, so a lane that runs programs takes them — and it is the next
+ceiling. `edge` aims one band over: 20 cases where **the obvious program is wrong**. Greedy coin
+change on `[1, 3, 4]`, RPN division that truncates toward zero rather than down, `*` that needs
+backtracking, run-length counts with two digits, `next_permutation` over repeated letters; and
+for the classes a program cannot help with, readings that look settled and are not (how many
+times the hands of a clock coincide in a day). Writing code is no longer the whole skill there,
+so a tool lane cannot take the suite by itself. Every answer was derived by brute force or
+checked against an independent computation, and each of the eight code cases carries at least
+one argument that separates a correct implementation from the plausible wrong one.
+
 #### A tool lane has a precondition, and it can fail exactly where it would help
 
 `crux` was built to un-saturate this box, and it did: the bare model scores 0.306 on it against

@@ -283,7 +283,12 @@ class SshOpenAIBackend(ModelBackend):
         # that regardless of what `path` contains (port is already int()-coerced, so it
         # can't carry shell metacharacters).
         url = f"http://localhost:{int(self.port)}{self.path}"
-        return (f"curl -s -X POST {shlex.quote(url)} "
+        # `-S` は「静かにしたまま、失敗の理由だけは stderr に出す」。`-s` だけだと接続拒否も
+        # タイムアウトも**無言で終了コードだけ**になり、こちらの RuntimeError が「failed: 」で
+        # 終わる(2026-09-02 実測: 走行が 5 時間目に止まった時、台帳にも trace にも理由が
+        # 残らなかった。サーバが落ちたのか ssh が切れたのか箱ごと落ちたのかを、後から
+        # 区別できない)。理由は 1 行で、これが走行を止めた出来事の唯一の記録になる。
+        return (f"curl -sS -X POST {shlex.quote(url)} "
                 f"-H 'Content-Type: application/json' --data-binary @-")
 
     def _ssh_cmd(self) -> list:
@@ -310,10 +315,27 @@ class SshOpenAIBackend(ModelBackend):
             payload["temperature"] = self.temperature
         proc = subprocess.run(self._ssh_cmd(), input=json.dumps(payload),
                               capture_output=True, text=True, timeout=self.timeout)
+        where = f"{self.ssh_host}:{int(self.port)}{self.path}"
         if proc.returncode != 0:
+            # 理由が空でも「空だった」と書く: 空文字を素通しすると "failed: " で終わる行が
+            # 台帳に残り、読む側は理由が無いのか記録し損ねたのか区別できない。
+            why = proc.stderr.strip()[:300] or f"no stderr (exit {proc.returncode})"
+            raise RuntimeError(f"ssh-openai ({where}) failed: {why}")
+        try:
+            data = json.loads(proc.stdout)
+        except json.JSONDecodeError as e:
+            # HTTP エラーの本文・空応答はここに来る(curl は 4xx/5xx でも終了コード 0)。
+            # 素の JSONDecodeError は「line 1 column 1」としか言わず、どの箱のどの口が
+            # 何を返したかが消える。返ってきた頭を添えて、その 1 行で分かるようにする。
+            head = (proc.stdout or "").strip()[:200]
             raise RuntimeError(
-                f"ssh-openai ({self.ssh_host}) failed: {proc.stderr.strip()[:300]}")
-        data = json.loads(proc.stdout)
+                f"ssh-openai ({where}) returned no JSON ({e}); first bytes: {head!r}") from e
+        # dict 以外(配列・文字列)もここで断る: 素通しすると次の `.get` が AttributeError に
+        # なり、せっかく足した「どの箱の何が返ってきたか」が付かない例外になる(codex 指摘)。
+        if not isinstance(data, dict) or not data.get("choices"):
+            # サーバが JSON で断った形(llama.cpp の {"error": {...}}・model 名違いなど)。
+            raise RuntimeError(
+                f"ssh-openai ({where}) returned no choices: {json.dumps(data)[:200]}")
         usage = data.get("usage") or {}
         if usage:
             pt, ct = usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0)

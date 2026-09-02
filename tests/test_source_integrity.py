@@ -14,11 +14,29 @@ name appears once. ``@property`` followed by ``@x.setter`` / ``@x.deleter`` is t
 legitimate reason for a repeated name inside a class, so those are counted as their
 own kind of definition: a getter, one setter and one deleter of ``x`` are fine, and a
 second setter of ``x`` is the same silent replacement this file is here to catch.
+The same rule covers plain module- and class-level *bindings* (``X = ...``,
+``X: T = ...``) since 2026-09-02, when ``tests/test_suite_integrity.py`` grew a second
+``_BALANCED`` reference program and the later table silently became the reference
+answer for a case in another suite. There the two disagreed and a test went red, but
+the shape of the defect is the ``def`` one and its usual outcome is quieter: a case
+scored against the wrong answer.
+
+Both checks run over the tests directory as well as the package. The two real defects
+found on the day the binding check was written were both in tests: the duplicate
+reference table above, and a ``test_saturation_still_applies_after_a_resume`` written
+twice in one class, where the first (which checks something the second does not) had
+never run.
+
+The binding rule is deliberately strict and has no allowlist: a deliberate second
+binding of one name at module level is indistinguishable, from here, from the defect,
+and the way past the floor is a distinct name (or a conditional, which is not counted).
+
 What this floor does *not* promise: definitions nested under ``if``/``try``/``with``
 (a conditional definition is usually a deliberate fallback, and the two branches of
-one ``try`` are not a redefinition), rebinding by assignment or import (``f = ...``),
-and function bodies (a redefinition there is local and short-lived). The defect this
-was written for is the plain, unconditional second ``def`` that an edit left behind.
+one ``try`` are not a redefinition), rebinding by import, tuple unpacking, augmented
+assignment (``X += ...``), and function bodies (a redefinition there is local and
+short-lived). The defect this was written for is the plain, unconditional second
+definition that an edit left behind.
 """
 import ast
 import collections
@@ -27,7 +45,13 @@ import tempfile
 import unittest
 
 PACKAGE = pathlib.Path(__file__).resolve().parent.parent / "gama"
+TESTS = pathlib.Path(__file__).resolve().parent
 DEFS = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+
+
+def _sources():
+    """The files both floors run over: the package, and the suite that checks it."""
+    return sorted(PACKAGE.rglob("*.py")) + sorted(TESTS.glob("*.py"))
 
 
 def _role(node, in_class):
@@ -66,6 +90,36 @@ def duplicate_definitions(path):
                 scan(n.body, f"{scope}.{n.name}", True)
 
     scan(tree.body, path.stem, False)
+    return found
+
+
+def duplicate_bindings(path):
+    """Return ``[(scope, name, count)]`` for every name *assigned* twice in one body.
+
+    Only plain single-name targets at module or class level, and only unconditional
+    ones (the same scope rule as ``duplicate_definitions``): a name bound under an
+    ``if``/``try`` is a deliberate fallback, and tuple unpacking (``a, b = ...``) is a
+    different idiom that is legitimately repeated. A bare annotation (``T: int``) binds
+    nothing, so it does not count against the assignment that follows it.
+    """
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    found = []
+
+    def bound(n):
+        if isinstance(n, ast.Assign):
+            return [t.id for t in n.targets if isinstance(t, ast.Name)]
+        if isinstance(n, ast.AnnAssign) and isinstance(n.target, ast.Name) and n.value is not None:
+            return [n.target.id]
+        return []
+
+    def scan(body, scope):
+        counts = collections.Counter(name for n in body for name in bound(n))
+        found.extend((scope, name, c) for name, c in counts.items() if c > 1)
+        for n in body:
+            if isinstance(n, ast.ClassDef):
+                scan(n.body, f"{scope}.{n.name}")
+
+    scan(tree.body, path.stem)
     return found
 
 
@@ -125,7 +179,8 @@ def stranded_tests(path):
 
 class TestNoShadowedDefinitions(unittest.TestCase):
     def test_every_module_defines_each_name_once(self):
-        modules = sorted(PACKAGE.rglob("*.py"))   # subpackages too, should any appear
+        # the tests are scanned too: both defects the binding check found were in them
+        modules = _sources()
         self.assertGreater(len(modules), 5, "the package moved; point PACKAGE at it")
         dups = [(str(p.name), *d) for p in modules for d in duplicate_definitions(p)]
         self.assertEqual(dups, [], f"a later definition silently wins: {dups}")
@@ -168,6 +223,35 @@ class TestNoShadowedDefinitions(unittest.TestCase):
                "def x():\n    return 1\n\n"
                "@x.setter\ndef x(v):\n    pass\n")
         self.assertEqual(self._scan(src), [("probe", "x", 2)])
+
+
+    def test_every_module_binds_each_name_once(self):
+        modules = _sources()
+        dups = [(str(p.name), *d) for p in modules for d in duplicate_bindings(p)]
+        self.assertEqual(dups, [], f"a later binding silently wins: {dups}")
+
+    def _scan_bindings(self, src):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = pathlib.Path(d) / "probe.py"
+            tmp.write_text(src, encoding="utf-8")
+            return duplicate_bindings(tmp)
+
+    def test_the_binding_check_sees_a_rebound_constant(self):
+        # the shape of the 2026-09-02 defect: one table name, two tables
+        self.assertEqual(self._scan_bindings("X = 1\nY = 2\nX = 3\n"), [("probe", "X", 2)])
+
+    def test_a_rebound_class_attribute_is_seen_in_its_class(self):
+        src = "class A:\n    x = 1\n    y = 2\n    x = 3\n"
+        self.assertEqual(self._scan_bindings(src), [("probe.A", "x", 2)])
+
+    def test_conditional_bindings_and_locals_are_left_alone(self):
+        src = ("import sys\n"
+               "if sys.platform:\n    X = 1\nelse:\n    X = 2\n"
+               "def f():\n    y = 1\n    y = 2\n    return y\n"
+               "A, B = 1, 2\nB, A = 2, 1\n"
+               "N = 0\nN += 1\n"
+               "T: int\nT = 3\n")
+        self.assertEqual(self._scan_bindings(src), [])
 
 
 class TestNoStrandedTests(unittest.TestCase):

@@ -1551,6 +1551,192 @@ CRUX_SUITE: list[BenchCase] = [
 
 
 
+# --------------------------------------------------------------------------- #
+# edge — 「自明な答えが間違い」の帯。crux の次の飽和への答え
+# --------------------------------------------------------------------------- #
+# run X(crux 込み 129 問)で search の code_implementation は伸びしろ 0.5 問、qa は 0.25 問に
+# 飽和し、その 2 クラスは gen2 から毎世代「additive mutation を出せない」で飛ばされた。
+# crux は「48B が単体では落とすがプログラムなら取れる」帯を狙ったので、tool レーンが
+# 入った瞬間に qa/code は満点近くまで行く(それが狙いどおりの結果で、次の飽和)。
+#
+# ここは違う帯を狙う: **プログラムを書いても、素直に書くと落ちる**問題。貪欲法が最適でない
+# (min_coins)、境界が噛む(触れている区間・多桁の反復数・0 除算の丸め方向)、後戻りが要る
+# (wildcard)、重複のある順列、の類で、コードが書ける設計と「正しく書ける」設計の差が
+# 問数として現れる。qa/research は「コードが直接には解けない」言い回しの罠(時計の重なりは
+# 24 でなく 22、家の並びの推理)。答えはすべて総当たり/検算して確かめた値。
+def _chk_three_toad_sentences(out: str) -> float:
+    """ちょうど 3 文・各文に toad・各文 8 語以下(3 つの制約を同時に満たすかを見る)。
+
+    語は単数 `toad` のみ(既存の `wide-toad` case と同じ規約)。`toads?` まで許すと prompt が
+    要求した語と採点する語がずれ、採点の方が緩い分だけ「守っていない返答」が通る(codex 指摘)。
+    """
+    o = (out or "").strip()
+    sents = [x.strip() for x in re.split(r"(?<=[.!?])\s+", o) if x.strip()]
+    if len(sents) != 3:
+        return 0.0
+    ok = all(re.search(r"\btoad\b", x.lower()) and len(re.findall(r"[A-Za-z']+", x)) <= 8
+             for x in sents)
+    return 1.0 if ok else 0.0
+
+
+def _last_upper_word(word: str) -> Callable[[str], float]:
+    """最後の英字語が word と**大小まで**一致する。
+
+    変換手順そのものに「大文字にする」が入っている case 用(codex 指摘)。`_last_word` は
+    大小を無視するので、そこを測りたい case では採点が prompt より緩くなる。
+    """
+    def chk(out: str) -> float:
+        toks = re.findall(r"[A-Za-z]+", out or "")
+        return 1.0 if toks and toks[-1] == word else 0.0
+    return chk
+
+
+def _chk_alpha_sentence(out: str) -> float:
+    """10 語ちょうど・語が(大小無視で)辞書順・重複なし・**1 文**。語順の制約は各語に効く。
+
+    「1 文」も prompt が課した制約なので数える(codex 指摘): 語の条件だけ見ると
+    `A big. Cat dozed ...` のような複数文が通り、採点が prompt より緩くなる。
+    """
+    o = (out or "").strip()
+    words = [w.lower() for w in re.findall(r"[A-Za-z']+", o)]
+    # 終端以外に文末記号が無いこと。`[.!?]\s` だけだと `A.Big ...` のような空白無しの
+    # 2 文が 1 文として通る(codex 指摘)。
+    one_sentence = o.endswith((".", "!", "?")) and not re.search(r"[.!?]", o[:-1])
+    return 1.0 if (one_sentence and len(words) == 10 and words == sorted(words)
+                   and len(set(words)) == 10) else 0.0
+
+
+EDGE_SUITE: list[BenchCase] = [
+    # --- code_implementation: 素直に書くと落ちる関数 ------------------------------- #
+    BenchCase("edge-code-mincoins", "code_implementation",
+              "Write a Python function `min_coins(coins, amount)` returning the fewest coins "
+              "(any coin may be used any number of times) that sum to `amount`, or -1 if it "
+              "cannot be made. Return ONLY the function definition, no prose.",
+              # [1, 3, 4] で 6 と [9, 6, 5, 1] で 11 は貪欲法が 3 枚と答える(最適は 2)
+              _func("min_coins", [(([1, 3, 4], 6), 2), (([2], 3), -1), (([1, 2, 5], 11), 3),
+                                  (([5, 10], 0), 0), (([9, 6, 5, 1], 11), 2)])),
+    BenchCase("edge-code-covered", "code_implementation",
+              "Write a Python function `covered_length(intervals)` where `intervals` is a list "
+              "of [start, end] integer pairs with start <= end (possibly overlapping, in any "
+              "order); return the "
+              "total length covered by their union, where the length of one pair is end minus "
+              "start. Return ONLY the function definition, no prose.",
+              # 重なりの二重計上と、触れている区間([1,4],[4,5])の扱いで割れる
+              _func("covered_length", [(([[1, 3], [2, 6], [8, 10]],), 7), (([[1, 4], [4, 5]],), 4),
+                                       (([],), 0), (([[1, 10], [2, 3]],), 9),
+                                       (([[5, 6], [1, 2]],), 2)])),
+    BenchCase("edge-code-rpn", "code_implementation",
+              "Write a Python function `rpn(tokens)` evaluating a list of string tokens in "
+              "reverse Polish notation with the operators + - * / on integers, where division "
+              "truncates toward zero. Return the integer result. Return ONLY the function "
+              "definition, no prose.",
+              # Python の // は負の商を下へ丸める: 7 / -2 は -3 でなく -4 になる罠
+              _func("rpn", [((["2", "1", "+", "3", "*"],), 9), ((["4", "13", "5", "/", "+"],), 6),
+                            ((["7", "-2", "/"],), -3),
+                            ((["10", "6", "9", "3", "+", "-11", "*", "/", "*", "17", "+",
+                               "5", "+"],), 22),
+                            ((["-7", "2", "/"],), -3)])),
+    BenchCase("edge-code-wildcard", "code_implementation",
+              "Write a Python function `wildcard(s, p)` returning True if the whole string `s` "
+              "matches pattern `p`, where `?` matches exactly one character and `*` matches "
+              "any sequence of characters including the empty one. Return ONLY the function "
+              "definition, no prose.",
+              # `*` の後戻り(adceb / *a*b)と、空文字・末尾 `*a` の境界
+              _func("wildcard", [(("aa", "a"), False), (("aa", "*"), True), (("cb", "?a"), False),
+                                 (("adceb", "*a*b"), True), (("acdcb", "a*c?b"), False),
+                                 (("", "*"), True), (("", ""), True), (("ab", "*a"), False),
+                                 (("mississippi", "m??*ss*?i*pi"), False)])),
+    BenchCase("edge-code-lis", "code_implementation",
+              "Write a Python function `lis_length(nums)` returning the length of the longest "
+              "STRICTLY increasing subsequence of the list `nums` (0 for an empty list). "
+              "Return ONLY the function definition, no prose.",
+              _func("lis_length", [(([10, 9, 2, 5, 3, 7, 101, 18],), 4), (([0, 1, 0, 3, 2, 3],), 4),
+                                   (([7, 7, 7, 7],), 1), (([],), 0), (([3, 1, 2],), 2)])),
+    BenchCase("edge-code-nextperm", "code_implementation",
+              "Write a Python function `next_permutation(s)` returning the lexicographically "
+              "next permutation of the string `s`, or the lexicographically smallest one when "
+              "`s` is already the largest. Return ONLY the function definition, no prose.",
+              # 重複文字(aabb → abab → abba)で素朴な実装が同じ順列を返す
+              _func("next_permutation", [(("abc",), "acb"), (("acb",), "bac"), (("cba",), "abc"),
+                                         (("aabb",), "abab"), (("abab",), "abba"),
+                                         (("12354",), "12435")])),
+    BenchCase("edge-code-balanced", "code_implementation",
+              "Write a Python function `balanced(s)` returning True if the brackets (), [] and "
+              "{} in the string `s` are correctly matched and nested; every other character is "
+              "ignored. Return ONLY the function definition, no prose.",
+              _func("balanced", [(("([]{})",), True), (("([)]",), False), (("((",), False),
+                                 (("",), True), ((")(",), False), (("a(b[c]d)e",), True),
+                                 (("{[}",), False)])),
+    BenchCase("edge-code-rle", "code_implementation",
+              "Write a Python function `decode_rle(s)` that expands run-length encoding where "
+              "each letter is preceded by its repeat count, the count may have several digits, "
+              "and a letter with no count appears once (\"3a2b\" -> \"aaabb\", \"12x\" -> "
+              "twelve x, \"2ab\" -> \"aab\"). Return ONLY the function definition, no prose.",
+              # 多桁の反復数と反復数の無い文字(1 桁ずつ読む実装が落ちる)
+              _func("decode_rle", [(("3a2b",), "aaabb"), (("12x",), "x" * 12), (("a",), "a"),
+                                   (("2ab",), "aab"), (("",), ""), (("10a1b",), "a" * 10 + "b")])),
+
+    # --- qa: 言い回しの罠(コードで解けても、読み違えると落ちる) ------------------ #
+    BenchCase("edge-qa-filtered", "qa",
+              "How many integers from 1 to 1000 inclusive are divisible by 3, NOT divisible by "
+              "5, and do not contain the digit 7? Reply with ONLY the integer.", _eq_int(190)),
+    BenchCase("edge-qa-ones", "qa",
+              "If you write out every integer from 1 to 1000 inclusive, how many times does "
+              "the digit 1 appear in total? Reply with ONLY the integer.", _eq_int(301)),
+    BenchCase("edge-qa-remainder", "qa",
+              "What is the smallest positive integer that leaves a remainder of 1 when divided "
+              "by each of 2, 3, 4, 5 and 6, and is exactly divisible by 11? Reply with ONLY "
+              "the integer.", _eq_int(121)),
+    BenchCase("edge-qa-clock", "qa",
+              "On an ordinary analog clock, how many times do the hour hand and the minute "
+              "hand point in exactly the same direction during 24 hours? Reply with ONLY the "
+              "integer.", _eq_int(22)),
+
+    # --- research: モデル化が要る推理(答えは総当たりで一意を確認) ----------------- #
+    BenchCase("edge-research-houses", "research",
+              "Three houses stand in a row, numbered 1 to 3 from left to right. Each is one "
+              "colour (red, blue, green) and keeps one pet (cat, dog, fish). The red house is "
+              "immediately to the left of the blue house. The fish lives in the green house. "
+              "The dog does not live in house 1. The cat lives immediately to the right of "
+              "the fish. Which pet lives in the blue house? Reply with ONLY the pet.",
+              _last_word("dog")),
+    BenchCase("edge-research-liars", "research",
+              "On an island everyone is either a truth-teller (always truthful) or a liar "
+              "(always lying). A says: B is a liar. B says: A and C are the same type. C "
+              "says: B is a liar. Exactly one assignment of types is consistent with all "
+              "three statements; who is the truth-teller? Reply with ONLY the letter.",
+              _last_word("b")),
+    BenchCase("edge-research-ages", "research",
+              "Ann is twice as old as Ben was when Ann was as old as Ben is now. Their ages "
+              "add up to 63. How old is Ann? Reply with ONLY the integer.", _eq_int(36)),
+    BenchCase("edge-research-dice", "research",
+              "Two fair six-sided dice are rolled. What is the probability that the product "
+              "of the two numbers is a multiple of 6? Answer with ONLY a reduced fraction a/b.",
+              _eq_norm("5/12")),
+
+    # --- integration: 多段の変換を最後まで正しく運ぶ ------------------------------ #
+    BenchCase("edge-int-binary", "integration",
+              "Start with the list 5, 3, 8, 1, 9, 2. Remove the odd numbers, square the "
+              "remaining numbers, add the squares together, and write the total in binary. "
+              "Reply with ONLY the binary digits.", _last_digits("1000100")),
+    BenchCase("edge-int-initials", "integration",
+              "Take the words: delta alpha charlie bravo echo. Sort them alphabetically, take "
+              "the first letter of each word, uppercase the letters, join them with no "
+              "separator, then reverse the result. Reply with ONLY the final string.",
+              _last_upper_word("EDCBA")),
+
+    # --- content: 同時に満たす制約を増やす ---------------------------------------- #
+    BenchCase("edge-content-toads", "content",
+              "Write exactly three sentences about a pond. Every sentence must contain the "
+              "word toad and no sentence may be longer than 8 words. Output ONLY the three "
+              "sentences.", _chk_three_toad_sentences),
+    BenchCase("edge-content-alpha", "content",
+              "Write one sentence of exactly 10 words in which the words appear in "
+              "alphabetical order (ignore case) and no word is repeated. Output ONLY the "
+              "sentence.", _chk_alpha_sentence),
+]
+
+
 # suite 1 行説明の**単一の出所**。CLI の help はここから作る。
 # 手で書いた写しを help に置いていたせいで、qadeep / researchdeep / crux の 3 本が
 # 登録済みなのに説明に出てこない状態が続いていた(選択肢のベタ書きと同じ壊れ方)。
@@ -1569,6 +1755,9 @@ SUITE_DOCS: dict[str, str] = {
                     "audit applied to the other suspicious class",
     "crux": "17 cases aimed where a 48B fails alone but a program succeeds — for boxes where "
             "the other suites are saturated and can no longer separate structures",
+    "edge": "20 cases where the obvious program is wrong (greedy, boundaries, backtracking) "
+            "or the obvious reading is — for a champion that already has a tool lane and "
+            "saturates crux",
 }
 
 SUITES: dict[str, list[BenchCase]] = {
@@ -1579,6 +1768,7 @@ SUITES: dict[str, list[BenchCase]] = {
     "graded": GRADED_SUITE,
     "steep": STEEP_SUITE,
     "crux": CRUX_SUITE,
+    "edge": EDGE_SUITE,
     "qadeep": QADEEP_SUITE,
     "researchdeep": RESEARCHDEEP_SUITE,
 }

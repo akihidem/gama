@@ -2614,7 +2614,7 @@ class TestSaturatedClasses(ScriptedCase):
                                                "routing_table": {}, "default": "a"}}
         self.assertTrue(_default_swap_viable(champ, ["qa"], {}, 2.0))
 
-    def test_saturation_still_applies_after_a_resume(self):
+    def test_no_additive_mutation_is_measured_on_a_saturated_class_after_a_resume(self):
         # 飽和判定を復元状態から作っていた版では、再開のたびにこの除外が黙って無効化されて
         # いた(codex 指摘)。confirm 側は毎世代測り直すので復元値に依存しない。
         Scripted.WINS = {"a": {f"qa{i}" for i in range(1, 9)},

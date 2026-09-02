@@ -343,6 +343,104 @@ def josephus(n, k):
     return r + 1
 '''
 
+# --- edge: 素直に書くと落ちる関数の、落ちない実装 ------------------------------- #
+_MINCOINS = '''
+def min_coins(coins, amount):
+    inf = float("inf")
+    dp = [0] + [inf] * amount
+    for a in range(1, amount + 1):
+        for c in coins:
+            if c <= a and dp[a - c] + 1 < dp[a]:
+                dp[a] = dp[a - c] + 1
+    return -1 if dp[amount] == inf else dp[amount]
+'''
+_COVERED = '''
+def covered_length(intervals):
+    total, cur = 0, None
+    for s, e in sorted(intervals):
+        if cur is None:
+            cur = [s, e]
+        elif s <= cur[1]:
+            cur[1] = max(cur[1], e)
+        else:
+            total += cur[1] - cur[0]
+            cur = [s, e]
+    return total + (cur[1] - cur[0] if cur else 0)
+'''
+_RPN = '''
+def rpn(tokens):
+    st = []
+    for t in tokens:
+        if t in "+-*/":
+            b, a = st.pop(), st.pop()
+            if t == "/":
+                # 0 方向への切り捨ては符号で分ける: int(a / b) は float 経由なので大きい整数で
+                # 丸め誤差が出る(codex 指摘)。参照実装は整数演算だけで書く。
+                q = abs(a) // abs(b)
+                st.append(q if (a < 0) == (b < 0) else -q)
+            else:
+                st.append(a + b if t == "+" else a - b if t == "-" else a * b)
+        else:
+            st.append(int(t))
+    return st[-1]
+'''
+_WILDCARD = '''
+def wildcard(s, p):
+    from functools import lru_cache
+    @lru_cache(None)
+    def m(i, j):
+        if j == len(p):
+            return i == len(s)
+        if p[j] == "*":
+            return any(m(k, j + 1) for k in range(i, len(s) + 1))
+        return i < len(s) and (p[j] == "?" or p[j] == s[i]) and m(i + 1, j + 1)
+    return m(0, 0)
+'''
+_LIS = '''
+def lis_length(nums):
+    import bisect
+    tails = []
+    for x in nums:
+        i = bisect.bisect_left(tails, x)
+        if i == len(tails):
+            tails.append(x)
+        else:
+            tails[i] = x
+    return len(tails)
+'''
+_NEXTPERM = '''
+def next_permutation(s):
+    a = list(s)
+    i = len(a) - 2
+    while i >= 0 and a[i] >= a[i + 1]:
+        i -= 1
+    if i < 0:
+        return "".join(sorted(a))
+    j = len(a) - 1
+    while a[j] <= a[i]:
+        j -= 1
+    a[i], a[j] = a[j], a[i]
+    a[i + 1:] = a[i + 1:][::-1]
+    return "".join(a)
+'''
+_EDGE_BALANCED = '''
+def balanced(s):
+    pairs = {")": "(", "]": "[", "}": "{"}
+    st = []
+    for ch in s:
+        if ch in "([{":
+            st.append(ch)
+        elif ch in pairs:
+            if not st or st.pop() != pairs[ch]:
+                return False
+    return not st
+'''
+_RLE = '''
+def decode_rle(s):
+    import re
+    return "".join(ch * (int(n) if n else 1) for n, ch in re.findall(r"(\\d*)([A-Za-z])", s))
+'''
+
 REFERENCE: dict[str, str] = {
     # --- default ---------------------------------------------------------- #
     "code-palindrome": _PALINDROME,
@@ -520,6 +618,28 @@ REFERENCE: dict[str, str] = {
     "crux-code-paths": _LATTICE,
     "crux-code-josephus": _JOSEPHUS,
     "crux-content-triples": "784",
+    # --- edge: 自明な答えが間違いの帯(答えはすべて総当たり/検算で確かめた値) ------ #
+    "edge-code-mincoins": _MINCOINS,
+    "edge-code-covered": _COVERED,
+    "edge-code-rpn": _RPN,
+    "edge-code-wildcard": _WILDCARD,
+    "edge-code-lis": _LIS,
+    "edge-code-nextperm": _NEXTPERM,
+    "edge-code-balanced": _EDGE_BALANCED,
+    "edge-code-rle": _RLE,
+    "edge-qa-filtered": "190",
+    "edge-qa-ones": "301",
+    "edge-qa-remainder": "121",
+    "edge-qa-clock": "22",
+    "edge-research-houses": "dog",
+    "edge-research-liars": "B",
+    "edge-research-ages": "36",
+    "edge-research-dice": "5/12",
+    "edge-int-binary": "1000100",
+    "edge-int-initials": "EDCBA",
+    "edge-content-toads": ("A toad sits by the pond. The toad watches the still water. "
+                           "Another toad hops away."),
+    "edge-content-alpha": "A big cat dozed every fine hour in June kitchens.",
 }
 
 

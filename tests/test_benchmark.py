@@ -274,7 +274,7 @@ class TestSandboxedCheck(unittest.TestCase):
 class TestNamedSuites(unittest.TestCase):
     def test_registry_keys(self):
         self.assertEqual(set(SUITES), {"default", "hard", "brutal", "wide", "graded", "steep",
-                                      "qadeep", "researchdeep", "crux"})
+                                      "qadeep", "researchdeep", "crux", "edge"})
 
     def test_default_is_unchanged(self):
         self.assertIs(SUITES["default"], DEFAULT_SUITE)
