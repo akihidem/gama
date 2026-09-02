@@ -444,9 +444,16 @@ def cmd_grow(args: argparse.Namespace) -> int:
                              f"search={row['search']['score']}\n")
         elif ev == "generation":
             gain = row.get("gain_cases")
+            # 「並んだ数」と「測った数」は違う(測定済みは width の外で並ぶ)。挑戦者が archive の
+            # 踏み石なら、その search の点はこの世代に測ったものではないと読めるようにする。
+            # キーの有無で分岐するのは、古い台帳(この 2 つを書く前の走行)を再生しても落ちない
+            # ため。
+            listed = (f" ({row['new_candidates']} new of {row['candidates']} listed)"
+                      if "new_candidates" in row else "")
+            origin = (f" [{row['challenger_from']}]" if row.get("challenger_from") else "")
             sys.stderr.write(
-                f"[gama] gen{row['gen']} challenger={row.get('challenger', '(none)')} "
-                f"search {row['champion_search']}->{row.get('challenger_search', '-')} "
+                f"[gama] gen{row['gen']} challenger={row.get('challenger', '(none)')}{origin}"
+                f"{listed} search {row['champion_search']}->{row.get('challenger_search', '-')} "
                 # search で負けた候補の confirm は測らない(測っても門 ① で落ちる)ので、
                 # 無い値を "-" で見せるより「測らなかった」と分かる形にする。キーの有無で判定
                 # するのは、grow が challenger_confirm を**測った直後にだけ**書く(理由に関わらず

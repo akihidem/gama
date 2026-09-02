@@ -464,7 +464,17 @@ rotation rules alone; the replay corrected it, and one generation is what the di
 in run W. What it changes is where the order comes from: the measurement, rather than the
 position the rotation happened to start at.
 
-#### Three things the loop was doing wrong and could not see
+Being proposed is not being measured on `confirm`, though. Among candidates tied on `search`
+the challenger is chosen by structural size and then by label; a prefill keeps the champion's
+size, and `route:` and `ensemble:` sort before `tool:`. Replaying from run W's seed with its
+diagnosis (all research), the research prefill is proposed in gen0 and listed in every generation
+after, and the challenger goes to `route:content`, `ensemble:research`, `default`, `route:research`,
+`route:qa`: five generations, never the prescription. So the diagnosis names a *prescription*, and
+the prescription takes the first seat of the generation, ahead of the kind rotation, and wins ties
+for the confirm measurement. It costs one measurement, once: measured, it stays in the pool at zero
+calls; rejected, it is excluded. Whether it buys a confirm case is for the ledger to say.
+
+#### Things the loop was doing wrong and could not see
 
 **It was not deterministic.** Among candidates tied on `search`, the challenger was picked by
 measured latency — wall clock, which moves with someone else's load on a shared box. Two runs
@@ -503,6 +513,19 @@ differently, or recombined: only routed away. Every direction a mutation can tak
 reachable from every shape the loop can produce, or the loop drifts one way and calls it a
 result. The spec is read first now; names are parsed only inside the namespace the loop itself
 mints.
+
+**Measured designs were taking the seats.** `width` is the number of designs the loop measures
+per generation. A design already in the archive costs nothing to propose again, and it has to be
+proposed again: a candidate inside the band that was not the maximum is the stepping stone that
+can challenge from the archive once the maximum has been rejected on `confirm`. But each one took
+a width slot. In the all-tie regime (run W's search split has four unsolved cases, so most
+mutations cannot move it) the replay from W's gen0 checkpoint measures 4, 3, 2, 3, 1, 0 new
+designs over six generations, and the research prefill, proposed in gen2, never appears again: a
+stone came back only when the rotation happened to land on it. The archive is the challenger pool
+now. Every measured, unsettled design is listed every generation outside the width (the same
+replay: 4, 4, 4, 3, 0, 0, the zeros because the fifteen one-step designs are all measured by then),
+and the ledger separates `candidates` (listed) from `new_candidates` (measured) and records whether
+the challenger was new or came from the archive.
 
 ## Recipes — grow it together 🌱
 `recipes/` is a community library: each recipe is a `config.json` (a combination) +

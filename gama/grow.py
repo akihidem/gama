@@ -269,6 +269,10 @@ class Candidate:
     label: str          # 例 "route:qa->qwen2.5:7b" — 台帳を人が読める単位にする
     kind: str           # route | tool | ensemble | meshflow | simplify
     spec: dict = field(compare=False)
+    # この候補が治療するクラス(症状は tool レーンの「コードが出なかった call」、治療は prefill)。
+    # 鋳造した側が書く: 処方かどうかは並び順だけでなく confirm の挑戦者の優先順位にも効くので、
+    # ラベルの末尾を読み直して決めない(ラベルの形が変わっても、この欄は変わらない)。
+    remedy: Optional[str] = field(default=None, compare=False)
 
 
 def _with_lane(champion: dict, task_type: str, lane_name: str, lane_spec: dict) -> dict:
@@ -310,16 +314,34 @@ def propose(champion: dict, pool: dict[str, dict], classes: list[str],
             generation: int = 0,
             additive_classes: Optional[list[str]] = None,
             allow_default: bool = True,
-            no_code_by_class: Optional[dict] = None) -> list[Candidate]:
-    """チャンピオンから 1 手だけ動かした候補を、種類を混ぜて ``width`` 本返す。
+            no_code_by_class: Optional[dict] = None,
+            archived: Optional[set[str]] = None) -> list[Candidate]:
+    """チャンピオンから 1 手だけ動かした候補を、種類を混ぜて**新顔** ``width`` 本返す。
+
+    ``archived`` は search で測定済みの設計のハッシュ集合。測定済みは ``width`` の席を消費せず、
+    除外されていない限り**全部**返す(呼び側は archive の点をそのまま使うのでコール 0)。
+    以前は測定済みも席を 1 つ使っていて、同点だらけの走行(run W: search 32 問中 4 問しか
+    残っていない)では世代が進むほど新顔が減った。W の gen0 checkpoint から 6 世代を再生する
+    (gama-runs/replay-propose.py・全候補同点の仮定)と新顔は 4,3,2,3,1,0、席を使わなければ
+    4,4,4,3,0,0(このチャンピオンから 1 手で行ける設計 15 本を gen4 で測り切る)。しかも
+    踏み石(帯の内側で最高点でなかった設計)が次に挑戦できるのは巡回が同じ設計をもう一度出した
+    時だけで、gen2 に出た research の prefill は 6 世代で一度も出直せなかった。``width`` は
+    「この世代に測る設計の数」であって、測定済みを数えると幅が黙って痩せる。並ぶ測定済みは
+    今のチャンピオンから 1 手で行ける設計に限られる(この関数は近傍しか生成せず、archive の
+    大きさに関わらず近傍は毎回全部生成している。archive が増えて増えるのは台帳の行の長さで、
+    生成も測定も増えない)。チャンピオンが替わって近傍の外に出た設計は、生成されないので並ばない。
 
     ``no_code_by_class`` はチャンピオンの測定が残した診断(クラス → tool レーンでコードが
-    出なかった call 数)。症状のあるクラスの ``+prefill`` を tool 枠の先頭に出す。巡回は
-    「どこも均等に触る」ための順で、症状の場所を測定が既に言っているのに順番待ちさせるのは
-    ループが自分のデータを無視すること(run W: seed の confirm が research で no_code 8/72 を
-    出していても gen1 の tool 枠は巡回で qa の prefill に行き、research のは checkpoint から
-    propose を再生すると gen2。診断で gen0 に来る。順番の出どころを巡回の開始位置でなく測定に
-    する)。診断が無ければ巡回のまま。
+    出なかった call 数)。症状のあるクラスの ``+prefill`` が処方(``_prescribed``)で、tool 枠の
+    先頭に出すだけでなく、種類の巡回を待たずに最初の席を取る。巡回は「どこも均等に触る」
+    ための順で、症状の場所を測定が既に言っているのに順番待ちさせるのはループが自分のデータを
+    無視すること(run W: seed の confirm が research で no_code 8/72 を出していても gen1 の
+    tool 枠は巡回で qa の prefill に行き、research のは checkpoint から propose を再生すると
+    gen2。診断で gen0 に来る。順番の出どころを巡回の開始位置でなく測定にする)。並ぶだけでは
+    足りず、挑戦者の同点処理(``_challenger_key``)も処方を先にする: W の種から症状 research=8
+    で 5 世代を再生すると、処方は gen0 に並んでも同点処理に入れなければ route の差し替え・
+    ensemble・default の後ろに回り(同じ大きさでラベル順が先)、5 世代で一度も挑戦者にならない。
+    入れれば gen0 で挑戦する。診断が無ければ巡回のまま。
 
     1 手だけなのは、勝因を測定に帰属させるため(2 手同時だとどちらが効いたか台帳から読めない)。
     種類を round-robin で混ぜるのは、``width`` を絞ったときに ``route`` 変異だけで埋まって
@@ -390,7 +412,8 @@ def propose(champion: dict, pool: dict[str, dict], classes: list[str],
                 _with_lane(champion, task_type, name,
                            {"backend": "tool", "_grow_base": base,
                             "kwargs": {"inner": copy.deepcopy(cur_spec["kwargs"]["inner"]),
-                                       "prefill": ToolBackend.PREFILL}}))))
+                                       "prefill": ToolBackend.PREFILL}}),
+                remedy=task_type)))
         # ③ 2 モデルの合議。既定は synthesize —— majority は**自由文では機能しない**。逐語一致が
         # まず起きないので Counter が全部 1 になり、most_common が「最初に入れたメンバー」を返す。
         # 実測(graded 20 問): majority 0.705 に対し素の 3B 単体が 0.830、synthesize は 0.975
@@ -491,26 +514,45 @@ def propose(champion: dict, pool: dict[str, dict], classes: list[str],
     queues = {k: _by_class_rotation(buckets[k], ordered_classes, offset + generation)
               for offset, k in enumerate(order)}
     # 診断で先頭に出すのは prefill だけ(no_code は tool レーンの症状で、処方も prefill だけ)。
-    # 症状の多いクラスから、同数はクラス名順。並び替えるのは tool 枠の中だけで、種類の巡回と
-    # 他の種類の順は触らない(診断は「どの種類を試すか」まで決める根拠ではない)。
+    # 症状の多いクラスから、同数はクラス名順。他の種類の順は触らない(診断が名指しするのは
+    # 治療 1 本で、「どの種類を試すか」の根拠ではない)。処方の席は下で、巡回の前に取る。
     symptoms = {c: n for c, n in (no_code_by_class or {}).items()
                 if isinstance(n, int) and not isinstance(n, bool) and n > 0}
+    n_lead = 0
     if symptoms and queues["tool"]:
         rank = {c: (-n, c) for c, n in symptoms.items()}
-        first = sorted((c for c in queues["tool"]
-                        if c.label.endswith("+prefill") and _class_of(c.label) in rank),
-                       key=lambda c: rank[_class_of(c.label)])
+        first = sorted((c for c in queues["tool"] if _prescribed(c, rank)),
+                       key=lambda c: rank[c.remedy])
         lead = {id(c) for c in first}             # 同一性で除く(Candidate は値で等しくなりうる)
         queues["tool"] = first + [c for c in queues["tool"] if id(c) not in lead]
+        n_lead = len(first)
 
     champ_hash = spec_hash(champion)
+    archived = set() if archived is None else archived      # spec_hash の集合(exclude と同じ)
     out: list[Candidate] = []
     emitted: set = set()
+    new = 0
+    # 処方は種類の巡回を待たない。測定がクラスと治療を名指ししているのに tool の番が回るまで
+    # 寝かせるのは、巡回の開始位置が順番を決める欠陥を種類の段でやり直すだけ(7 種類・width 4
+    # だと gen3〜5 には tool の席が無く、その世代に昇格した champion の処方は gen6 まで待つ。
+    # width 2 なら gen0 の席は simplify と route で、処方は次の世代)。席を食うのは新顔の処方
+    # だけ: 測定済みなら消費せず、却下されれば exclude で消えるので、幅を食うのは一度きり。
+    for _ in range(n_lead):
+        if new >= width:
+            break
+        cand = queues["tool"].pop(0)
+        h = spec_hash(cand.spec)
+        if h == champ_hash or h in exclude or h in emitted:
+            continue
+        emitted.add(h)
+        out.append(cand)
+        if h not in archived:
+            new += 1
     i = 0
-    while len(out) < width and any(queues[k] for k in order):
+    while new < width and any(queues[k] for k in order):
         kind = order[(i + generation) % len(order)]
         i += 1
-        # width が数えるのは「出した候補」であって「試した回数」ではない。除外(決着済み・重複)を
+        # width が数えるのは「出した新顔」であって「試した回数」ではない。除外(決着済み・重複)を
         # 引いた時に枠を消費して次の種類へ進むと、**その除外の後ろに並んでいる候補が永久に出番を
         # 失う**: 実測(run J)では gen0 で決着した `simplify:qa` がキュー先頭に残り続け、
         # `simplify:research` が 3 世代とも一度も提案されなかった —— チャンピオンが research
@@ -522,7 +564,18 @@ def propose(champion: dict, pool: dict[str, dict], classes: list[str],
                 continue                      # 除外は席を消費しない: 同じ種類から次を引く
             emitted.add(h)
             out.append(cand)
+            if h in archived:
+                continue                      # 測定済みも席を消費しない: 同じ種類から新顔を引く
+            new += 1
             break
+    # 幅を使い切った後も、測定済みの踏み石は残らず出す。巡回の位置次第で出たり出なかったり
+    # すると、「archive の点のまま挑戦できる」が実際には巡回の運になる(上の docstring の実測)。
+    for kind in order:
+        for cand in queues[kind]:
+            h = spec_hash(cand.spec)
+            if h in archived and h != champ_hash and h not in exclude and h not in emitted:
+                emitted.add(h)
+                out.append(cand)
     return out
 
 
@@ -1218,7 +1271,19 @@ def _restore(d: dict) -> "Measurement":
     return Measurement(**d)
 
 
-def _challenger_key(cand: "Candidate", m: "Measurement") -> tuple:
+def _prescribed(cand: "Candidate", symptoms: dict) -> bool:
+    """その候補が、チャンピオンの診断が指した処方か(症状のあるクラスへの ``+prefill``)。
+
+    診断は tool レーンの「コードが出なかった call 数」(クラス別)で、処方は今のところ prefill
+    だけ。propose の並び順と挑戦者の同点処理が**同じ判定**を使うために分けてある(片方だけ
+    直すと、列の先頭に出した処方が同点処理で後回しになる、という食い違いが起きる)。
+    どのクラスを治療する候補かは鋳造時に ``Candidate.remedy`` へ書かれていて、ここはそれと
+    診断を突き合わせるだけ(ラベルは人が読む単位で、判定の根拠にしない)。
+    """
+    return cand.remedy is not None and cand.remedy in symptoms
+
+
+def _challenger_key(cand: "Candidate", m: "Measurement", prescribed: bool = False) -> tuple:
     """同点の候補をどう並べるか。**再現しない量を読まない**ことがこの関数の要件。
 
     点数(``m.score``)は読む —— 同じ spec を同じ case 集合で測れば同じ値になるので、
@@ -1230,9 +1295,19 @@ def _challenger_key(cand: "Candidate", m: "Measurement") -> tuple:
     判定に入れてしまっていた。構造の大きさは spec だけで決まり、追加コールを生んでいる
     当のものなので、意図を保ったまま再現する。
     分けて名前を与えてあるのは、この性質を文字列検査でなく**振る舞いとして**試験できる
-    ようにするため。並び順は「点の高い順 → 構造の小さい順 → ラベル順」。
+    ようにするため。並び順は「点の高い順 → 処方が先 → 構造の小さい順 → ラベル順」。
+
+    ``prescribed`` は「チャンピオンの診断が指した処方」(``_prescribed``)。同点の中で先に
+    confirm を測るのは処方: search はそのクラスをほぼ取り切っていて payoff を見せられず
+    (run W の search は research の未解決が 1 問)、外しは confirm 側に残っている(同 5 問)。
+    ここに入れないと、列の先頭に出した処方が同点処理で構造とラベルの順に戻される。W の種
+    (= X の種)から症状 research=8 で 5 世代を再生する(gama-runs/replay-propose.py・全候補
+    同点の仮定)と、処方を同点処理に入れない場合の挑戦者は route:content → ensemble:research
+    → default → route:research → route:qa で、gen0 から毎世代並んでいる処方は一度も confirm を
+    測られない。入れれば gen0 で挑戦する。処方かどうかはラベルと診断だけで決まるので走行を
+    またいで再現する。
     """
-    return (-m.score, _structure_size(cand.spec), cand.label)
+    return (-m.score, 0 if prescribed else 1, _structure_size(cand.spec), cand.label)
 
 
 def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
@@ -1477,12 +1552,17 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
         for m in (champ_search, champ_confirm_now):
             for c, n in (m.tool_no_code_by_class or {}).items():
                 symptoms[c] = symptoms.get(c, 0) + n
+        # 測定済み(archive)は幅の外で全部戻ってくる: search の点は設計に付くものでチャンピオンが
+        # 替わっても動かないので、帯の内側に残った設計はコール 0 で毎世代挑戦者の候補になる。
+        # 世代の初めに写しを取るのは、この世代に測った新顔と、前から archive に居た踏み石を
+        # 台帳で区別するため(後で archive を見ると新顔も入っている)。
+        archived_before = set(archive)
         cands = propose(champion, pool, classes, width=width, exclude=challenged | settled,
                         ensemble_strategy=ensemble_strategy, generation=gen,
                         additive_classes=[c for c in classes if c not in saturated],
                         allow_default=_default_swap_viable(champion, classes, headroom,
                                                            gate_cases),
-                        no_code_by_class=symptoms)
+                        no_code_by_class=symptoms, archived=archived_before)
         if not cands:
             # ここまでに champion を confirm で測っている。止まるからといって捨てると、
             # 最終結果も再開状態も「測る前の値」のまま残る。checkpoint も**実際に出す**
@@ -1499,6 +1579,7 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
             break
 
         scored = []
+        measured = 0          # この世代に search を焚いた本数(台帳の new_candidates)
         for c in cands:
             h = spec_hash(c.spec)
             cached = archive.get(h)
@@ -1519,6 +1600,7 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
                 # 残り全部で黙って効かなくなる(per_case を落として機能が死ぬのはこれで 4 例目。
                 # 台帳の行だけが痩せていればよく、決定に使うものは痩せさせない)。
                 archive[h] = {"label": c.label, "kind": c.kind, "search": _state(m)}
+                measured += 1
                 emit({"event": "candidate", "gen": gen, "label": c.label, "kind": c.kind,
                       "hash": h, "search": _meas(m)})
             scored.append((c, m))
@@ -1535,7 +1617,10 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
                # 分解能律速なら confirm の case を増やす —— 打つ手が正反対なので、台帳が
                # 「δ=0.05 だった」しか言わないと、次に何を変えればいいか読み取れない。
                "bound_by": "floor" if margin_floor >= drift else "drift",
-               "candidates": len(cands)}
+               # candidates は挑戦者の候補に並んだ数、new_candidates がこの世代に search を
+               # 測った数(= 焚いたコールの側。上の測定ループで実際に数える)。同点だらけの
+               # 走行では前者だけ増えていく。
+               "candidates": len(cands), "new_candidates": measured}
         # 分数のままだと大きさが読めない。床は「1 問ぶん」なので、**case 相当数**で出す。
         # ここが効くのは、床 1/n と効果 S/n の比が **S そのもの**で n に依存しない点:
         # 触っていないクラスの case を足しても比は 1 ミリも動かない。増やして意味があるのは
@@ -1551,7 +1636,9 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
             # 再現性はこの repo の売りそのものなので、判定に測定ゆらぎを一切入れない。
             # 構造の大きさは spec だけで決まり、追加コールを生んでいる当のものなので、
             # 「同点なら安い方」の意図もそのまま保つ(shrink 側の Occam と同じ向き)。
-            challenger, chal_search = min(additive, key=lambda t: _challenger_key(*t))
+            challenger, chal_search = min(
+                additive, key=lambda t: _challenger_key(*t, prescribed=_prescribed(t[0],
+                                                                                    symptoms)))
             # search で band を超えて負けた設計は、**このチャンピオンの下では決着済み**:
             # 挑戦権 ① は search だけで決まり、チャンピオンの search はチャンピオンが替わるまで
             # 測り直されない(= 同じ hash の候補は archive の同じ点を返し続ける)。だから confirm を
@@ -1566,9 +1653,13 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
             for c, m in additive:
                 if not search_gate(champ_search.score, m.score, search_band)[0]:
                     settled.add(spec_hash(c.spec))
+            chal_hash = spec_hash(challenger.spec)
             row.update({"challenger": challenger.label, "kind": challenger.kind,
-                        "challenger_hash": spec_hash(challenger.spec),
+                        "challenger_hash": chal_hash,
                         "challenger_search": chal_search.score,
+                        # 踏み石から上がった挑戦者か、この世代の新顔か。archive の点で挑戦する
+                        # 設計はこの世代に search を測っていない、と台帳だけで読めるように。
+                        "challenger_from": "archive" if chal_hash in archived_before else "new",
                         "search_band": round(search_band, 4)})
             s_ok, s_why = search_gate(champ_search.score, chal_search.score, search_band)
             if not s_ok:

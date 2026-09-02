@@ -24,7 +24,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from gama.cli import main as cli_main
 from gama import backends as backends_mod
-from gama.grow import (Candidate, _challenger_key, _default_swap_viable,
+from gama.grow import (Candidate, _challenger_key, _default_swap_viable, _prescribed,
                        _structure_size, class_headroom, propose, search_gate, spec_hash,
                        split_cases)
 from gama.backends import ModelBackend
@@ -407,6 +407,7 @@ class TestPropose(ScriptedCase):
             tools = {c.label: c for c in propose(canonical(champ), pool, ["qa"], width=20)
                      if c.kind == "tool"}
             self.assertEqual(list(tools), ["tool:qa(a)+prefill"])
+            self.assertEqual(tools["tool:qa(a)+prefill"].remedy, "qa")   # what _prescribed reads
             spec = tools["tool:qa(a)+prefill"].spec
             lane = spec["kwargs"]["routing_table"]["qa"]
             self.assertEqual(lane, "tool(a)+pf")
@@ -432,9 +433,10 @@ class TestPropose(ScriptedCase):
                           if c.kind == "tool"])
 
     def test_the_diagnosis_puts_the_prefill_for_the_symptomatic_class_first(self):
-        # run W: the seed's confirm measurement said no_code 8/72, but with width 4, seven kinds
-        # and five classes the research prefill never reached the front of the tool queue in
-        # five generations. The measurement already names the class; the queue must read it.
+        # run W: the seed's confirm measurement said no_code 8/72 (all research), and gen1's tool
+        # slot still went to qa's prefill by rotation; replaying propose() from the checkpoint
+        # put the research prefill in gen2. The measurement already names the class; the queue
+        # must read it rather than the position the rotation happened to start at.
         class Chatty(Scripted):
             name = "chatty"
             supports_prefill = True
@@ -474,6 +476,23 @@ class TestPropose(ScriptedCase):
             other = lambda **kw: [c.label for c in propose(champ, pool, classes, width=30, **kw)
                                   if c.kind != "tool"]
             self.assertEqual(other(no_code_by_class={"research": 3}), other())
+            # and it does not wait for the tool kind's turn in the rotation: at width 1 the seat
+            # goes to simplify (gen0), route (gen1), ensemble (gen3); the prescription takes it
+            # first, a measured one is listed without taking it, a settled one is gone
+            pres = next(c for c in propose(champ, pool, classes, width=30)
+                        if c.label == "tool:research(a)+prefill")
+            for gen, seat in ((0, "simplify:content->a"), (1, "route:research->a"),
+                              (3, "ensemble:content(a+b)")):
+                one = lambda **kw: [c.label for c in propose(champ, pool, classes, width=1,
+                                                             generation=gen, **kw)]
+                self.assertEqual(one(), [seat])
+                self.assertEqual(one(no_code_by_class={"research": 3}),
+                                 ["tool:research(a)+prefill"])
+                self.assertEqual(one(no_code_by_class={"research": 3},
+                                     archived={spec_hash(pres.spec)}),
+                                 ["tool:research(a)+prefill", seat])
+                self.assertEqual(one(no_code_by_class={"research": 3},
+                                     exclude={spec_hash(pres.spec)}), [seat])
         finally:
             backends_mod._BACKENDS.pop("chatty", None)
 
@@ -530,6 +549,32 @@ class TestPropose(ScriptedCase):
 # --------------------------------------------------------------------------- #
 # 4. The gate
 # --------------------------------------------------------------------------- #
+    def test_a_measured_design_takes_no_width_slot_and_every_one_comes_back(self):
+        # run W replayed from its checkpoint: measured ties took the slots, new designs per
+        # generation went 4,3,2,3,1,0, and a stepping stone came back only when the rotation
+        # happened to land on it (the research prefill never did in six generations).
+        pool = {"a": _lane("a"), "b": _lane("b"), "c": _lane("c")}
+        champ = seed_champion(pool, "a")
+        everything = propose(champ, pool, ["qa"], width=50)
+        hashes = [spec_hash(c.spec) for c in everything]
+        self.assertGreater(len(hashes), 5)
+        measured = set(hashes[:3])
+        out = propose(champ, pool, ["qa"], width=2, archived=measured)
+        got = [spec_hash(c.spec) for c in out]
+        self.assertEqual(len([h for h in got if h not in measured]), 2)   # width counts new ones
+        self.assertEqual(set(got) & measured, measured)                   # all measured come back
+        self.assertEqual(len(got), len(set(got)))
+        # a measured design that is settled or challenged stays out
+        out = propose(champ, pool, ["qa"], width=2, archived=measured, exclude={hashes[0]})
+        self.assertNotIn(hashes[0], {spec_hash(c.spec) for c in out})
+        # nothing new left: the pool still comes back whole, whatever the width
+        out = propose(champ, pool, ["qa"], width=1, archived=set(hashes))
+        self.assertEqual({spec_hash(c.spec) for c in out}, set(hashes))
+        # no archive: unchanged
+        self.assertEqual([c.label for c in propose(champ, pool, ["qa"], width=2)],
+                         [c.label for c in propose(champ, pool, ["qa"], width=2, archived=set())])
+
+
 class TestPromoteGate(unittest.TestCase):
     def test_exactly_one_case_passes_every_gate_whichever_way_the_scores_rounded(self):
         # scores reach the gates rounded to 4 digits; the widths (1/n) are exact. 11/15 − 10/15
@@ -1925,6 +1970,27 @@ class TestSelectionIsDeterministic(unittest.TestCase):
         self.assertEqual(min([better, smaller], key=lambda t: _challenger_key(*t))[0].label,
                          "z:tool")
 
+    def test_the_prescription_goes_first_among_ties_but_never_over_a_higher_score(self):
+        # the diagnosis (no-code tool calls on qa) names the prefill for qa as the prescription;
+        # search cannot show its payoff on a class it has nearly solved, confirm holds the misses
+        key = lambda t: _challenger_key(*t, prescribed=_prescribed(t[0], {"qa": 3}))
+        pres = (Candidate("tool:qa(b)+prefill", "tool", _tool_spec("b"), remedy="qa"),
+                self._m(0.9, 1.0))
+        bare = (self._cand("a:bare", _lane_spec("b")), self._m(0.9, 1.0))
+        self.assertEqual(min([bare, pres], key=key)[0].label, "tool:qa(b)+prefill")
+        # a prefill for a class without a symptom is not a prescription
+        other = (Candidate("tool:research(b)+prefill", "tool", _tool_spec("b"),
+                           remedy="research"), self._m(0.9, 1.0))
+        self.assertEqual(min([bare, other], key=key)[0].label, "a:bare")
+        # the judgement reads what the minting side wrote, not the label
+        relabel = (Candidate("tool:qa(b)+prefill", "tool", _tool_spec("b")), self._m(0.9, 1.0))
+        self.assertFalse(_prescribed(relabel[0], {"qa": 3}))
+        # the score still decides first
+        better = (self._cand("z:bare", _lane_spec("b")), self._m(0.95, 1.0))
+        self.assertEqual(min([better, pres], key=key)[0].label, "z:bare")
+        # without a diagnosis the key is what it was
+        self.assertEqual(_challenger_key(*pres), _challenger_key(*pres, prescribed=False))
+
     def test_structure_size_ranks_a_bare_lane_below_a_composite_one(self):
         self.assertLess(_structure_size(_lane_spec("b")), _structure_size(_tool_spec("b")))
 
@@ -2033,12 +2099,84 @@ class TestSearchIsAFilterNotARace(ScriptedCase):
         self.assertIn(gen0["challenger_hash"], ck0["challenged"])           # 落ちた方は決着
         self.assertNotIn(cands0["route:qa->c"]["hash"], ck0["challenged"])  # 次点は踏み石
         self.assertNotIn(cands0["route:qa->c"]["hash"], ck0["settled"])
-        self.assertEqual(gen1["challenger"], "route:qa->c", gen1)
-        self.assertEqual(gen1["reason"], "promote", gen1)
-        # gen1 の search は archive から: candidate イベントは新規測定のときだけ出るので、
-        # gen1 に route:qa->c の candidate 行が無い = 測り直していない
+        # gen1: 踏み石は archive の点のまま挑戦者の候補に並ぶ(candidate イベントは新規測定の
+        # ときだけ出るので、gen1 に route:qa->c の行が無い = 測り直していない)。席は使わないので
+        # 新顔は width ぶん測られ、そのうち search で上回った meshflow が点で勝って昇格する。
         gen1_fresh = [r["label"] for r in seen if r["event"] == "candidate" and r["gen"] == 1]
         self.assertNotIn("route:qa->c", gen1_fresh, gen1_fresh)
+        self.assertEqual((gen1["new_candidates"], gen1["candidates"]), (2, 3), gen1)
+        self.assertEqual((gen1["challenger"], gen1["challenger_from"], gen1["reason"]),
+                         ("meshflow:qa(a->c)", "new", "promote"), gen1)
+        self.assertGreater(gen1["challenger_search"], cands0["route:qa->c"]["search"]["score"])
+
+    def test_a_measured_tie_keeps_its_place_without_taking_a_width_slot(self):
+        # 全部 search 同点・confirm は全敗: 挑戦者は毎世代 1 本ずつ却下される。測定済みの同点は
+        # 席を使わず(新顔が毎世代 width 本測られる)、archive の点のまま挑戦者になる。以前は
+        # 測定済みが席を 1 つ使い、この 4 世代で新顔は 2,1,1,2 本だった(run W の再生では
+        # 4,3,2,3,1,0 で、踏み石が出直せるのは巡回が同じ設計を再び出した時だけだった)。
+        cases, search, confirm = self._split()
+        Scripted.WINS = {"a": set(search), "b": set(search), "c": set(search)}
+        pool = {"a": _lane("a"), "b": _lane("b"), "c": _lane("c")}
+        seen = []
+        res = grow(pool, cases=cases, generations=4, width=2, patience=9, min_margin=0.05,
+                   on_event=lambda r: seen.append(r))
+        gens = res["history"]
+        self.assertEqual(len(gens), 4)
+        self.assertEqual([g["new_candidates"] for g in gens], [2, 2, 2, 2])
+        self.assertEqual([g["candidates"] for g in gens], [2, 3, 4, 5])   # the pool grows by
+        self.assertTrue(all(g["reason"] == "confirm-not-better" for g in gens), gens)  # one
+        fresh = {}
+        for r in seen:
+            if r["event"] == "candidate":
+                fresh.setdefault(r["gen"], []).append(r["label"])
+        self.assertEqual({g: len(v) for g, v in fresh.items()}, {0: 2, 1: 2, 2: 2, 3: 2})
+        from_archive = [g for g in gens if g["challenger_from"] == "archive"]
+        self.assertTrue(from_archive, [g["challenger"] for g in gens])
+        for g in from_archive:
+            # measured in an earlier generation, not this one, and never re-measured
+            self.assertNotIn(g["challenger"], fresh[g["gen"]])
+            self.assertEqual(sum(g["challenger"] in v for v in fresh.values()), 1)
+            self.assertTrue(any(g["challenger"] in fresh[e] for e in range(g["gen"])))
+        self.assertEqual(gens[0]["challenger_from"], "new")
+
+    def test_the_prescription_is_challenged_in_the_generation_it_is_proposed(self):
+        # 種の tool レーンがコードを書かない(Scripted は文だけ返す)ので診断は qa に出る。width 2
+        # の gen0 の席は巡回なら simplify と route で、処方はその席を待たずに先に取る。search 同点
+        # の simplify:qa->a は構造が小さくラベル順も先なので、処方でなければそちらが挑戦していた。
+        class Chatty(Scripted):
+            name = "chatty"
+            supports_prefill = True
+
+        backends_mod._BACKENDS["chatty"] = Chatty
+        try:
+            cases, search, confirm = self._split()
+            Scripted.WINS = {"a": set(search), "b": set(search)}
+            pool = {"a": {"backend": "chatty", "kwargs": {"tag": "a"}}, "b": _lane("b")}
+            seed = seed_champion(pool, "a")
+            seed["kwargs"]["backends"]["tool(a)"] = {
+                "backend": "tool", "_grow_base": "a", "kwargs": {"inner": pool["a"]}}
+            seed["kwargs"]["routing_table"]["qa"] = "tool(a)"
+            seen = []
+            res = grow(pool, cases=cases, generations=1, width=2, patience=3, min_margin=0.05,
+                       seed_spec=seed, on_event=lambda r: seen.append(r))
+            seed_row = next(r for r in seen if r["event"] == "seed")
+            self.assertGreater(seed_row["search"]["tool_no_code_by_class"].get("qa", 0), 0)
+            cands = {r["label"]: r for r in seen if r["event"] == "candidate" and r["gen"] == 0}
+            self.assertEqual(set(cands), {"simplify:qa->a", "tool:qa(a)+prefill"}, cands)
+            self.assertEqual(cands["simplify:qa->a"]["search"]["score"],
+                             cands["tool:qa(a)+prefill"]["search"]["score"])
+            specs = {c.label: c.spec for c in propose(canonical(seed), pool, ["qa"], width=2,
+                                                      no_code_by_class={"qa": 4})}
+            self.assertLessEqual(_structure_size(specs["simplify:qa->a"]),
+                                 _structure_size(specs["tool:qa(a)+prefill"]))
+            gen0 = res["history"][0]
+            self.assertEqual((gen0["challenger"], gen0["challenger_from"]),
+                             ("tool:qa(a)+prefill", "new"), gen0)
+            # without the diagnosis the same width gives the rotation's seats and no prescription
+            plain = [c.label for c in propose(canonical(seed), pool, ["qa"], width=2)]
+            self.assertNotIn("tool:qa(a)+prefill", plain, plain)
+        finally:
+            backends_mod._BACKENDS.pop("chatty", None)
 
 
 class TestSaturatedClasses(ScriptedCase):
