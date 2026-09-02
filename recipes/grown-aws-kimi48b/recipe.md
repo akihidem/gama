@@ -106,6 +106,42 @@ call instead of three, deterministic instead of stochastic. That is the same Occ
 gate encodes, applied by hand where the loop has no rule for it. If your own run separates them,
 prefer what it measures over what this file shipped.
 
+## Run V: the shipped champion against `crux`, and what the loop could not see
+
+Seeded from this recipe, with the `crux` suite added to the pool (129 cases, split 32 / 65 / 32,
+`--generations 5 --width 4 --repeats 2`, code `a23eb22`). Ledger: `grow-v-crux.jsonl`.
+
+| gen | challenger | confirm champion → challenger | paired | verdict |
+|---|---|---|---|---|
+| 0 | `route:content → kimi-hot` | 0.767 → 0.784 (+1.1 cases) | 2 w / 0 l | promoted |
+| 1 | `meshflow:content` | 0.779 → 0.767 | 1 / 2 | search-not-better |
+| 2 | `meshflow:integration` | 0.764 → 0.788 (**+1.57**) | **4 / 1** | search-not-better |
+| 3 | `ensemble:content` | 0.761 → 0.787 (**+1.7**) | **4 / 0**, p = 0.0625 | search-not-better |
+| 4 | `route:content → kimi-cold` | 0.759 → 0.767 | 2 / 1 | search-not-better |
+
+Sealed: seed 0.748, champion 0.747 — **not separable** (the eighth run in a row on this box).
+
+Three things this run showed, none of them about the model:
+
+- **Gate ① was a race against a stale maximum.** The champion's search score (0.901) was the
+  maximum of one generation's width, measured once at promotion; every later challenger had to
+  beat it strictly while its confirm score drifted 0.784 → 0.759. Rows 2 and 3 were discarded
+  *after* being measured at 4/1 and 4/0 on confirm. The gate is now a band of one search case
+  (`grow` ≥ `87c63d9`); on this ledger both rows would have reached the confirm gate.
+- **The `research → tool` lane fixed none of the four crux research cases.** Not because the
+  programs were wrong: the model never opened a ```python block on those prompts, at any
+  temperature or token budget up to 8192, so the lane fell back to unfinished reasoning. Yet
+  `simplify:research → bare` scored lower on search (0.852 vs 0.901) — the lane still pays for
+  itself on the rest. Sending the opening fence as the start of the reply
+  (`ToolBackend(prefill="```python\n")`, `ead35cd`) makes the same lane solve **3 of 4** crux
+  research cases in about 2 s each; `grow` now proposes it as `tool:<class>(model)+prefill`,
+  the one-step refinement of a tool lane. Run W measures whether that buys a confirm case.
+- **Search-side saturation was removed** and a rounding defect fixed: scores reach the gates
+  rounded to four digits while the widths are exact 1/n, so a one-case margin could pass or
+  fail on the rounding direction alone (11/15 − 10/15 arrives as 0.0666 against 0.066667).
+
+The champion of this run is not shipped: one promotion inside the band, no sealed separation.
+
 ## A run that had to be thrown away
 
 Run S ran this exact configuration first and produced a champion out of nothing. Partway
