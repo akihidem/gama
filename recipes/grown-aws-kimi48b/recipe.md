@@ -222,13 +222,17 @@ queue and wins ties. Ledger: `grow-x-diag.jsonl`.
 measured once, at the end, and this run has no end. The shipped `config.json` is still run W's
 champion.
 
-- **The prescription was measured, and the archive is what let it happen.** `tool:research + prefill`
-  is the design run W's diagnosis pointed at and never measured. Here it was proposed at generation
-  0, and it *lost*: 0.8568 on search against the champion's 0.8958, 1.25 cases below, outside the
-  band, settled. Under the rule runs before `07e9543` used that is the end of it. Keeping every
-  measured design in the running at no cost put it back on the list every generation, and in
-  generation 2 the same label measured 0.9193, took the challenger seat, and bought its case on
-  confirm.
+- **The prescription was measured, on its second chance.** `tool:research + prefill` is the design
+  run W's diagnosis pointed at and never measured. Here it was proposed at generation 0 and *lost*:
+  0.8568 on search against the champion's 0.8958, 1.25 cases below the band, settled. What brought
+  it back is not the archive, though that is the mechanism it looks like: generation 1 promoted the
+  `qa` prefill, so the champion changed, and the same move re-minted from the new champion is a
+  different design (hash `7e98fb4d` at generation 0, `707e3676` at generation 2). `settled` holds
+  the old hash and does not block the new one, and the diagnosis put the re-minted prescription
+  first in the queue again. The ledger says so directly: every challenger in this run is recorded
+  `challenger_from: new`, and across every ledger on this box no generation has yet taken its
+  challenger from the archive. The archive's effect so far is on how many *new* designs a
+  generation can afford, not on stepping stones coming back.
 - **Two measurements of that design, two cases apart, at temperature 0.** The generation-0 and
   generation-2 candidates carry the same label and differ in exactly one lane: whether `qa` has
   the prefill promoted in generation 1. That lane, measured on its own in generation 1, scored a
