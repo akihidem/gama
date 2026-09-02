@@ -364,6 +364,16 @@ there are at most seven promotions' worth of room in the entire suite, and any s
 change moves one to three cases — inside the sealed split's resolution. That is the mechanism
 behind six NOT SEPARABLE verdicts, and it means **the lever is harder cases, not more of them**.
 
+"Not separable" turned out to be two different results wearing one word, and the loop now says
+which. Scale what a run's promotions claimed on `confirm` to the sealed split's size: run V
+claimed +1.1 of 65 confirm cases, which is 0.54 of 32 sealed cases, inside the one case sealed
+resolves, so its verdict was **fixed before the split was opened** (run T likewise: +1.25 of 56
+→ 0.62 of 28). Run R claimed +4.37 of 48, which should have shown as 2.19 of 24 sealed cases,
+and sealed showed +0.33: there the confirm gains **did not transfer**, and the promotions were
+selection noise. The first kind asks for a bigger sealed split (or larger promotions); the
+second asks you to distrust the promotions. A run prints the sealed split's resolution in
+confirm cases at the seed, so an underpowered run announces itself three hours before it ends.
+
 One caveat on that headroom, found by auditing the checkers rather than the models: of the ten
 cases the champion loses, **four are scored on output format as well as content** (their checker
 rejects a correct answer wrapped in prose), and they carry 3.25 of the 7.48 cases of headroom.

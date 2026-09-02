@@ -856,7 +856,36 @@ def _guard_measurement(m: "Measurement", what: str) -> None:
             "server on the intended model and --resume from this ledger.")
 
 
-def sealed_verdict(sealed: Optional[dict]) -> dict:
+def claimed_gain_cases(history: list, n_confirm: Optional[int]) -> Optional[float]:
+    """走行が confirm の上で**主張した**伸びの合計(問)。sealed が検定すべき仮説の大きさ。
+
+    チャンピオンが実際に入れ替わった世代だけを数える(``promotions`` と同じ定義)。足した手は
+    ``gain_cases``、削った手は ``simplify_confirm`` と当該世代の champion 実測との差で、どちらも
+    その世代の confirm 上で門を通った量そのもの。合計するのは、sealed が見るのは最終形と種の差で
+    あって手ごとの差ではないから。読めない行(古い台帳・測っていない世代)は 0 ではなく None を返す:
+    「主張が無い」と「主張が読めない」を同じ数にすると、後者が「検定力あり」に化ける。
+    """
+    if not n_confirm:
+        return None
+    total, seen = 0.0, False
+    for h in history or []:
+        if not isinstance(h, dict) or h.get("champion_hash") == h.get("champion_after"):
+            continue
+        seen = True
+        if h.get("simplify_verdict") == "promote":
+            a, b = h.get("simplify_confirm"), h.get("champion_confirm")
+            if not isinstance(a, (int, float)) or not isinstance(b, (int, float)):
+                return None
+            total += (a - b) * n_confirm
+        elif isinstance(h.get("gain_cases"), (int, float)):
+            total += h["gain_cases"]
+        else:
+            return None
+    return round(total, 2) if seen else 0.0
+
+
+def sealed_verdict(sealed: Optional[dict], claimed_gain_cases: Optional[float] = None,
+                   confirm_cases: Optional[int] = None) -> dict:
     """封をした split が、この走行そのものについて何と言っているか。
 
     ここまでのゲートはすべて confirm の上で判定していて、confirm は世代をまたいで**繰り返し
@@ -871,6 +900,19 @@ def sealed_verdict(sealed: Optional[dict]) -> dict:
     ``write_recipe`` は任意の result に対してこれを呼ぶので、**全域関数**にしてある。読めない
     入力で例外を投げると、判定を落とすだけで済むはずが成果物ごと落ちる。区別は 2 語に分けた:
     ``unsealed`` = そもそも split が無い / ``unjudgeable`` = 在るが比べられない。
+
+    「分からない」は一語だが中身は二つある(2026-09-02・7 走の台帳を並べて判明):
+      * **検定力が無かった** —— 走行が confirm で主張した伸びを sealed の問数に直すと帯(1 問)の
+        内側。run T は +1.25/56 問 → sealed 28 問なら 0.62 問、run V は +1.1/65 → 0.54 問。
+        完全に転移していても「分からない」にしかならない走行で、その判定は**封を開ける前から
+        決まっていた**。
+      * **検定力はあったが転移しなかった** —— run Q は +2.5/40 → 1.25 問、run R は +4.37/48 →
+        2.19 問を主張して、sealed では +0.33 問。これは confirm 上の選択が上振れだった証拠で、
+        「分からない」ではなく「confirm の伸びは本物でなかった」と読むべき結果。
+    どちらも同じ ``not-separable`` を返すが、``power`` と note で言い分ける。判定の値を増やさない
+    のは、recipe/README の分類(3 値)を壊さないためと、どちらも「champion を出荷しない」という
+    行動は同じだから。違うのは**次に何をするか**(split を広げる / 手を疑う)で、それは note が言う。
+    ``claimed_gain_cases`` と ``confirm_cases`` が無ければ従来どおり(power は None)。
     """
     def _score(m) -> Optional[float]:
         v = m.get("score")
@@ -883,10 +925,12 @@ def sealed_verdict(sealed: Optional[dict]) -> dict:
 
     if not sealed or not isinstance(sealed, dict):
         return {"verdict": "unsealed", "delta_cases": None, "band_cases": None,
-                "note": "no sealed split: every number fed a decision, so read them as optimistic"}
+                "note": "no sealed split: every number fed a decision, so read them as optimistic",
+                "claimed_confirm_cases": None, "expected_cases": None, "power": None}
 
     def _unjudgeable(note):
-        return {"verdict": "unjudgeable", "delta_cases": None, "band_cases": None, "note": note}
+        return {"verdict": "unjudgeable", "delta_cases": None, "band_cases": None, "note": note,
+                "claimed_confirm_cases": None, "expected_cases": None, "power": None}
 
     seed_m, champ_m = sealed.get("seed"), sealed.get("champion")
     if not isinstance(seed_m, dict) or not isinstance(champ_m, dict):
@@ -904,6 +948,18 @@ def sealed_verdict(sealed: Optional[dict]) -> dict:
                             "so this run is not judged")
 
     delta, band = c_score - s_score, 1.0 / s_n
+    # 主張した伸びを sealed の問数に直す。confirm で +G 問なら sealed(n 問)では G*n/n_confirm 問が
+    # 「完全に転移した時に見えるはずの量」。帯(1 問)に届かなければ、この走行は sealed に何も
+    # 言わせられない設計だった。
+    expected = power = None
+    claimed = (float(claimed_gain_cases)
+               if isinstance(claimed_gain_cases, (int, float))
+               and not isinstance(claimed_gain_cases, bool) and math.isfinite(claimed_gain_cases)
+               else None)
+    if claimed is not None and isinstance(confirm_cases, int) and confirm_cases > 0:
+        expected = round(claimed * s_n / confirm_cases, 2)
+        power = ("nothing-claimed" if claimed <= 0
+                 else "underpowered" if expected <= 1.0 else "powered")
     if delta > band:
         v, note = "improved", "the held-out split agrees the champion is better than the seed"
     elif delta < -band:
@@ -912,10 +968,30 @@ def sealed_verdict(sealed: Optional[dict]) -> dict:
                    "from: the gains measured on confirm did not survive contact with cases "
                    "that never fed a decision. Do not adopt this champion")
     else:
-        v, note = ("not-separable",
-                   "the held-out split cannot tell the champion from the seed at this case "
-                   "count. The run neither proved nor disproved an improvement")
-    return {"verdict": v, "delta_cases": round(delta * s_n, 2), "band_cases": 1.0, "note": note}
+        v = "not-separable"
+        if power == "underpowered":
+            # 分離に要る sealed の問数(この主張のまま)と、この sealed で分離に要る主張の大きさ。
+            # 「どちらを動かすか」は運用者の判断なので両方言う。
+            need_n = int(confirm_cases / claimed) + 1
+            need_g = round(confirm_cases / s_n, 2)
+            note = (f"the held-out split cannot tell the champion from the seed, and it never "
+                    f"could have: the promotions claimed {claimed:+g} of {confirm_cases} confirm "
+                    f"cases, which is {expected:g} of the {s_n} sealed cases, inside the one case "
+                    f"this split resolves. This verdict was fixed before the split was opened. "
+                    f"To be separable at this gain the sealed split needs at least {need_n} "
+                    f"cases; on this split the promotions would have to total more than "
+                    f"{need_g:g} confirm cases")
+        elif power == "powered":
+            note = (f"the held-out split cannot tell the champion from the seed, although it "
+                    f"could have: the promotions claimed {claimed:+g} of {confirm_cases} confirm "
+                    f"cases, which should show as {expected:g} of the {s_n} sealed cases if it were "
+                    f"real, and the split shows {delta * s_n:+.2f}. The confirm gains did not "
+                    f"transfer: read the promotions as selection on confirm, not as an improvement")
+        else:
+            note = ("the held-out split cannot tell the champion from the seed at this case "
+                    "count. The run neither proved nor disproved an improvement")
+    return {"verdict": v, "delta_cases": round(delta * s_n, 2), "band_cases": 1.0, "note": note,
+            "claimed_confirm_cases": claimed, "expected_cases": expected, "power": power}
 
 
 def class_headroom(m: "Measurement", cases: list) -> dict:
@@ -1390,8 +1466,10 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
         "search": _meas(champ_search), "confirm": _meas(champ_confirm),
         "sealed": sealed,
         # 走行そのものの合否。confirm 上の昇格数は「何手通したか」であって「良くなったか」
-        # ではない。封をした split に一度だけ言わせる。
-        "sealed_verdict": sealed_verdict(sealed),
+        # ではない。封をした split に一度だけ言わせる。主張した伸びも渡して、「分からない」が
+        # 検定力の無さなのか転移しなかったのかを言い分けさせる。
+        "sealed_verdict": sealed_verdict(
+            sealed, claimed_gain_cases(history, len(splits["confirm"])), len(splits["confirm"])),
         # クラスごとの伸びしろ(問)。「どこに case を足すべきか」を一般論でなく実測で言う。
         # **変異できるクラスだけ**に絞る(confirm には居るが search に居ないクラスは
         # そもそも触れないので、そこに余地が無いと警告しても打てる手が無い)。

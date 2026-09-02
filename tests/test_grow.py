@@ -36,6 +36,7 @@ from gama.backends import (note_served, note_tool, reset_served, reset_tool_stat
 from gama.grow import (
     MeasurementFailure,
     sealed_verdict,
+    claimed_gain_cases,
     _guard_measurement,
     Measurement,
     paired_gain,
@@ -592,6 +593,16 @@ class TestGrowLoop(ScriptedCase):
         self.assertEqual(res["champion"]["kwargs"]["routing_table"]["qa"], "c")
         self.assertEqual(res["sealed"]["seed"]["score"], 0.0)
         self.assertEqual(res["sealed"]["champion"]["score"], 1.0)
+        # The verdict is told what the run claimed on confirm (1 of 1 confirm case here).
+        # A one-case sealed split cannot clear its own band even on a sweep, and the verdict
+        # now says that this was fixed before the split was opened, instead of a bare
+        # "cannot tell".
+        sv = res["sealed_verdict"]
+        self.assertEqual(sv["verdict"], "not-separable")
+        self.assertEqual(sv["claimed_confirm_cases"], 1.0)
+        self.assertEqual(sv["expected_cases"], 1.0)
+        self.assertEqual(sv["power"], "underpowered")
+        self.assertIn("never could have", sv["note"])
 
     def test_champion_confirm_never_regresses(self):
         Scripted.WINS = {"a": set(), "b": {"qa1", "qa4"}, "c": {"qa1", "qa2", "qa3"}}
@@ -1393,6 +1404,83 @@ class TestSealedVerdict(unittest.TestCase):
         self.assertEqual(v["verdict"], "unjudgeable")
         self.assertIsNone(v["delta_cases"])
         self.assertIn("not a comparison", v["note"])
+
+    # 「分からない」の二つの中身。7 走の台帳を並べて出た区別で、行動が違う(split を広げる /
+    # 手を疑う)ので一語に丸めない。
+    def test_a_gain_too_small_for_the_split_was_never_going_to_separate(self):
+        # run V: +1.1 of 65 confirm → 0.54 of 32 sealed, inside the one-case band
+        v = sealed_verdict(self._s(0.7484, 0.7471, n=32), claimed_gain_cases=1.1, confirm_cases=65)
+        self.assertEqual(v["verdict"], "not-separable")
+        self.assertEqual(v["power"], "underpowered")
+        self.assertEqual(v["claimed_confirm_cases"], 1.1)
+        self.assertAlmostEqual(v["expected_cases"], 0.54, places=2)
+        self.assertIn("never could have", v["note"])
+        self.assertIn("at least 60 cases", v["note"])          # int(65/1.1)+1
+        self.assertIn("more than 2.03 confirm cases", v["note"])  # 65/32
+
+    def test_a_gain_the_split_could_see_but_did_not_is_called_non_transfer(self):
+        # run R: +4.37 of 48 confirm → 2.19 of 24 sealed expected, sealed shows +0.33
+        v = sealed_verdict(self._s(0.8611, 0.8750, n=24), claimed_gain_cases=4.37, confirm_cases=48)
+        self.assertEqual(v["verdict"], "not-separable")
+        self.assertEqual(v["power"], "powered")
+        self.assertAlmostEqual(v["expected_cases"], 2.19, places=2)
+        self.assertIn("did not transfer", v["note"])
+        self.assertIn("+0.33", v["note"])
+
+    def test_no_claimed_gain_keeps_the_plain_reading(self):
+        v = sealed_verdict(self._s(0.85, 0.85), claimed_gain_cases=0.0, confirm_cases=56)
+        self.assertEqual(v["power"], "nothing-claimed")
+        self.assertIn("neither proved nor disproved", v["note"])
+        # a simplify-only run claims a small loss; that is still nothing to prove
+        v = sealed_verdict(self._s(0.85, 0.85), claimed_gain_cases=-0.5, confirm_cases=56)
+        self.assertEqual(v["power"], "nothing-claimed")
+
+    def test_without_a_claim_the_verdict_is_unchanged_and_says_so(self):
+        # old ledgers and callers that pass nothing: same verdict, power unknown, never "powered"
+        v = sealed_verdict(self._s(0.8393, 0.8214))
+        self.assertEqual(v["verdict"], "not-separable")
+        self.assertIsNone(v["power"])
+        self.assertIsNone(v["expected_cases"])
+        for bad in (float("nan"), True, "3"):
+            self.assertIsNone(sealed_verdict(self._s(0.85, 0.85), bad, 56)["power"])
+        self.assertIsNone(sealed_verdict(self._s(0.85, 0.85), 2.0, 0)["power"])
+
+    def test_power_does_not_override_a_real_verdict(self):
+        v = sealed_verdict(self._s(0.6375, 0.8542, n=20), claimed_gain_cases=0.5, confirm_cases=40)
+        self.assertEqual(v["verdict"], "improved")           # sealed moved; that stands
+        self.assertEqual(v["power"], "underpowered")         # the claim was small; also stands
+        v = sealed_verdict(self._s(0.90, 0.80), claimed_gain_cases=5.0, confirm_cases=40)
+        self.assertEqual(v["verdict"], "regressed")
+
+
+class TestClaimedGain(unittest.TestCase):
+    """sealed が検定する仮説の大きさ = 走行が confirm で主張した伸びの合計。"""
+
+    def _gen(self, gen, changed, **kw):
+        row = {"gen": gen, "champion_hash": "h0", "champion_after": "h1" if changed else "h0",
+               "champion_confirm": 0.80}
+        row.update(kw)
+        return row
+
+    def test_adds_promotions_and_subtracts_removals(self):
+        hist = [self._gen(0, True, gain_cases=1.25),
+                self._gen(1, False, gain_cases=3.0),                    # rejected: not claimed
+                self._gen(2, True, simplify_verdict="promote", simplify_confirm=0.79)]
+        # +1.25, then a removal that cost 0.01*56 = 0.56
+        self.assertAlmostEqual(claimed_gain_cases(hist, 56), 0.69, places=2)
+
+    def test_nothing_changed_is_zero_not_none(self):
+        self.assertEqual(claimed_gain_cases([self._gen(0, False, gain_cases=2.0)], 56), 0.0)
+        self.assertEqual(claimed_gain_cases([], 56), 0.0)
+
+    def test_an_unreadable_promotion_makes_the_claim_unknown(self):
+        # a changed generation with no readable gain (an old ledger) must not count as 0:
+        # "nothing claimed" would read as a run that could never separate, which is a lie
+        self.assertIsNone(claimed_gain_cases([self._gen(0, True)], 56))
+        self.assertIsNone(claimed_gain_cases(
+            [self._gen(0, True, simplify_verdict="promote")], 56))
+        self.assertIsNone(claimed_gain_cases([self._gen(0, True, gain_cases=1.0)], 0))
+        self.assertIsNone(claimed_gain_cases([self._gen(0, True, gain_cases=1.0)], None))
 
 
 def _lane_spec(tag):

@@ -383,6 +383,15 @@ def cmd_grow(args: argparse.Namespace) -> int:
             sizes = {k: len(v) for k, v in row["splits"].items()}
             sys.stderr.write(f"[gama] splits {sizes} | seed search={row['search']['score']} "
                              f"confirm={row['confirm']['score']}\n")
+            # sealed が何を言えるかは封を開ける前に決まっている。1 問の帯を confirm の問数に
+            # 直した量より小さい伸びしか通らなかった走行は、転移していても NOT SEPARABLE で
+            # 終わる。run T/V がそれで、走行後に「分からない」と読むのは 3 時間遅い。
+            if sizes.get("sealed") and sizes.get("confirm"):
+                need = sizes["confirm"] / sizes["sealed"]
+                sys.stderr.write(
+                    f"[gama] the sealed split resolves one case, which is {need:.2f} confirm "
+                    f"cases of claimed gain: promotions totalling less than that will end "
+                    "NOT SEPARABLE by construction, whatever they are worth.\n")
             if row.get("margin_floor_coarse"):
                 sys.stderr.write(
                     f"[gama] WARNING: only {len(row['splits']['confirm'])} confirm cases, so "
@@ -556,12 +565,13 @@ def cmd_grow(args: argparse.Namespace) -> int:
                 "promoted: the champion IS the seed, so there was nothing for the sealed split "
                 "to tell apart. The refusals are the result here.\n")
         else:
+            # note は「検定力が無かった(封を開ける前から決まっていた)」と「あったが転移しな
+            # かった(confirm の伸びは選択の上振れ)」を言い分けている。ここで一般論に丸めない。
             sys.stderr.write(
                 f"[gama] HELD-OUT VERDICT: NOT SEPARABLE ({sv['delta_cases']:+} cases, and the "
-                f"sealed split resolves {sv.get('band_cases', 1):g}). The run promoted changes "
-                "that its held-out cases cannot tell apart from the seed. That is not a "
-                "failure, but it is not an improvement either — say so when quoting these "
-                "numbers.\n")
+                f"sealed split resolves {sv.get('band_cases', 1):g}). {sv['note']}. "
+                "That is not a failure, but it is not an improvement either — say so when "
+                "quoting these numbers.\n")
     elif sv.get("verdict") == "improved":
         sys.stderr.write(f"[gama] HELD-OUT VERDICT: IMPROVED ({sv['delta_cases']:+} cases on "
                          "cases that never fed a decision).\n")

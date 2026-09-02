@@ -120,6 +120,10 @@ Seeded from this recipe, with the `crux` suite added to the pool (129 cases, spl
 | 4 | `route:content → kimi-cold` | 0.759 → 0.767 | 2 / 1 | search-not-better |
 
 Sealed: seed 0.748, champion 0.747 — **not separable** (the eighth run in a row on this box).
+Re-read with the promotions' claim in hand: +1.1 of 65 confirm cases is 0.54 of 32 sealed
+cases, so this run was **underpowered by construction**; sealed could not have said anything
+either way. (Run R on this box was the other kind: +4.37 of 48 claimed, 2.19 sealed cases
+expected, +0.33 seen — the gains did not transfer.)
 
 Three things this run showed, none of them about the model:
 
