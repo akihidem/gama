@@ -455,11 +455,14 @@ the model's.)
 
 The queue reads that diagnosis. Every measurement records, per class, how many tool calls came
 back without a code block (`tool_no_code_by_class`), and the `+prefill` for the most symptomatic
-class goes to the front of the tool slot. Without it the proposer is fair to a fault: run W's
-seed said "no code, 8 of 72 confirm calls", and with width 4, seven kinds and five classes the
-research prefill was not going to reach the front of the queue in five generations. The rotation
-exists so that nothing is starved; when the measurement already names the place, waiting a turn
-is the loop ignoring its own data.
+class goes to the front of the tool slot. Without it the order is the rotation's: run W's seed
+said "no code, 8 of 72 confirm calls", all of it research, and gen1's tool slot still went to
+`tool:qa(kimi-cold)+prefill`, a class whose tool lane was already returning code. Replaying
+`propose()` from that checkpoint (no model involved) puts the research prefill in gen2, one
+rotation step later. This paragraph first said "not in five generations", worked out from the
+rotation rules alone; the replay corrected it, and one generation is what the diagnosis bought
+in run W. What it changes is where the order comes from: the measurement, rather than the
+position the rotation happened to start at.
 
 #### Three things the loop was doing wrong and could not see
 

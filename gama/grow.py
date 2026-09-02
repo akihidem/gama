@@ -315,10 +315,11 @@ def propose(champion: dict, pool: dict[str, dict], classes: list[str],
 
     ``no_code_by_class`` はチャンピオンの測定が残した診断(クラス → tool レーンでコードが
     出なかった call 数)。症状のあるクラスの ``+prefill`` を tool 枠の先頭に出す。巡回は
-    「どこも均等に触る」ための順で、症状の場所を測定が既に言っているのに順番待ちさせると、
-    処方が出番を得る前に走行が終わる(run W: width 4・7 種類・5 クラスで、seed の confirm が
-    no_code 8/72 を出していても、research の prefill は 5 世代のどこにも並ばなかった)。
-    診断が無ければ巡回のまま。
+    「どこも均等に触る」ための順で、症状の場所を測定が既に言っているのに順番待ちさせるのは
+    ループが自分のデータを無視すること(run W: seed の confirm が research で no_code 8/72 を
+    出していても gen1 の tool 枠は巡回で qa の prefill に行き、research のは checkpoint から
+    propose を再生すると gen2。診断で gen0 に来る。順番の出どころを巡回の開始位置でなく測定に
+    する)。診断が無ければ巡回のまま。
 
     1 手だけなのは、勝因を測定に帰属させるため(2 手同時だとどちらが効いたか台帳から読めない)。
     種類を round-robin で混ぜるのは、``width`` を絞ったときに ``route`` 変異だけで埋まって
