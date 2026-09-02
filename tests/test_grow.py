@@ -3314,6 +3314,22 @@ class TestSaturatedClasses(ScriptedCase):
         self.assertTrue(expected, "the run reported no headroom to aim at")
         self.assertIn(f"[gama] {expected[0][2:]}", err.getvalue())
 
+    def test_the_recipe_says_what_set_the_bar(self):
+        from gama.grow import _bar_lines
+        self.assertIn("set by NOISE in 3 of 5",
+                      _bar_lines({"bound_by": {"floor": 2, "drift": 3}})[0])
+        self.assertIn("`--repeats` is the lever",
+                      _bar_lines({"bound_by": {"floor": 2, "drift": 3}})[0])
+        self.assertIn("set by RESOLUTION in 4 of 5",
+                      _bar_lines({"bound_by": {"floor": 4, "drift": 1}})[0])
+        self.assertIn("more cases IN THE CLASS",
+                      _bar_lines({"bound_by": {"floor": 4, "drift": 1}})[0])
+        self.assertEqual(_bar_lines({}), [])
+        self.assertEqual(_bar_lines({"bound_by": {"floor": 0, "drift": 0}}), [])
+        # 同数は RESOLUTION 側(世代単位の分類が同点を床にしているのと同じ向き)
+        self.assertIn("set by RESOLUTION in 2 of 4",
+                      _bar_lines({"bound_by": {"floor": 2, "drift": 2}})[0])
+
     def test_the_seed_row_says_where_it_loses_and_what_the_diagnosis_sees(self):
         # 走行を 3 時間回してから「content で落ちていた」と知るのは遅い。種の測定の時点で、
         # クラス別の伸びしろと、そこに見えている症状を並べて出す(次に何を変えるかの材料)。

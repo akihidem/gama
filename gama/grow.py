@@ -2620,6 +2620,31 @@ def _prescription_lines(result: dict) -> list[str]:
     return lines
 
 
+def _bar_lines(result: dict) -> list[str]:
+    """昇格の敷居を決めていたのは分解能か揺れか(次に何を変えるかが正反対になる)。
+
+    CLI は走行の最後にこれを言うが、recipe には残っていなかった。半年後に読む人が持つのは
+    recipe の方なので、同じことを書く: 床律速なら「変えているクラスの case を増やす」、
+    揺れ律速なら「repeats を上げる」。
+    """
+    bound = result.get("bound_by") or {}
+    floor, drift = bound.get("floor") or 0, bound.get("drift") or 0
+    if not (floor or drift):
+        return []
+    total = floor + drift          # 分類できた世代の数(bound_by が数えるのはこの 2 つだけ)
+    # 同数のときは RESOLUTION 側に倒す: 世代単位の分類が `margin_floor >= drift` を floor と
+    # している(同点は床)ので、集計だけ逆に倒すと同じ台帳が二通りに読める(codex 指摘)。
+    if drift > floor:
+        return [f"- the bar was set by NOISE in {drift} of {total} judged generation(s): the "
+                f"champion's "
+                f"own re-measurement moved more than one case, so `--repeats` is the lever, not "
+                f"more cases"]
+    return [f"- the bar was set by RESOLUTION in {floor} of {total} judged generation(s): a "
+            f"change has "
+            f"to be worth one whole confirm case, so the lever is more cases IN THE CLASS being "
+            f"changed (not a bigger pool, and not more `--repeats`)"]
+
+
 def next_lever_lines(result: dict) -> list[str]:
     """次の走行で狙う場所(残った伸びしろの最大と、そこに見えている症状)。
 
@@ -2752,6 +2777,7 @@ def write_recipe(result: dict, directory, name: Optional[str] = None,
         f"({result['archive_size']} designs measured)",
         *_prescription_lines(result),
         *trace_lines(result),
+        *_bar_lines(result),
         *next_lever_lines(result),
         "- every promotion required a held-out `confirm` win larger than the champion's own "
         "re-measurement drift; no LLM judged anything.",
