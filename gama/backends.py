@@ -690,6 +690,53 @@ def reset_tool_stats() -> None:
         _TOOL[k] = 0
 
 
+def _backend_tree(backend):
+    """``backend`` と、その中に在る backend を全部。**消す側と読む側が同じ木を見る**ための
+    単一の歩き方(片方だけ直すと、消し残しを読む形の再発になる。子の辿り方は属性の中身で
+    決めるので、包む側ごとに書き足す必要が無い)。"""
+    seen: set = set()
+    stack = [backend]
+    while stack:
+        node = stack.pop()
+        if id(node) in seen:
+            continue
+        seen.add(id(node))
+        if isinstance(node, ModelBackend):
+            yield node
+            stack.extend(vars(node).values())
+        elif isinstance(node, dict):
+            stack.extend(node.values())
+        elif isinstance(node, (list, tuple)):
+            stack.extend(node)
+
+
+def finish_reason_of(backend):
+    """この call で木の中の**誰か**が報告した停止理由。切断が 1 つでもあれば ``"length"``。
+
+    外側の属性だけを読むと、合議レーンは常に ``None`` を返す(EnsembleBackend は自分では
+    理由を持たない)。実測(run Z の種): research 20 コールが全部 ``None`` で、切断の診断は
+    合議に振ったクラスに対して**構造的に盲**だった。読む側が木を歩くのは
+    ``clear_finish_reason`` と同じ立て付けで、包む側ごとに proxy を書き足さなくて済む。
+    **歩き方は ``clear_finish_reason`` と同一**でなければならない: 消す範囲より読む範囲が
+    広いと、前の call の理由が今の call に載る(消し残しを読むことになる)。だから両方とも
+    ``_backend_tree`` を使う ── 一致をコメントで約束せず、木を 1 つにして構造で保証する
+    (テストでも「消した直後は必ず None」を固定してある)。
+
+    「誰か 1 つでも length なら length」なのは、この値の用途が診断だから: 記録 1 件の中で
+    枠に当たった呼び出しが在ったかどうかが、処方(枠を 2 倍)の当たり所を決める。
+    """
+    reasons = {str(r) for r in (getattr(n, "last_finish_reason", None)
+                                for n in _backend_tree(backend)) if r}
+    if "length" in reasons:
+        return "length"
+    # "stop" は「普通に終わった」で情報が最も薄い。content_filter のような**珍しい理由**が
+    # 同じ木に在るなら、そちらを残す(codex 指摘: 優先順位で情報を落とさない)。
+    other = sorted(r for r in reasons if r != "stop")
+    if other:
+        return other[0]
+    return "stop" if reasons else None
+
+
 def clear_finish_reason(backend) -> None:
     """``last_finish_reason`` を、この backend と**その中の全 backend** で None にする。
 
@@ -699,21 +746,9 @@ def clear_finish_reason(backend) -> None:
     の仕事で、読む側は木の全部を消す。子の辿り方は属性の中身で決める(dict / list / tuple の
     中の ModelBackend も含む)ので、包む側ごとに消し方を足して回る必要が無い。
     """
-    seen: set = set()
-    stack = [backend]
-    while stack:
-        node = stack.pop()
-        if id(node) in seen:
-            continue
-        seen.add(id(node))
-        if isinstance(node, ModelBackend):
-            if hasattr(node, "last_finish_reason"):
-                node.last_finish_reason = None
-            stack.extend(vars(node).values())
-        elif isinstance(node, dict):
-            stack.extend(node.values())
-        elif isinstance(node, (list, tuple)):
-            stack.extend(node)
+    for node in _backend_tree(backend):
+        if hasattr(node, "last_finish_reason"):
+            node.last_finish_reason = None
 
 
 def _parses(code: str) -> bool:

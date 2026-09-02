@@ -1827,6 +1827,7 @@ def _run_one(name: str, backend, case: BenchCase, tier: ModelTier, rep: int,
     uc = unit_cost.get(name, 0.0)
     cost = round((tokens / 1000.0) * uc, 6) if (tokens and uc) else None
     output = output or ""
+    from .backends import finish_reason_of as _finish_reason_of   # 遅延 import(循環を避ける)
     return {
         "backend": name, "task_type": case.task_type, "case_id": case.case_id, "rep": rep,
         "score": round(score, 4), "success": score >= 0.5, "latency_s": latency,
@@ -1835,7 +1836,9 @@ def _run_one(name: str, backend, case: BenchCase, tier: ModelTier, rep: int,
         # 全文は重い(切れた返答で 8-9K 字)ので、長さ・末尾(crux は最後の整数を読む)・止まった
         # 理由を持つ。finish_reason は単体モデルと tool レーンだけが名乗れる(合議は None)。
         "output_chars": len(output), "output_tail": output[-200:],
-        "finish_reason": getattr(backend, "last_finish_reason", None),
+        # 木の中の誰かが言った理由(合議は自分では言わない)。外側だけ読むと、合議に振った
+        # クラスの切断が構造的に見えなくなる(run Z の種: research 20 コールが全部 None)。
+        "finish_reason": _finish_reason_of(backend),
     }
 
 

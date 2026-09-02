@@ -675,6 +675,52 @@ class TestPropose(ScriptedCase):
         # both calls were cut; only the one that lost a point is a symptom
         self.assertEqual(m.cut_by_class, {"qa": 1})
 
+    def test_a_cut_inside_an_ensemble_is_seen_by_the_diagnosis(self):
+        # run Z の種: research の 20 コールは全部 finish=None だった。合議は自分では停止理由を
+        # 名乗らないので、外側の属性だけ読む限り**合議に振ったクラスの切断は構造的に見えない**。
+        # 読む側が木を歩けば見える(そこが処方の当たり所になる)。
+        from gama.backends import EnsembleBackend, ToolBackend, finish_reason_of
+        from gama.benchmark import _run_one
+        from gama.models import ModelTier
+
+        class Says(ModelBackend):
+            available = True
+
+            def __init__(self, reason=None):
+                self.last_usage = None
+                self.reason = reason
+                self.last_finish_reason = None
+
+            def complete(self, prompt, tier, **kw):
+                self.last_finish_reason = self.reason
+                return "GOOD"
+
+        cut, fine = Says("length"), Says("stop")
+        ens = EnsembleBackend([fine, cut], strategy="first")
+        case = BenchCase("c1", "qa", "case=c1", lambda o: 1.0)
+        rec = _run_one("ens", ens, case, ModelTier.LARGE, 0, {})
+        self.assertEqual(rec["finish_reason"], "length",
+                         "a member cut at the token limit was invisible to the record")
+        # 誰も切られていなければ stop、誰も名乗らなければ None
+        self.assertEqual(finish_reason_of(EnsembleBackend([Says("stop")], strategy="first")),
+                         None)   # まだ呼ばれていない木は理由を持たない
+        ens2 = EnsembleBackend([Says("stop")], strategy="first")
+        _run_one("ens2", ens2, case, ModelTier.LARGE, 0, {})
+        self.assertEqual(finish_reason_of(ens2), "stop")
+        # 入れ子(tool の内側の合議)でも同じ。木は毎回作り直す: 使い回すと「前の call の値を
+        # 読んだだけ」でも通ってしまう
+        deep = ToolBackend(EnsembleBackend([Says("stop"), Says("length")], strategy="first"))
+        _run_one("deep", deep, case, ModelTier.LARGE, 0, {})
+        self.assertEqual(finish_reason_of(deep), "length")
+        # 珍しい理由は "stop" に潰さない(切断だけが特別扱い)
+        odd = EnsembleBackend([Says("stop"), Says("content_filter")], strategy="first")
+        _run_one("odd", odd, case, ModelTier.LARGE, 0, {})
+        self.assertEqual(finish_reason_of(odd), "content_filter")
+        # 読む範囲は消す範囲と同じ: 消した直後の木は必ず None を返す(消し残しを読まない)
+        from gama.backends import clear_finish_reason
+        clear_finish_reason(deep)
+        self.assertIsNone(finish_reason_of(deep))
+
     def test_the_preamble_symptom_is_counted_from_the_measurement(self):
         from gama.models import ModelTier
 
