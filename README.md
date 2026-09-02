@@ -471,6 +471,16 @@ two confirm cases net, while failing every crux research case. A lane can be bro
 you built to expose it and still be paying for itself on the rest. The recipe keeps both, and the
 [`recipes/grown-aws-kimi48b`](recipes/grown-aws-kimi48b) notes record the run.
 
+Counted across every ledger on this box, that is the pattern: the removal branch has spent 14
+confirm measurements, 13 of them ended "measurably worse", and the fourteenth promoted a removal
+in the run whose server had died, where champion and removal both scored 0.0000. Every one of the
+13 had already lost the *search* split by more than the band, so a removal passes the same cost
+gate the additions pass now — outside the band, no confirm measurement is spent. The decision
+gate stays asymmetric (additions must be better, removals need only be not worse); it is the
+question of whether to spend a measurement that is the same on both sides. On the history it
+changes no decision and refuses the one spurious promotion before measuring it. A removal refused
+that way is recorded as settled rather than challenged, so the next champion gets to ask again.
+
 The last row of the table is the one thing that moved the model, and it is a change to the
 *lane*, not the prompt: `ToolBackend(prefill="```python\n")` hands the model the opening of its
 own reply, so the only thing left to decide is what goes inside the fence. It is opt-in per
