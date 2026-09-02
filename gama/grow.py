@@ -520,6 +520,8 @@ class Measurement:
     # 「道具として測れていない」ので、低い得点をモデルの弱さと読んではいけない。
     tool_calls: int = 0
     tool_ran: int = 0
+    tool_no_code: int = 0      # ```python が出てこなかった(prompt/モデル側の問題)
+    tool_empty_out: int = 0    # コードは走ったが何も print しなかった(生成コード側の問題)
 
 
 def measure(spec: dict, cases: list[BenchCase], tier: ModelTier = ModelTier.LARGE,
@@ -543,11 +545,13 @@ def measure(spec: dict, cases: list[BenchCase], tier: ModelTier = ModelTier.LARG
         by_case.setdefault(r["case_id"], []).append(r["score"])
     per_case = {cid: sum(v) / len(v) for cid, v in by_case.items()}
     error_cases = frozenset(r["case_id"] for r in records if r.get("error"))
+    ts = tool_stats()          # グローバルは一度だけ読む(呼ぶたびに変わりうる値を混ぜない)
     return Measurement(score=agg["score"], success_rate=agg["success_rate"],
                        latency_s=agg["latency_s"], n=agg["n"], cases=len(cases),
                        errors=errors, error_rate=round(errors / len(records), 4) if records else 0.0,
                        per_case=per_case, error_cases=error_cases,
-                       tool_calls=tool_stats()["calls"], tool_ran=tool_stats()["ran"])
+                       tool_calls=ts["calls"], tool_ran=ts["ran"],
+                       tool_no_code=ts["no_code"], tool_empty_out=ts["empty_out"])
 
 
 # --------------------------------------------------------------------------- #

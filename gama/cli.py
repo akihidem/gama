@@ -401,14 +401,21 @@ def cmd_grow(args: argparse.Namespace) -> int:
             if isinstance(_m, dict) and _m.get("tool_calls") and not _m.get("tool_ran"):
                 if not seen.get("tool_warned"):
                     seen["tool_warned"] = True
+                    # 原因で言い分ける: コードが出ないのは prompt/モデル側、出力が空なのは
+                    # 生成コード側。直し方が正反対なので「動かなかった」で束ねない。
+                    nc, eo = _m.get("tool_no_code", 0), _m.get("tool_empty_out", 0)
+                    why = (f"{nc} produced no code block at all"
+                           if nc >= eo else
+                           f"{eo} ran but printed nothing")
                     sys.stderr.write(
-                        f"[gama] WARNING: a tool lane ran {_m['tool_calls']} times and NEVER "
-                        "produced runnable code — every one of those calls fell back to the "
-                        "model's raw reply. You are not measuring a tool lane, you are "
-                        "measuring the bare model with a code-writing prompt in front of it, "
-                        "which scores WORSE than the bare model. Check the lane's max_tokens: "
-                        "a reasoning model can spend the whole budget before it writes any "
-                        "code.\n")
+                        f"[gama] WARNING: a tool lane was called {_m['tool_calls']} times and "
+                        f"NEVER returned a program's output ({why}). Every one of those calls "
+                        "fell back to the model's raw reply, so you are not measuring a tool "
+                        "lane — you are measuring the bare model with a code-writing prompt in "
+                        "front of it, which scores WORSE than the bare model. No code block "
+                        "means the model would not follow the format (try another model, or a "
+                        "less quantized one); code that prints nothing means the generated "
+                        "program is wrong.\n")
         if ev == "candidate":
             sys.stderr.write(f"[gama]  gen{row['gen']} {row['label']:<34} "
                              f"search={row['search']['score']}\n")

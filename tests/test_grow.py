@@ -1628,6 +1628,9 @@ class TestToolLaneHealth(unittest.TestCase):
                     SUITES["default"][:3])
         self.assertEqual(m.tool_calls, 3)
         self.assertEqual(m.tool_ran, 0)
+        # echo はコードを一切書かないので、原因は「コードが出てこない」側に立つ
+        self.assertEqual(m.tool_no_code, 3)
+        self.assertEqual(m.tool_empty_out, 0)
 
     def test_a_lane_without_a_tool_reports_zero_calls(self):
         from gama.benchmark import SUITES
@@ -1635,8 +1638,11 @@ class TestToolLaneHealth(unittest.TestCase):
         self.assertEqual(m.tool_calls, 0)     # 0 は「道具を通っていない」であって失敗ではない
 
     def test_the_counter_separates_ran_from_fell_back(self):
-        note_tool(True); note_tool(False); note_tool(True)
-        self.assertEqual(tool_stats(), {"calls": 3, "ran": 2, "fell_back": 1})
+        note_tool(ran=True, had_code=True)
+        note_tool(ran=False, had_code=False)     # コードが出てこなかった
+        note_tool(ran=False, had_code=True)      # コードは走ったが出力が空
+        self.assertEqual(tool_stats(),
+                         {"calls": 3, "ran": 1, "no_code": 1, "empty_out": 1})
 
 
 class TestSshExtraBody(unittest.TestCase):

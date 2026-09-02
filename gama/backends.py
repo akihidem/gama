@@ -601,23 +601,30 @@ class EnsembleBackend(ModelBackend):
 # error_rate にも出ず、低い得点として静かに data に混ざる。実測(2026-09-02, Kimi-48B):
 # crux の research 4 問はすべて ```python が一度も出ず、生の思考文が返っていた。
 # その状態の tool レーンは素のモデルより悪くなる(答えでなく途中の思考が採点される)。
-_TOOL: dict = {"calls": 0, "ran": 0}
+# 3 状態を分ける。「コードが出てこない」と「コードは動いたが何も print しなかった」は
+# 直し方が正反対(前者は prompt/モデルの問題・後者は生成コードの問題)なので、まとめて
+# 「fall back」と数えると診断にならない。run_bench は直列なのでグローバルで足りる。
+_TOOL: dict = {"calls": 0, "ran": 0, "no_code": 0, "empty_out": 0}
 
 
-def note_tool(ran: bool) -> None:
+def note_tool(*, ran: bool, had_code: bool) -> None:
     _TOOL["calls"] += 1
-    _TOOL["ran"] += 1 if ran else 0
+    if ran:
+        _TOOL["ran"] += 1
+    elif had_code:
+        _TOOL["empty_out"] += 1      # コードは取れて走ったが、出力が空だった
+    else:
+        _TOOL["no_code"] += 1        # そもそも ```python が出てこなかった
 
 
 def tool_stats() -> dict:
-    """(calls, ran, fell_back)。calls が 0 なら tool レーンを一度も通っていない。"""
-    return {"calls": _TOOL["calls"], "ran": _TOOL["ran"],
-            "fell_back": _TOOL["calls"] - _TOOL["ran"]}
+    """calls / ran / no_code / empty_out。calls が 0 なら tool レーンを通っていない。"""
+    return dict(_TOOL)
 
 
 def reset_tool_stats() -> None:
-    _TOOL["calls"] = 0
-    _TOOL["ran"] = 0
+    for k in _TOOL:
+        _TOOL[k] = 0
 
 
 class ToolBackend(ModelBackend):
@@ -663,13 +670,14 @@ class ToolBackend(ModelBackend):
                                       text=True, timeout=self.timeout, cwd=sandbox)
             out = proc.stdout.strip()
             if out:
-                note_tool(True)
+                note_tool(ran=True, had_code=bool(blocks))
                 return out
         except Exception:
             pass
         # ここに来たら道具は働いていない。返すのは素の返答だが、**その事実を数える**
         # (黙って低い点になるだけだと、道具が壊れているのかモデルが弱いのか区別できない)。
-        note_tool(False)
+        # コードが在ったかどうかも一緒に残す —— 直し方が正反対なので混ぜない。
+        note_tool(ran=False, had_code=bool(blocks))
         return raw  # fall back to the model's direct answer
 
 
