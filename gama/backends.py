@@ -235,7 +235,8 @@ class SshOpenAIBackend(ModelBackend):
     def __init__(self, ssh_host: str | None = None, port: int = 8080,
                  path: str = "/v1/chat/completions", model_by_tier: dict | None = None,
                  ssh_opts: list | None = None, timeout: int = 900,
-                 max_tokens: int | None = None, temperature: float | None = None):
+                 max_tokens: int | None = None, temperature: float | None = None,
+                 extra_body: dict | None = None):
         self.ssh_host = ssh_host
         self.port = port
         self.path = path
@@ -244,6 +245,13 @@ class SshOpenAIBackend(ModelBackend):
         self.timeout = timeout
         self.max_tokens = max_tokens
         self.temperature = temperature  # >0 gives ensemble diversity across repeats
+        # サーバ固有の sampling パラメータを config から届かせるための素通し。
+        # 実害(2026-09-02): temperature 0 の greedy decoding で同じ段落を反復し続け、
+        # tool レーンがコードに到達する前に token 予算を使い切っていた。llama.cpp なら
+        # `repeat_penalty` がその制御だが、backend が temperature と max_tokens しか
+        # 組み立てないので、pool の config からは手が届かなかった。
+        # 必須フィールド(model/messages/stream)は後から上書きするので、ここで壊せない。
+        self.extra_body = dict(extra_body or {})
         self.last_usage = None
 
     def _remote_cmd(self) -> str:
@@ -264,8 +272,9 @@ class SshOpenAIBackend(ModelBackend):
         if not self.ssh_host:
             raise RuntimeError("SshOpenAIBackend requires ssh_host")
         model = self.model_by_tier.get(tier) or self.model_by_tier.get(ModelTier.LARGE)
-        payload = {"model": model, "messages": [{"role": "user", "content": prompt}],
-                   "stream": False}
+        payload = dict(self.extra_body)
+        payload.update({"model": model, "messages": [{"role": "user", "content": prompt}],
+                        "stream": False})
         if self.max_tokens:
             payload["max_tokens"] = self.max_tokens
         if self.temperature is not None:

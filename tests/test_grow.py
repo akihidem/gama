@@ -1637,3 +1637,33 @@ class TestToolLaneHealth(unittest.TestCase):
     def test_the_counter_separates_ran_from_fell_back(self):
         note_tool(True); note_tool(False); note_tool(True)
         self.assertEqual(tool_stats(), {"calls": 3, "ran": 2, "fell_back": 1})
+
+
+class TestSshExtraBody(unittest.TestCase):
+    """サーバ固有の sampling パラメータ(llama.cpp の repeat_penalty 等)が config から
+    届くこと。届かないせいで、temperature 0 の反復ループに手が出せなかった。"""
+
+    def test_extra_body_reaches_the_payload_but_cannot_break_required_fields(self):
+        import json as _json
+        from gama.backends import SshOpenAIBackend
+        from gama.models import ModelTier
+        be = SshOpenAIBackend(ssh_host="h", extra_body={"repeat_penalty": 1.15,
+                                                        "model": "hijacked",
+                                                        "stream": True})
+        captured = {}
+
+        class _Proc:
+            returncode = 0
+            stdout = _json.dumps({"choices": [{"message": {"content": "ok"}}]})
+            stderr = ""
+
+        import gama.backends as b
+        real = b.subprocess.run
+        b.subprocess.run = lambda *a, **k: (captured.update(_json.loads(k["input"])), _Proc())[1]
+        try:
+            be.complete("hi", ModelTier.LARGE)
+        finally:
+            b.subprocess.run = real
+        self.assertEqual(captured["repeat_penalty"], 1.15)
+        self.assertNotEqual(captured["model"], "hijacked")   # 必須フィールドは奪われない
+        self.assertFalse(captured["stream"])
