@@ -3281,3 +3281,153 @@ class TestCallTrace(ScriptedCase):
             self.assertIsNone(res2["trace"])
             md2 = (write_recipe(res2, Path(d) / "bare") / "recipe.md").read_text(encoding="utf-8")
             self.assertNotIn("per-call trace", md2)
+
+
+class TestTraceReader(ScriptedCase):
+    """`gama trace`: the trace answers "which case moved" only if something reads it per case.
+    The readers are the same functions the run's own summary uses, so a table and the summary
+    line never disagree about what a row is."""
+
+    def test_trace_diff_compares_the_per_case_means_of_two_designs(self):
+        from gama.grow import trace_diff
+        rows = [
+            # a: q1 measured twice (0 then 1 -> mean 0.5), q2 once, q3 once (b never saw q3)
+            {"event": "call", "spec": "aaa", "split": "confirm", "case": "q1", "class": "qa", "score": 0.0},
+            {"event": "call", "spec": "aaa", "split": "confirm", "case": "q1", "class": "qa", "score": 1.0},
+            {"event": "call", "spec": "aaa", "split": "confirm", "case": "q2", "class": "qa", "score": 1.0},
+            {"event": "call", "spec": "aaa", "split": "confirm", "case": "r1", "class": "research", "score": 1.0},
+            {"event": "call", "spec": "aaa", "split": "sealed", "case": "q3", "class": "qa", "score": 1.0},
+            {"event": "call", "spec": "bbb", "split": "confirm", "case": "q1", "class": "qa", "score": 1.0},
+            {"event": "call", "spec": "bbb", "split": "confirm", "case": "q2", "class": "qa", "score": 1.0},
+            {"event": "call", "spec": "bbb", "split": "confirm", "case": "r1", "class": "research", "score": 0.0},
+            {"event": "call", "spec": "bbb", "split": "search", "case": "s1", "class": "qa", "score": 1.0},
+            # a failed call has no score and must not count as a 0
+            {"event": "call", "spec": "bbb", "split": "confirm", "case": "q2", "class": "qa", "score": None},
+            {"event": "call", "spec": "ccc", "split": "confirm", "case": "q1", "class": "qa", "score": 0.0},
+        ]
+        d = trace_diff(rows, "aaa", "bbb")
+        self.assertEqual((d["shared"], d["wins"], d["losses"], d["ties"]), (3, 1, 1, 1))
+        self.assertEqual(d["delta_cases"], -0.5)                       # +0.5 on q1, -1 on r1
+        self.assertEqual(d["by_class"], {"qa": 0.5, "research": -1.0})
+        self.assertEqual([(m["case"], m["a"], m["b"], m["delta"], m["n_a"], m["n_b"])
+                          for m in d["moved"]],
+                         [("q1", 0.5, 1.0, 0.5, 2, 1), ("r1", 1.0, 0.0, -1.0, 1, 1)])
+        self.assertEqual(d["only_a"], ["sealed/q3"])       # named with its split
+        self.assertEqual(d["only_b"], ["search/s1"])
+        # the same design against itself: nothing moves
+        same = trace_diff(rows, "aaa", "aaa")
+        self.assertEqual((same["wins"], same["losses"], same["ties"]), (0, 0, 4))
+        # an unknown design shares nothing rather than raising
+        self.assertEqual(trace_diff(rows, "aaa", "zzz")["shared"], 0)
+        # the CLI resolves a hash prefix: unique wins, empty and ambiguous are refused by name
+        from gama.cli import _resolve_spec
+        self.assertEqual(_resolve_spec("a", rows), "aaa")
+        with self.assertRaisesRegex(ValueError, "empty"):
+            _resolve_spec("", rows)
+        with self.assertRaisesRegex(ValueError, "matches 2"):
+            _resolve_spec("aa", rows + [dict(rows[0], spec="aab")])
+        with self.assertRaisesRegex(ValueError, "no design"):
+            _resolve_spec("q", rows)
+        # the summary made from rows already read is the one made from the file
+        from gama.grow import trace_summary
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "t.jsonl"
+            path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+            self.assertEqual(trace_summary(path, rows), trace_summary(path))
+            self.assertEqual(trace_summary(path)["calls"], len(rows))
+        # a row without a class is counted under "none", like the summary does it
+        rows.append({"event": "call", "spec": "aaa", "split": "confirm", "case": "x", "score": 0.0})
+        rows.append({"event": "call", "spec": "bbb", "split": "confirm", "case": "x", "score": 1.0})
+        self.assertEqual(trace_diff(rows, "aaa", "bbb")["by_class"],
+                         {"none": 1.0, "qa": 0.5, "research": -1.0})
+
+    def test_the_cli_reads_a_real_trace_with_the_ledger_beside_it_for_labels(self):
+        Scripted.WINS = {"a": set(), "b": {"qa1", "qa2", "qa4"}}
+        pool = {"a": _lane("a"), "b": _lane("b")}
+        with tempfile.TemporaryDirectory() as d:
+            led = Path(d) / "run.jsonl"
+            res = grow(pool, cases=_cases(8), generations=2, width=2, patience=5,
+                       min_margin=0.05, ledger_path=str(led))
+            trace = Path(d) / "run.trace.jsonl"
+            ledger = [json.loads(l) for l in led.read_text(encoding="utf-8").splitlines()]
+            labels = {r["hash"]: r["label"] for r in ledger if r["event"] == "candidate"}
+            out, err = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                rc = main(["trace", str(trace)])
+            self.assertEqual(rc, 0)
+            self.assertIn(f"per-call trace: {res['trace']['calls']} calls", err.getvalue())
+            table = out.getvalue()
+            # every candidate hash is named by its ledger label, the seed by "seed"
+            for h, label in labels.items():
+                self.assertIn(label, table)
+            self.assertIn("seed", table)
+            self.assertIn(res["seed_hash"][:12], table)
+            # --json gives the same table as records
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(main(["trace", str(trace), "--json"]), 0)
+            groups = json.loads(out.getvalue())
+            self.assertEqual(sum(g["calls"] for g in groups), res["trace"]["calls"])
+            self.assertTrue(all(g["cut"] == 0 for g in groups))     # scripted: no finish reason
+            seed_rows = [g for g in groups if g["spec"] == res["seed_hash"]]
+            self.assertTrue(seed_rows)
+            # a mutation that puts the seed back has the seed's hash: both names are shown,
+            # and so is "champion" when the run ended on it
+            self.assertTrue(all(g["label"].startswith("seed") for g in seed_rows))
+            if res["champion_hash"] == res["seed_hash"]:
+                self.assertTrue(all(g["label"].endswith("= champion") for g in seed_rows))
+            champ = [g for g in groups if g["spec"] == res["champion_hash"]]
+            self.assertTrue(champ and all("champion" in g["label"] for g in champ))
+            back = [l for h, l in labels.items() if h == res["seed_hash"]]
+            for l in back:
+                self.assertTrue(all(l in g["label"] for g in seed_rows), (l, seed_rows))
+            # --rows prints one line per matching call, --split narrows it
+            out, err = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                self.assertEqual(main(["trace", str(trace), "--rows", "--split", "sealed"]), 0)
+            n_sealed = len([l for l in trace.read_text(encoding="utf-8").splitlines()
+                            if '"split": "sealed"' in l])
+            self.assertEqual(len(out.getvalue().splitlines()), n_sealed)
+            self.assertIn(f"{n_sealed} of {res['trace']['calls']} calls match", err.getvalue())
+            # --diff between the seed and a candidate, by hash prefix, agrees with the ledger's
+            # search scores: the candidate's search mean minus the seed's, in cases
+            cand = [r for r in ledger if r["event"] == "candidate" and r["gen"] == 0][0]
+            seed_search = [r for r in ledger if r["event"] == "seed"][0]["search"]["score"]
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(main(["trace", str(trace), "--diff", res["seed_hash"][:6],
+                                       cand["hash"][:6], "--json"]), 0)
+            dd = json.loads(out.getvalue())
+            self.assertEqual((dd["a"], dd["b"]), (res["seed_hash"], cand["hash"]))
+            n_search = len(res["splits"]["search"])
+            self.assertAlmostEqual(
+                sum(m["delta"] for m in dd["moved"] if m["split"] == "search") / n_search,
+                cand["search"]["score"] - seed_search, places=3)
+            # a prefix that matches nothing, or several designs, is refused with rc 2
+            err = io.StringIO()
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+                self.assertEqual(main(["trace", str(trace), "--spec", "zzzz"]), 2)
+            self.assertIn("no design", err.getvalue())
+            err = io.StringIO()
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+                self.assertEqual(main(["trace", str(trace), "--diff", "", "zz"]), 2)
+            self.assertIn("empty design prefix", err.getvalue())
+            # without the ledger the table still comes, hashes unlabelled
+            led.unlink()
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(main(["trace", str(trace), "--json"]), 0)
+            self.assertTrue(all(g["label"] is None for g in json.loads(out.getvalue())))
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(main(["trace", str(Path(d) / "nope.jsonl")]), 1)
+
+    def test_a_pool_with_a_duplicate_case_id_is_refused_before_anything_runs(self):
+        # every per-case structure downstream (per_case, the paired test, the trace's case
+        # column) is keyed by case_id; two cases under one id would merge silently
+        cases = _cases(8)
+        twin = BenchCase(cases[0].case_id, cases[0].task_type, cases[0].prompt, cases[0].checker)
+        Scripted.WINS = {"a": set(), "b": set()}
+        with self.assertRaisesRegex(ValueError, "duplicate case ids.*" + cases[0].case_id):
+            grow({"a": _lane("a"), "b": _lane("b")}, cases=cases + [twin], generations=1,
+                 width=1)
+        self.assertEqual(Scripted.SEEN, [], "refused before any model call")

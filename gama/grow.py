@@ -45,6 +45,7 @@ import json
 import math
 import re
 import time
+from collections import Counter
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
@@ -1462,6 +1463,85 @@ def _challenger_key(cand: "Candidate", m: "Measurement", prescribed: bool = Fals
     return (-m.score, 0 if prescribed else 1, _structure_size(cand.spec), cand.label)
 
 
+def trace_rows(path) -> list[dict]:
+    """trace の call 行を読む。書きかけの行(落ちた時の最後の 1 行)と marker 行は飛ばす。
+    走行の終わりの要約も `gama trace` も同じ読み方をする: 読み手ごとに「行」の定義が違うと、
+    同じファイルから違う数が出る。"""
+    rows = []
+    with Path(path).open(encoding="utf-8") as fh:
+        for line in fh:
+            try:
+                r = json.loads(line)
+            except ValueError:       # 落ちた時の書きかけ行
+                continue
+            if isinstance(r, dict) and r.get("event") == "call":
+                rows.append(r)
+    return rows
+
+
+def trace_summary(path, rows: Optional[list[dict]] = None) -> dict:
+    """call の数・止まった理由の内訳・切断(finish=length)のクラス別の数。切断をクラス別に数える
+    のは、処方(+prefill)がクラス単位で、切断がどのクラスに集中しているかがそのまま次の手に
+    なるから。クラスの無い行(手で足した行・クラス無しの case)は finish と同じく "none" に寄せる:
+    None と str が混ざると sorted が落ち、JSON の鍵にもならない。``rows`` を渡せば読み直さない
+    (`gama trace` は同じファイルを表にも使う。大きい trace を二度読まない)。"""
+    finish, length_by_class = {}, {}
+    rows = trace_rows(path) if rows is None else rows
+    for r in rows:
+        f = r.get("finish")
+        key = f if f is not None else "none"
+        finish[key] = finish.get(key, 0) + 1
+        if f == "length":
+            c = r.get("class")
+            c = c if c is not None else "none"
+            length_by_class[c] = length_by_class.get(c, 0) + 1
+    return {"path": str(path), "calls": len(rows), "finish": dict(sorted(finish.items())),
+            "length_by_class": dict(sorted(length_by_class.items()))}
+
+
+def trace_diff(rows: list[dict], a: str, b: str) -> dict:
+    """設計 a と b を case ごとに比べる(「どの case で点が動いたか」の問い。台帳の候補行は件数
+    しか持たない)。同じ設計が何度も測られていれば(champion は毎世代)、case ごとの平均を取る:
+    最新の 1 回だけを取ると、どの世代を「最新」と呼ぶかで答えが変わる。比べるのは両方に
+    ある (split, case) だけで、片方にしか無い case は数えずに名前で返す(片方だけ sealed を
+    測っていれば、その差は設計の差でない)。"""
+    per: dict = {a: {}, b: {}}
+    for r in rows:
+        h = r.get("spec")
+        if h in per and r.get("score") is not None:
+            per[h].setdefault((r.get("split"), r.get("case")), []).append(
+                (float(r["score"]), r.get("class")))
+    shared = sorted(set(per[a]) & set(per[b]), key=lambda k: (str(k[0]), str(k[1])))
+    moved, wins, losses, ties, total = [], 0, 0, 0, 0.0
+    by_class: dict = {}
+    for key in shared:
+        ma = sum(x for x, _ in per[a][key]) / len(per[a][key])
+        mb = sum(x for x, _ in per[b][key]) / len(per[b][key])
+        # クラスは case の属性で、grow() が case_id の重複を断るので走行の書いた trace では
+        # (split, case) ごとに一定。a 側の最初の行から取る(手で編集した trace の食い違いは見ない)。
+        # クラスの無い行は summary と同じく "none"(None と str が混ざると sorted が落ちる)
+        c = per[a][key][0][1]
+        c = c if c is not None else "none"
+        d = mb - ma
+        if abs(d) < 1e-9:
+            ties += 1
+            continue
+        wins += d > 0
+        losses += d < 0
+        # 集計は丸めずに足し、出す時だけ丸める(丸めた値を足すと件数ぶん誤差が積む)
+        by_class[c] = by_class.get(c, 0.0) + d
+        total += d
+        moved.append({"split": key[0], "case": key[1], "class": c, "a": round(ma, 4),
+                      "b": round(mb, 4), "delta": round(d, 4), "n_a": len(per[a][key]),
+                      "n_b": len(per[b][key])})
+    # 片方にしか無い case は split ごと名指す(confirm/q1 と sealed/q1 は別の測定)
+    only = lambda x, y: sorted(f"{k[0]}/{k[1]}" for k in set(per[x]) - set(per[y]))
+    return {"a": a, "b": b, "shared": len(shared), "wins": wins, "losses": losses,
+            "ties": ties, "delta_cases": round(total, 4),
+            "by_class": {c: round(v, 4) for c, v in sorted(by_class.items())}, "moved": moved,
+            "only_a": only(a, b), "only_b": only(b, a)}
+
+
 class CallTrace:
     """``measure()`` の call ごとの記録を台帳の隣の JSONL に落とす書き手。
 
@@ -1509,30 +1589,8 @@ class CallTrace:
     def summary(self) -> dict:
         """走行の終わりに trace **ファイル**を読み直して数える(メモリの計数でなく配った実物。続けた
         走行なら前半の区間も入る)。result と recipe が読むのはこれで、「何 call が max_tokens で
-        切れたか」を、trace を開かなくても走行が自分で言う。切断はクラス別に数える: 処方
-        (+prefill)はクラス単位で、切断がどのクラスに集中しているかがそのまま次の手になる。
-        """
-        calls, finish, length_by_class = 0, {}, {}
-        with self.path.open(encoding="utf-8") as fh:
-            for line in fh:
-                try:
-                    r = json.loads(line)
-                except ValueError:       # 落ちた時の書きかけ行
-                    continue
-                if r.get("event") != "call":
-                    continue
-                calls += 1
-                f = r.get("finish")
-                key = f if f is not None else "none"
-                finish[key] = finish.get(key, 0) + 1
-                if f == "length":
-                    # クラスの無い行(手で足した行・クラス無しの case)は finish と同じく "none" に
-                    # 寄せる: None と str が混ざると sorted が落ち、JSON の鍵にもならない
-                    c = r.get("class")
-                    c = c if c is not None else "none"
-                    length_by_class[c] = length_by_class.get(c, 0) + 1
-        return {"path": str(self.path), "calls": calls, "finish": dict(sorted(finish.items())),
-                "length_by_class": dict(sorted(length_by_class.items()))}
+        切れたか」を、trace を開かなくても走行が自分で言う。"""
+        return trace_summary(self.path)
 
     def __call__(self, label: str, spec: dict, records: list) -> None:
         h = spec_hash(spec)
@@ -1584,6 +1642,13 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
     reset_served()
     validate_pool(pool)
     pool_cases = cases if cases is not None else suite_pool(suites)
+    # case_id はこの先の全部の鍵(per_case・対の検定・split の所属・trace の case 列)。suite の
+    # プールは suite_pool が重複を落とすが、手渡しの cases はここで断る: 重複したまま通すと
+    # 2 つの測定が 1 つの鍵に混ざり、どの門も trace の diff も静かに嘘を言う。
+    seen = Counter(c.case_id for c in pool_cases)
+    dup = sorted(cid for cid, n in seen.items() if n > 1)
+    if dup:
+        raise ValueError(f"duplicate case ids in the pool: {dup}")
     splits = split_cases(pool_cases, ratio=ratio)
     # 変異させるクラスは「confirm にも case が在るクラス」だけに絞る。confirm に無いクラスを
     # いじった候補は search でしか動かず、昇格ゲートを構造的に通れない(= 実モデルを焚くだけ

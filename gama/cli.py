@@ -24,7 +24,8 @@ from .config import (
     trinity_from_config,
 )
 from .decorrelation import analyze as mesh_analyze
-from .grow import MeasurementFailure, grow, ollama_pool, trace_lines, write_recipe
+from .grow import (MeasurementFailure, grow, ollama_pool, trace_diff, trace_lines,
+                   trace_rows, trace_summary, write_recipe)
 from .logger import ExecutionLogger
 from .market import analyze as market_analyze
 from .models import ModelTier
@@ -615,6 +616,137 @@ def cmd_grow(args: argparse.Namespace) -> int:
     return 0
 
 
+def _trace_labels(trace_path: Path) -> dict:
+    """spec hash → label。trace は hash しか持たない(label は同じ設計に何度も付く)ので、隣の
+    台帳(run.trace.jsonl → run.jsonl)の candidate 行から引く。台帳が無ければ空: hash のまま出す。
+    seed と最終 champion は seed/final 行の hash から名付ける。"""
+    name = trace_path.name
+    if not name.endswith(".trace.jsonl"):
+        return {}
+    ledger = trace_path.with_name(name[:-len(".trace.jsonl")] + ".jsonl")
+    if not ledger.exists():
+        return {}
+    names: dict = {}
+
+    def add(h, label):
+        # 同じ設計に複数の名が付く(種に戻す 1 手変異は種と同じ hash)。全部を " = " で
+        # つないで出す: 「この候補は種そのもの」が表で読める
+        if h and label and label not in names.setdefault(h, []):
+            names[h].append(label)
+
+    with ledger.open(encoding="utf-8") as fh:
+        for line in fh:
+            try:
+                r = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(r, dict):
+                continue
+            if r.get("event") == "candidate":
+                add(r.get("hash"), r.get("label"))
+            elif r.get("event") in ("seed", "resumed"):
+                add(r.get("hash"), "seed")
+            elif r.get("event") == "final":
+                add(r.get("champion_hash"), "champion")     # 種のままなら "seed = champion"
+    return {h: " = ".join(ls) for h, ls in names.items()}
+
+
+def _resolve_spec(prefix: str, rows: list) -> str:
+    """hash は前方一致で受ける(12 桁を打たせない)。曖昧なら候補を並べて断る。"""
+    # 空の前置きは全部に当たって「曖昧」と出るが、原因は打ち忘れなので先にそう言う
+    if not prefix:
+        raise ValueError("empty design prefix; pass the first characters of a hash")
+    found = sorted({r.get("spec") for r in rows if r.get("spec") and r["spec"].startswith(prefix)})
+    if len(found) == 1:
+        return found[0]
+    if not found:
+        raise ValueError(f"no design in the trace starts with {prefix!r}")
+    raise ValueError(f"{prefix!r} matches {len(found)} designs: {', '.join(found)}")
+
+
+def cmd_trace(args: argparse.Namespace) -> int:
+    """`gama trace run.trace.jsonl`: 台帳が言えない「なぜ」を読む。既定は要約(走行の終わりの
+    行と同じ)と、設計 × 役 × split ごとの call 数・平均点・切断数。`--rows` で条件に合う call を
+    1 行ずつ(末尾つき)、`--diff A B` で 2 設計の case ごとの差。"""
+    path = Path(args.file)
+    if not path.exists():
+        sys.stderr.write(f"[gama] no trace at {path}\n")
+        return 1
+    rows = trace_rows(path)
+    labels = _trace_labels(path)
+    summary = trace_summary(path, rows)
+    for line in trace_lines({"trace": summary}):
+        sys.stderr.write(f"[gama] {line[2:] if line.startswith('- ') else line}\n")
+    try:
+        if args.diff:
+            a, b = (_resolve_spec(h, rows) for h in args.diff)
+            d = trace_diff(rows, a, b)
+            if args.json:
+                print(json.dumps(d, ensure_ascii=False, indent=2))
+                return 0
+            print(f"a = {a} {labels.get(a, '')}".rstrip())
+            print(f"b = {b} {labels.get(b, '')}".rstrip())
+            # 「cases」は台帳と同じ単位(点差の合計・1 case 満点=1.0)で、case の数の増減ではない
+            print(f"shared cases: {d['shared']}  b-a: {d['delta_cases']:+} cases "
+                  f"(sum of per-case score differences; {d['wins']}w-{d['losses']}l-{d['ties']}t)"
+                  + (f"  by class: " + ", ".join(f"{c} {v:+}" for c, v in d["by_class"].items())
+                     if d["by_class"] else ""))
+            for m in d["moved"]:
+                print(f"  {m['split']:<8} {m['case']:<28} {m['class'] or '-':<20} "
+                      f"{m['a']:.2f} -> {m['b']:.2f} ({m['delta']:+.2f}; n={m['n_a']}/{m['n_b']})")
+            if d["only_a"] or d["only_b"]:
+                print(f"  not compared: only a {d['only_a']}, only b {d['only_b']}")
+            return 0
+        want = dict(spec=_resolve_spec(args.spec, rows) if args.spec else None,
+                    finish=args.finish, **{"class": args.cls}, split=args.split, role=args.role,
+                    gen=args.gen)
+    except ValueError as e:
+        sys.stderr.write(f"[gama] {e}\n")
+        return 2
+    picked = [r for r in rows
+              if all(v is None or r.get(k) == v for k, v in want.items())]
+    if args.rows:
+        for r in picked:
+            if args.json:
+                print(json.dumps(r, ensure_ascii=False))
+                continue
+            tail = (r.get("tail") or "").replace("\n", "\\n")
+            print(f"gen={r.get('gen')} {r.get('role')} {r.get('spec')} {r.get('split')} "
+                  f"{r.get('case')} rep={r.get('rep')} score={r.get('score')} "
+                  f"finish={r.get('finish')} chars={r.get('chars')} tokens={r.get('tokens')}"
+                  + (f" error={r['error']!r}" if r.get("error") else "")
+                  + f" | ...{tail[-80:]}")
+        sys.stderr.write(f"[gama] {len(picked)} of {len(rows)} calls match\n")
+        return 0
+    # 設計 × 役 × split の表: 「この設計は何回測られ、平均は、何 call 切れたか」が一目で
+    groups: dict = {}
+    for r in picked:
+        g = groups.setdefault((r.get("spec"), r.get("role"), r.get("split")),
+                              {"calls": 0, "score": 0.0, "scored": 0, "length": 0, "gens": set()})
+        g["calls"] += 1
+        if r.get("score") is not None:
+            g["score"] += float(r["score"])
+            g["scored"] += 1
+        g["length"] += r.get("finish") == "length"
+        g["gens"].add(r.get("gen"))
+    if args.json:
+        print(json.dumps([{"spec": k[0], "label": labels.get(k[0]), "role": k[1], "split": k[2],
+                           "calls": g["calls"],
+                           "mean": round(g["score"] / g["scored"], 4) if g["scored"] else None,
+                           "cut": g["length"],
+                           "gens": sorted((x for x in g["gens"] if x is not None))}
+                          for k, g in sorted(groups.items(), key=lambda kv: (str(kv[0][0]), str(kv[0][1]), str(kv[0][2])))],
+                         ensure_ascii=False, indent=2))
+        return 0
+    print(f"{'spec':<13} {'role':<11} {'split':<8} {'calls':>5} {'mean':>7} {'cut':>4}  gens  label")
+    for k, g in sorted(groups.items(), key=lambda kv: (str(kv[0][0]), str(kv[0][1]), str(kv[0][2]))):
+        mean = f"{g['score'] / g['scored']:.4f}" if g["scored"] else "-"
+        gens = ",".join(str(x) for x in sorted(x for x in g["gens"] if x is not None)) or "-"
+        print(f"{str(k[0]):<13} {str(k[1]):<11} {str(k[2]):<8} {g['calls']:>5} {mean:>7} "
+              f"{g['length']:>4}  {gens:<5} {labels.get(k[0], '')}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="gama", description="combine local LLMs: route, ensemble, tool, benchmark")
@@ -710,6 +842,28 @@ def build_parser() -> argparse.ArgumentParser:
     pc.add_argument("--config", default=None,
                     help="per-backend kwargs + composites (ensemble/gama/meshflow)")
     pc.set_defaults(func=cmd_calib)
+
+    pt = sub.add_parser("trace", help="read a grow run's per-call trace: what each reply "
+                                       "looked like, which cases moved between two designs")
+    pt.add_argument("file", help="the trace (run.trace.jsonl; its ledger run.jsonl beside it "
+                                 "supplies the labels when present)")
+    pt.add_argument("--spec", default=None, metavar="HASH",
+                    help="one design (hash prefix from the ledger / the table)")
+    pt.add_argument("--finish", default=None, help="only calls that stopped for this reason "
+                                                   "(stop, length)")
+    pt.add_argument("--class", dest="cls", default=None, help="only this task class")
+    pt.add_argument("--split", default=None, help="search, confirm or sealed")
+    pt.add_argument("--role", default=None,
+                    help="champion, candidate, challenger, simplifier or seed")
+    pt.add_argument("--gen", type=int, default=None, help="only this generation")
+    pt.add_argument("--rows", action="store_true",
+                    help="print the matching calls one per line (with the reply's tail) "
+                         "instead of the per-design table")
+    pt.add_argument("--diff", nargs=2, default=None, metavar=("A", "B"),
+                    help="per-case difference between two designs (hash prefixes), mean over "
+                         "every measurement of each in the file")
+    pt.add_argument("--json", action="store_true", help="machine-readable output")
+    pt.set_defaults(func=cmd_trace)
 
     pg = sub.add_parser(
         "grow", help="self-improvement loop: mutate the config, measure, keep only "

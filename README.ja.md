@@ -493,7 +493,12 @@ simplifier / seed)・split・case・点・トークン・返答の長さ・
 台帳が空から始まる時は trace も空から。走行は最後に自分の書いたファイルを数え直して、result・
 recipe・stderr の 3 か所に「トークン上限で切れた call が何件・どのクラスか」を言う
 (`per-call trace: <calls> calls; cut at the token limit (finish=length): <n> (<class>: <n>, ...)`)。
-止まった理由を言わない backend では「分からない」であって 0 ではない。
+止まった理由を言わない backend では「分からない」であって 0 ではない。読み返すのは
+`gama trace run.trace.jsonl`: 設計 × 役 × split の表(call 数・平均・切れた数。隣の台帳から label を
+引く)、`--rows --finish length --class research` で切れた返答を末尾つきで 1 行ずつ、
+`--diff <種の hash> <候補の hash>` で 2 設計の case ごとの差(それぞれの全測定の平均。champion は
+5 回測られるので「最後の 1 回」で比べない)。台帳の件数では答えられなかった「どの case で動いたか」
+がこれ。
 
 ## レシピ ── みなで育てる 🌱
 `recipes/` はコミュニティ・ライブラリ。1 レシピ = `config.json`（組み合わせ）＋ `recipe.md`

@@ -582,7 +582,12 @@ before its checkpoint can be told from the re-measurement), started over when th
 At the end the run counts the file it wrote and says, in the result, the recipe and on stderr,
 how many calls were cut at the token limit and in which classes (`per-call trace: <calls>
 calls; cut at the token limit (finish=length): <n> (<class>: <n>, ...)`); a backend that
-reports no finish reason gets "not known", not zero.
+reports no finish reason gets "not known", not zero. `gama trace run.trace.jsonl` reads it
+back: a table per design × role × split (calls, mean, how many cut; labelled from the ledger
+beside it), `--rows --finish length --class research` for the cut replies with their tails,
+and `--diff <seed hash> <candidate hash>` for the per-case difference between two designs
+(mean over every measurement of each, so a champion measured five times is not compared by
+whichever measurement came last), which is the question the ledger's counts could not answer.
 
 ## Recipes — grow it together 🌱
 `recipes/` is a community library: each recipe is a `config.json` (a combination) +
