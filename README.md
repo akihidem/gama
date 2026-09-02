@@ -543,6 +543,12 @@ time. Run W's seed row says `e7e5e63`; its recipe says `ffdb5bf`, a commit that 
 run was still measuring and contributed nothing to its numbers. Run X was worse: it imported
 `HEAD` plus an uncommitted edit, and the stamp said `HEAD`. The stamp is taken once per run now,
 and it carries `dirty`, whether the package directory differed from the commit at that moment.
+`dirty` says "not the commit" and no more; run X's stamp still had to be corrected from memory of
+which edits were on disk when it started. So the stamp also carries `source`, a fingerprint of
+every `*.py` under the package directory (`source_hash()`, the source the run imports from, used
+or not): the same fingerprint is, for practical purposes, the same source (64 bits of SHA-256),
+and the fingerprint of any commit can be computed later to say which one, or none, produced the
+numbers.
 
 **The gate borrowed its noise from the wrong side.** A promotion must clear
 `max(one confirm case, the champion's own re-measurement drift)`. That drift is the champion's,

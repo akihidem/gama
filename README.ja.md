@@ -459,7 +459,12 @@ research の prefill は gen2、巡回 1 つ後ろに並ぶ。この段落は最
 seed 行は `e7e5e63`、recipe は `ffdb5bf`。後者は走行が測定中に積まれた commit で、数字には
 何も寄与していない。run X はもっと悪く、`HEAD` に未コミットの編集を載せた tree を import して、
 刻印は `HEAD` と言った。刻印は走行につき 1 回になり、その時点で package dir が commit と
-違っていたかを `dirty` として並べて残す。
+違っていたかを `dirty` として並べて残す。`dirty` は「commit ではない」と言うだけで、run X の
+刻印は結局「起動時に disk にどの編集まであったか」を記憶から辿って直すしかなかった。だから
+刻印は package dir 配下の `*.py` 全部の指紋 `source`(`source_hash()`。走行が import する
+source そのもので、使われない module も含む)も持つ: 同じ指紋は実用上同じ source(SHA-256 の
+64 bit)で、任意の commit の指紋を後から計れば、どの commit が(あるいはどれでもないことが)数字を
+出したか言える。
 
 **門は揺れを違う側から借りていた。** 昇格は `max(confirm 1 問ぶん, チャンピオン自身の測り直しの
 揺れ)` を超えなければならない。その揺れはチャンピオンのもので、48B の pool のチャンピオンは

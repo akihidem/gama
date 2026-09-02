@@ -49,6 +49,7 @@ from .grow import (
     load_checkpoint,
     canonical,
     code_stamp,
+    source_hash,
     grow,
     measure,
     paired_gain,
@@ -103,6 +104,6 @@ __all__ = [
     "mesh_gain", "mesh_correctness", "ignites", "failure_correlation", "mesh_analyze",
     "cofailure", "clopper_pearson", "verdict_from_counts", "cofailure_by_class",
     "grow", "propose", "MeasurementFailure", "promote_gate", "search_gate", "simplify_gate", "shrink_band", "measure", "paired_gain", "sign_test", "split_cases", "suite_pool",
-    "seed_champion", "ollama_pool", "canonical", "spec_hash", "code_stamp", "load_checkpoint", "Candidate", "write_recipe",
+    "seed_champion", "ollama_pool", "canonical", "spec_hash", "code_stamp", "source_hash", "load_checkpoint", "Candidate", "write_recipe",
     "__version__",
 ]

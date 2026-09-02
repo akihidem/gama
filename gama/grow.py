@@ -851,6 +851,13 @@ def code_stamp(where: Optional[Path] = None) -> dict:
     import されうる新しい module は commit に無いし、どれが読まれるかをここで知る手は無いので、
     `dirty` は「振る舞いが違う」でなく「commit と違う」を言う。
     `where` はテストが自前の repo を指すためのもの。repo root を渡せば root 配下全部を見る。
+
+    `dirty` は「commit と違う」と言うだけで、**どの tree か**は言わない。run X の刻印を手で
+    直すには「18:27 に disk にあった grow.py はどの編集まで入っていたか」を記憶から辿るしか
+    なかった。だから package dir の Python source の指紋 `source`(`source_hash()`)も並べる:
+    同じ指紋の走行は(64 bit の切り詰めなので「実用上」)同じ source から import していて、
+    後から任意の commit の指紋を計ればどの commit(か、どれでもないか)が言える。`where` は `dirty` と `source` の両方に効く:
+    repo root を渡せば tests や scripts の `.py` も指紋に入る(実走では package dir だけ)。
     """
     import subprocess
 
@@ -874,7 +881,40 @@ def code_stamp(where: Optional[Path] = None) -> dict:
             dirty = None
     from . import __version__
 
-    return {"version": __version__, "commit": sha, "dirty": dirty}
+    return {"version": __version__, "commit": sha, "dirty": dirty,
+            "source": source_hash(where)}
+
+
+def source_hash(where: Optional[Path] = None) -> Optional[str]:
+    """``where`` 配下の ``*.py`` 全部の中身の指紋(sha256 の先頭 16 桁 = 64 bit)。
+
+    git に頼らない: 刻印が言いたいのは「数字を出したのはどの code か」で、それは disk の
+    中身であって HEAD ではない。相対パスと中身を並べて hash するので、``*.py`` を足す・消す・
+    書き換える、のどれでも変わる(``.py`` 以外のファイルや空 dir は見ない)。「import された物」
+    ではなく「その dir の Python source 全部」の指紋: 使われない module も入り、package の外の
+    依存は入らない。``__pycache__`` は見ない(中身は同じ source の派生物)。
+    ``*.py`` が一つも無ければ None(指紋が無いことを空文字で偽らない)。
+    ある commit の指紋は、その commit の package dir を取り出して同じ関数に掛ければ出る
+    (``git archive <sha> gama | tar -x -C <dir>`` してから ``source_hash(<dir>/gama)``)。
+    """
+    where = Path(__file__).resolve().parent if where is None else Path(where)
+    h = hashlib.sha256()
+    try:
+        files = sorted(p for p in where.rglob("*.py") if "__pycache__" not in p.parts)
+        if not files:
+            return None
+        for p in files:
+            # 長さを前置して区切る(区切り文字だけだと、中身に区切りを含む別の分割が同じ
+            # バイト列を作れる)。件数は「ファイル毎に長さ付きの塊」で決まるので別途要らない。
+            rel = p.relative_to(where).as_posix().encode("utf-8")
+            data = p.read_bytes()
+            h.update(f"{len(rel)}:".encode("ascii") + rel)
+            h.update(f"{len(data)}:".encode("ascii") + data)
+    except OSError:
+        # 読めない(権限・壊れた symlink・消えた最中): commit/dirty と同じく None で刻印は
+        # 返す。指紋が取れないことで走行そのものを止めない
+        return None
+    return h.hexdigest()[:16]
 
 
 def _structure_size(spec: dict) -> int:

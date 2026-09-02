@@ -47,6 +47,7 @@ from gama.grow import (
     load_checkpoint,
     _ledger_splits,
     code_stamp,
+    source_hash,
     shrink_band,
     simplify_gate,
     measure,
@@ -857,7 +858,37 @@ class TestGrowLoop(ScriptedCase):
         # Not a checkout at all: nothing is claimed, and nothing is invented.
         with tempfile.TemporaryDirectory() as d:
             bare = code_stamp(where=Path(d))
-            self.assertEqual((bare["commit"], bare["dirty"]), (None, None))
+            self.assertEqual((bare["commit"], bare["dirty"], bare["source"]),
+                             (None, None, None))
+
+    def test_the_stamp_names_the_tree_and_not_only_whether_it_is_the_commit(self):
+        # `dirty` says "not the commit"; run X's stamp still had to be corrected from memory
+        # of which edits were on disk at 18:27. The source fingerprint names the tree: the
+        # same fingerprint is the same code, and any commit's fingerprint can be computed
+        # later to say which one (or none) ran.
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "a.py").write_text("x = 1\n")
+            Path(d, "sub").mkdir()
+            Path(d, "sub", "b.py").write_text("y = 1\n")
+            one = source_hash(Path(d))
+            self.assertRegex(one, r"^[0-9a-f]{16}$")
+            self.assertEqual(source_hash(Path(d)), one)                  # deterministic
+            Path(d, "__pycache__").mkdir()
+            Path(d, "__pycache__", "a.cpython-312.pyc").write_bytes(b"\0")
+            Path(d, "notes.txt").write_text("not code\n")
+            self.assertEqual(source_hash(Path(d)), one)                  # derivatives, not code
+            Path(d, "sub", "b.py").write_text("y = 2\n")
+            two = source_hash(Path(d))
+            self.assertNotEqual(two, one)                                # an edit changes it
+            Path(d, "c.py").write_text("")
+            self.assertNotEqual(source_hash(Path(d)), two)               # so does a new file
+            self.assertEqual(code_stamp(where=Path(d))["source"], source_hash(Path(d)))
+            # unreadable source: no fingerprint, and the stamp is still returned (as for git)
+            Path(d, "dangling.py").symlink_to(Path(d, "gone.py"))
+            self.assertIsNone(source_hash(Path(d)))
+            self.assertIn("source", code_stamp(where=Path(d)))
+        # the real package: the stamp carries the fingerprint of what is imported
+        self.assertEqual(code_stamp()["source"], source_hash())
 
     def test_margin_floor_defaults_to_one_confirm_case(self):
         Scripted.WINS = {"a": set()}
