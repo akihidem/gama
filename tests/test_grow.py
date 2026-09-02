@@ -1611,6 +1611,61 @@ class TestGrowLoop(ScriptedCase):
         self.assertEqual(_kept_cases(gap, 0, 10),
                          {"kept_cases_next": None, "kept_cases_mean": 2.0})
 
+    def test_the_scope_of_a_move_is_read_from_the_spec_not_from_where_it_was_minted(self):
+        # scope は「鋳造したときの task_type」ではなく、champion と候補の spec を突き合わせて
+        # 「通る中身が変わったクラス」から決める。前提を構成で固定すると、複数クラスに効く手が
+        # 増えたときに黙って嘘の scope が付く(codex 指摘)。
+        from gama.grow import _scope_of
+        pool = {"a": _lane("a"), "b": _lane("b")}
+        champ = canonical(seed_champion(pool, "a"))
+        classes = ["content", "qa"]
+        for c in propose(champ, pool, classes, width=20):
+            with self.subTest(label=c.label):
+                if c.kind == "default":
+                    # 既定の差し替えは既定に落ちている全クラスに効くので、絞れない
+                    self.assertIsNone(c.scope)
+                else:
+                    self.assertIn(c.scope, classes)
+                    self.assertIn(c.scope, c.label)
+                    # 触っていないクラスは、通る中身が champion と同じまま
+                    other = [x for x in classes if x != c.scope][0]
+                    from gama.grow import _resolved_lane
+                    self.assertEqual(_resolved_lane(champ, other),
+                                     _resolved_lane(c.spec, other))
+                    self.assertNotEqual(_resolved_lane(champ, c.scope),
+                                        _resolved_lane(c.spec, c.scope))
+        # 手で組んだ「2 クラスを同時に動かす spec」は絞れない
+        both = canonical(seed_champion(pool, "a"))
+        both["kwargs"]["routing_table"] = {"qa": "b", "content": "b"}
+        both["kwargs"]["backends"]["b"] = _lane("b")
+        self.assertIsNone(_scope_of(champ, canonical(both), classes))
+
+    def test_a_generation_records_the_gain_in_the_class_the_move_can_touch(self):
+        # run Z gen0 実測: content レーンだけを替えた挑戦者の +0.32 問のうち、content は
+        # −0.10 で research が +0.42 だった —— 触っていないクラスの揺れが門の数字を作っていた。
+        # 触りうるクラスに絞った伸びと勝敗を記録する(門は変えない。順序は noise と同じ)。
+        Scripted.WINS = {"a": {"qa1", "qa2"}, "b": {"qa1", "qa2", "qa3"}}
+        pool = {"a": _lane("a"), "b": _lane("b")}
+        cases = _cases(4, "qa", "qa") + _cases(4, "research", "re")
+        res = grow(pool, cases=cases, generations=1, width=4, patience=3, min_margin=0.05)
+        h = res["history"][0]
+        # scope が None になるのは既定レーンの差し替えだけ。それ以外はラベルがクラスを名乗る
+        if h["challenger"].startswith("default"):
+            self.assertIsNone(h["scope"])
+        else:
+            self.assertIn(h["scope"], h["challenger"])
+        self.assertIsNotNone(h["challenger_confirm"], "the challenger was never measured")
+        # 触れないクラスの case は絞った側に入らない(勝敗は全体の部分集合・最大でも 4 問)
+        self.assertLessEqual(h["paired_wins_in_scope"], h["paired_wins"])
+        self.assertLessEqual(h["paired_losses_in_scope"], h["paired_losses"])
+        self.assertLessEqual(h["paired_wins_in_scope"] + h["paired_losses_in_scope"],
+                             4 if h["scope"] else 8)
+        self.assertIsNotNone(h["paired_p_in_scope"])
+        # 絞った伸びは、そのクラスの case の点差の合計(scripted は 0/1 なので勝敗の差)
+        self.assertAlmostEqual(h["gain_cases_in_scope"],
+                               h["paired_wins_in_scope"] - h["paired_losses_in_scope"],
+                               places=2)
+
     def test_a_promotion_inside_the_noise_says_so(self):
         # run Z gen0 実測: 差の測り直しの揺れは 1.01 問で、床は 1 問。床ちょうどで通った昇格は
         # 「もう一度測れば消えうる大きさ」で通っている。門は変えず、その 1 行で言う。

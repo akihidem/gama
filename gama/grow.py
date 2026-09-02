@@ -40,6 +40,7 @@ SECURITY: 測定は ``run_bench`` 経由なので、code / tool のケースは*
 from __future__ import annotations
 
 import copy
+import dataclasses
 import hashlib
 import json
 import math
@@ -237,6 +238,31 @@ def _lane_for(champion: dict, task_type: str) -> str:
     return kw["routing_table"].get(task_type, kw["default"])
 
 
+def _resolved_lane(spec: dict, task_type: str) -> dict:
+    """そのクラスが実際に通る backend spec(レーン名でなく中身)。"""
+    kw = spec.get("kwargs") or {}
+    lane = (kw.get("routing_table") or {}).get(task_type, kw.get("default"))
+    return (kw.get("backends") or {}).get(lane) or {}
+
+
+def _scope_of(champion: dict, spec: dict, classes: list) -> Optional[str]:
+    """その手が**実際に**触るクラス。1 つに定まらなければ ``None``(= 絞らない)。
+
+    見るのは「そのクラスが通る backend spec の中身」で、レーンの**名前**ではない。名前が
+    変わっても中身が同じなら、そのクラスの返答は変わらない = 手の効果を測る材料にならない。
+    ``None`` は「複数クラスに効く」と「絞る根拠が無い」の両方を意味し、下流はどちらでも
+    「confirm 全体で見る」に落ちる(=絞らない方が保守側)。
+
+    鋳造したときの task_type を信じるのでなく、champion と候補の spec を突き合わせて
+    「通る中身が変わったクラス」を数える(codex 指摘: 前提を構成で固定すると、既存レーンを
+    書き換える手や複数クラスに効く手が増えたときに黙って嘘の scope が付く)。既定レーンの
+    差し替えは複数クラスが変わるので自然に None になり、特別扱いが要らない。
+    """
+    changed = [c for c in classes
+               if _resolved_lane(champion, c) != _resolved_lane(spec, c)]
+    return changed[0] if len(changed) == 1 else None
+
+
 def _atomic_lane(champion: dict, lane: str) -> Optional[str]:
     """合成レーンが包んでいる素のレーン名。素なら None。
 
@@ -278,6 +304,12 @@ class Candidate:
     # 同じクラスなら処方に化ける(codex 指摘: 切断の症状だけ出ている世代に、no_code の治療で
     # ある prefill が処方として先頭の席を取る)。診断と治療は対で判定する。
     treats: Optional[str] = field(default=None, compare=False)
+    # この手が触りうるクラス(``None`` = 複数クラスに効く / 絞る根拠が無い。どちらも「絞らない」)。
+    # 判定そのものは今まで通り confirm 全体で行うが、**触れないクラスの case は期待値ゼロで
+    # 分散だけ足す**ので、そのクラスに絞った伸びと勝敗を横に記録する。実測(run Z gen0):
+    # content レーンだけを替えた挑戦者の +0.32 問のうち、content は −0.10 で research が
+    # +0.42 —— 触っていないクラスの揺れが門の数字を作っていた。
+    scope: Optional[str] = field(default=None, compare=False)
 
 
 MAX_TOKENS_CAP = 8192
@@ -705,6 +737,16 @@ def propose(champion: dict, pool: dict[str, dict], classes: list[str],
     # 処方であり、席は下の処方枠で取る。巡回に足すと、既存の種類の**開始位置**まで動いて
     # 症状と無関係な世代の候補構成が変わる(実測: 既存の巡回テストが 2 本落ちた)。末尾に
     # 置くのはクラス巡回の offset を既存の種類と同じに保つため。
+    # 触る範囲は spec を突き合わせて決める(鋳造時の task_type を信じない)。Candidate は
+    # frozen なので差し替えで持たせる。
+    for items in buckets.values():
+        for i, (task_type, cand) in enumerate(items):
+            if cand.scope is None:
+                items[i] = (task_type,
+                            dataclasses.replace(cand,
+                                                scope=_scope_of(champion, cand.spec,
+                                                                ordered_classes)))
+
     queues = {k: _by_class_rotation(buckets[k], ordered_classes, offset + generation)
               for offset, k in enumerate([*order, "tokens", "terse"])}
     # 診断で先頭に出すのは prefill だけ(no_code は tool レーンの症状で、処方も prefill だけ)。
@@ -952,7 +994,7 @@ def remeasure_sd(a: "Measurement", b: "Measurement") -> Optional[float]:
 # 対応のある比較 — 「平均が上がった」と「同じ問題で勝った」を分ける
 # --------------------------------------------------------------------------- #
 def paired_gain(champion: Measurement, challenger: Measurement,
-                tol: float = 1e-9) -> tuple[int, int, int]:
+                tol: float = 1e-9, only: Optional[set] = None) -> tuple[int, int, int]:
     """同一 case での勝ち/負け/引き分けを数える。両者に在る case だけを対象にする。
 
     平均差は「どの問題が split に入ったか」に強く依存するが、**同じ問題での勝敗**は
@@ -963,6 +1005,8 @@ def paired_gain(champion: Measurement, challenger: Measurement,
     # 混ぜると死んだ backend ほど「相手の勝ち」を大量生産する。
     shared = ((set(champion.per_case) & set(challenger.per_case))
               - champion.error_cases - challenger.error_cases)
+    if only is not None:
+        shared &= set(only)          # 手が触りうる case だけに絞る(呼び側が決める)
     wins = losses = ties = 0
     for cid in shared:
         d = challenger.per_case[cid] - champion.per_case[cid]
@@ -2314,6 +2358,18 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
                                        unit_cost, "challenger", trace=trace)
                 _guard_measurement(chal_confirm, f"challenger {challenger.label}")
                 w, l, t = paired_gain(champ_confirm_now, chal_confirm)
+                # 手が触りうるクラスだけに絞った同じ数字。判定には**使わない**(門を変える前に
+                # 「過去の判定が何本変わるか」を測る、というこの repo の順序)。触れないクラスの
+                # case は期待値ゼロで分散だけ足すので、こちらの方が手の効果に近いはず。
+                in_class = {c.case_id for c in splits["confirm"]
+                            if challenger.scope is None or c.task_type == challenger.scope}
+                cw, cl, ct = paired_gain(champ_confirm_now, chal_confirm, only=in_class)
+                gain_in_class = sum(
+                    chal_confirm.per_case[cid] - champ_confirm_now.per_case[cid]
+                    for cid in in_class
+                    if cid in chal_confirm.per_case and cid in champ_confirm_now.per_case
+                    and cid not in chal_confirm.error_cases
+                    and cid not in champ_confirm_now.error_cases)
                 ok, reason = promote_gate(champ_search.score, chal_search.score,
                                           champ_confirm_now.score, chal_confirm.score, delta,
                                           paired=(w, l, t), max_paired_p=max_paired_p,
@@ -2335,7 +2391,11 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
                 # 疑いがあり、実測 3 走で confirm の伸びが sealed で 4〜6 倍しぼみ、小さい伸びでは
                 # 符号ごと反転した。門にする前に「今までの昇格が何本引っかかるか」を先に測る。
                 row.update({"paired_wins": w, "paired_losses": l, "paired_ties": t,
-                            "paired_p": round(sign_test(w, l), 4)})
+                            "paired_p": round(sign_test(w, l), 4),
+                            "scope": challenger.scope,
+                            "gain_cases_in_scope": round(gain_in_class, 2),
+                            "paired_wins_in_scope": cw, "paired_losses_in_scope": cl,
+                            "paired_p_in_scope": round(sign_test(cw, cl), 4)})
         row.update({"verdict": "promote" if ok else "reject", "reason": reason})
         if ok:
             champion, champ_search, champ_confirm = challenger.spec, chal_search, chal_confirm

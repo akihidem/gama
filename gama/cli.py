@@ -496,6 +496,13 @@ def cmd_grow(args: argparse.Namespace) -> int:
                 + (f"[{row['paired_wins']}w-{row.get('paired_losses', '?')}l "
                    f"p={row.get('paired_p', '?')}] " if row.get("paired_wins") is not None
                    else "")
+                # 手が触りうるクラスに絞った伸び。触れないクラスの case は期待値ゼロで分散だけ
+                # 足すので、門の数字とここが食い違う世代は「揺れで決まった」世代(記録のみ)。
+                # scope が無い手(既定の差し替え)は絞った数字が全体と同じなので出さない。
+                + (f"[in {row['scope']}: {row['gain_cases_in_scope']:+g} cases, "
+                   f"{row['paired_wins_in_scope']}w-{row['paired_losses_in_scope']}l "
+                   f"p={row.get('paired_p_in_scope', '?')}] "
+                   if row.get("gain_cases_in_scope") is not None and row.get("scope") else "")
                 + f"(delta={row['delta']}) -> {row['reason']}"
                 # 例外で 0 点になった call がある測定で決めた世代は、その場で言う。走行を止める
                 # のは 20% からで、その下の失敗は低い点として混ざり、drift 経由で門まで動かす。
