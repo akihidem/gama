@@ -2742,7 +2742,8 @@ def next_lever_lines(result: dict) -> list[str]:
     reach = ("above the one-case floor, so a mutation there can be promoted at all"
              if room[top] >= 1.0 else
              "below the one-case floor, so even a perfect fix there cannot be promoted")
-    return [f"- most room left: `{top}` {room[top]:g} confirm cases "
+    unit = "case" if room[top] == 1 else "cases"
+    return [f"- most room left: `{top}` {room[top]:g} confirm {unit} "
             f"({detail or 'no known symptom'}) — {reach}"]
 
 
