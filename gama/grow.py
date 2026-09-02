@@ -424,6 +424,19 @@ def _with_more_tokens(spec, cap: int = MAX_TOKENS_CAP):
     return grown if raised[0] else None
 
 
+def _rooted(spec: dict, base: str, pool: dict) -> dict:
+    """作ったレーンに「剥がすと何に戻るか」(``_grow_base``)を書く。
+
+    これが無いレーンは ``_atomic_lane`` から見えず、**削減の候補が一生鋳造されない**
+    (⑤ は ``_grow_base`` を持つレーンにしか出ない)。処方(枠 2 倍・system 一行)を素の
+    pool レーンに当てた場合がまさにそれで、片道の変異になっていた。既に base を持つ
+    spec はそのまま(合成レーンの base を上書きしない)。
+    """
+    if spec.get("_grow_base") or base not in pool:
+        return spec
+    return dict(spec, _grow_base=base)
+
+
 def _with_lane(champion: dict, task_type: str, lane_name: str, lane_spec: dict) -> dict:
     """レーンを 1 本足して task_type をそこへ向けた新しい champion spec。"""
     new = copy.deepcopy(champion)
@@ -580,7 +593,7 @@ def propose(champion: dict, pool: dict[str, dict], classes: list[str],
                 name = f"{cur}+terse"
                 buckets["terse"].append((task_type, Candidate(
                     f"terse:{task_type}({base})", "terse",
-                    _with_lane(champion, task_type, name, terse),
+                    _with_lane(champion, task_type, name, _rooted(terse, base, pool)),
                     remedy=task_type, treats="preamble")))
         if task_type in cut:                                # ②'' 返答の枠を 2 倍にする
             bigger = _with_more_tokens(cur_spec)
@@ -589,7 +602,7 @@ def propose(champion: dict, pool: dict[str, dict], classes: list[str],
                 got = _raised_to(cur_spec, bigger)
                 buckets["tokens"].append((task_type, Candidate(
                     f"tokens:{task_type}({base})x{got}", "tokens",
-                    _with_lane(champion, task_type, name, bigger),
+                    _with_lane(champion, task_type, name, _rooted(bigger, base, pool)),
                     remedy=task_type, treats="cut")))
         # ③ 2 モデルの合議。既定は synthesize —— majority は**自由文では機能しない**。逐語一致が
         # まず起きないので Counter が全部 1 になり、most_common が「最初に入れたメンバー」を返す。

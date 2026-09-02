@@ -455,6 +455,25 @@ class TestPropose(ScriptedCase):
         self.assertFalse([c for c in propose(canonical(champ), self.pool, ["qa"], width=20)
                           if c.kind == "tool"])
 
+    def test_a_prescribed_lane_can_be_taken_back_off(self):
+        # 削減の候補は `_grow_base` を持つレーンにしか出ない。処方(枠 2 倍・system 一行)を
+        # 素の pool レーンに当てたとき、それを書き忘れていたので**片道の変異**になっていた:
+        # 効かなかった処方をループが自分で剥がせない(門の非対称が片側だけ死ぬ)。
+        from gama.grow import _atomic_lane
+        lane = {"backend": "ssh-openai", "kwargs": {"ssh_host": "h", "max_tokens": 1536}}
+        pool = {"a": lane}
+        champ = canonical(seed_champion(pool, "a"))
+        for kind, kw in (("tokens", {"cut_by_class": {"qa": 3}}),
+                         ("terse", {"preamble_by_class": {"qa": 3}})):
+            with self.subTest(kind=kind):
+                treated = [c for c in propose(champ, pool, ["qa"], width=30, **kw)
+                           if c.kind == kind][0]
+                lane_name = treated.spec["kwargs"]["routing_table"]["qa"]
+                self.assertEqual(_atomic_lane(treated.spec, lane_name), "a")
+                back = [c.label for c in propose(treated.spec, pool, ["qa"], width=30)
+                        if c.kind == "simplify"]
+                self.assertEqual(back, ["simplify:qa->a"])
+
     def test_a_class_being_cut_at_the_token_limit_gets_a_bigger_budget_proposed(self):
         # run Z's seed measurement, live: 8 of 76 calls hit the token limit — 4 on `integration`,
         # every one of them scoring 0.0, and 4 on `qa`, every one of them scoring 1.0 (the tool
