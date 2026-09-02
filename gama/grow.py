@@ -1280,6 +1280,8 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
     # この走行の唯一の証拠で、checkpoint を読んだ直後に truncate すると seed 行と前半の世代が
     # 消え、2 回目の再開では split の検査まで空振りする(seed 行が無いので)。落ちた時の
     # 書きかけ行の末尾に足すと再開行まで壊れるので、改行で区切ってから足す。
+    # 実在しない --resume は上で「checkpoint が無い」と断っている(台帳に触る前)ので、ここの
+    # ``resume_from`` は読めた台帳。
     continuing = bool(ledger and resume_from and ledger.exists()
                       and ledger.resolve() == Path(resume_from).resolve())
     if ledger:

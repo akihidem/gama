@@ -820,6 +820,21 @@ class TestGrowLoop(ScriptedCase):
             text = led.read_text(encoding="utf-8")
             self.assertIn('{"event": "gener\n{"event": "resumed"', text)
 
+    def test_a_resume_path_that_does_not_exist_is_refused_before_the_ledger_is_touched(self):
+        Scripted.WINS = {"a": set(), "b": {"qa1"}}
+        pool = {"a": _lane("a"), "b": _lane("b")}
+        with tempfile.TemporaryDirectory() as d:
+            led = Path(d) / "run.jsonl"
+            grow(pool, cases=_cases(8), generations=1, width=2, patience=5,
+                 ledger_path=str(led), min_margin=0.05)
+            before = led.read_text(encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "no checkpoint"):
+                grow(pool, cases=_cases(8), generations=2, width=2, patience=5,
+                     ledger_path=str(led), resume_from=str(Path(d) / "missing.jsonl"),
+                     min_margin=0.05)
+            # a typo in --resume must not cost the ledger that --out points at
+            self.assertEqual(led.read_text(encoding="utf-8"), before)
+
     def test_a_ledger_that_begins_with_a_resumed_row_still_guards_its_split(self):
         # resuming into a different file leaves a ledger whose first row is "resumed", and
         # resuming from that one skipped the split check (it looked for a seed row only)

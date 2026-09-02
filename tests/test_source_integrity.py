@@ -86,7 +86,8 @@ def stranded_tests(path):
     classes = {n.name: n for n in tree.body if isinstance(n, ast.ClassDef)}
 
     def hosts_tests(cls, seen=()):
-        # ``unittest.TestCase`` / ``TestCase`` by name, or a module-level base that does.
+        # ``unittest.TestCase`` / ``TestCase`` by name, or a module-level base that does
+        # (``ast.unparse`` needs 3.9; the package floor is 3.10, see pyproject).
         for b in cls.bases:
             text = ast.unparse(b)
             if text.endswith("TestCase"):
@@ -103,8 +104,9 @@ def stranded_tests(path):
                     found.append((n.lineno, n.name))
                 scan(n.body, False, in_test or is_test)
             elif isinstance(n, ast.ClassDef):
-                # only a module-level TestCase subclass is collected; nested classes are not
-                scan(n.body, n.name in classes and hosts_tests(n), False)
+                # only a module-level TestCase subclass is collected; nested classes are not,
+                # even one that shares its name with a module-level class (identity, not name)
+                scan(n.body, classes.get(n.name) is n and hosts_tests(n), False)
             else:
                 # if/try/with/for/while: their statement lists stay in the enclosing scope
                 # (a def under ``if`` in a class body is still a method if the branch runs).
@@ -221,6 +223,13 @@ class TestNoStrandedTests(unittest.TestCase):
                "    class Inner(unittest.TestCase):\n        def test_y(self):\n            pass\n"
                "    def test_z(self):\n        pass\n")
         self.assertEqual(self._scan(src), [(3, "test_x"), (7, "test_y")])
+
+    def test_a_nested_class_named_like_a_collected_one_is_still_not_collected(self):
+        src = ("import unittest\n"
+               "class A(unittest.TestCase):\n"
+               "    class A(unittest.TestCase):\n        def test_inner(self):\n            pass\n"
+               "    def test_outer(self):\n        pass\n")
+        self.assertEqual(self._scan(src), [(4, "test_inner")])
 
     def test_a_base_defined_in_the_file_carries_the_test_case_down(self):
         src = ("import unittest\n"
