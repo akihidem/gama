@@ -394,7 +394,8 @@ For those the suite cannot separate "the model cannot do this" from "the model d
 the demanded shape". Some of that is legitimate — writing a lipogram *is* a format task — but it
 means a share of the remaining room may not be reasoning room at all. Confirming which needs the
 replies themselves, and the ledger stores scores rather than outputs, so it is an open question
-rather than a result. `crux` was written with the looser convention throughout: numeric answers
+rather than a result (runs from here on also write a per-call trace beside the ledger, so the
+next run can answer it; the runs behind these numbers have none). `crux` was written with the looser convention throughout: numeric answers
 are read as "the last integer in the reply", so a model that solves the problem and then adds a
 sentence still scores it.
 
@@ -562,6 +563,22 @@ every comparison (the challenger's gain, the simplifier's drop, the sealed verdi
 re-measurement noise of the pair beside the gain, in cases. It is a record, not a gate: no
 earlier ledger holds the number, so how many past promotions it would have stopped is not known,
 and a gate whose blast radius is unmeasured goes in after the number has been carried, not before.
+
+**The ledger could not say why.** It holds the scores and the gate's reasons, and nothing of
+the replies. Run X measured the prescribed `tool:research(kimi-cold)+prefill` and it lost the
+search split by 1.25 cases, and the ledger cannot say on which reply, or whether the code-less
+tool replies that prescribed it were the model declining to write code or the model being cut
+off at `max_tokens` (a probe at 2048 tokens got research replies of 8–9K characters and no
+code, which points at the cut, and is not the run). A run now writes a second file beside its
+ledger, `run.trace.jsonl` next to `run.jsonl` (`--trace` moves it), with one row per call:
+generation (none for the seed's and the sealed measurements, which no generation made), role
+(champion, candidate, challenger, simplifier, seed), split, case, score, tokens, the reply's
+length, its first and last 200 characters, the server's finish reason (`stop`, `length`), and
+the tool lane's state where one ran. Not the whole reply, which for a cut-off one is 8–9K
+characters per case; the tail is where `crux` reads its answer. The ledger stays as it was, so
+`--resume` and the tools that read it are untouched, and the trace follows it: appended when a
+run continues its own ledger (after a `resumed` row, so the calls of a generation that died
+before its checkpoint can be told from the re-measurement), started over when the ledger is.
 
 ## Recipes — grow it together 🌱
 `recipes/` is a community library: each recipe is a `config.json` (a combination) +

@@ -499,7 +499,7 @@ def cmd_grow(args: argparse.Namespace) -> int:
                       min_margin=args.min_margin, patience=args.patience, ledger_path=args.out,
                       ensemble_strategy=args.ensemble_strategy, seed_spec=seed_spec,
                       max_paired_p=args.max_paired_p,
-                      resume_from=args.resume, on_event=on_event)
+                      resume_from=args.resume, on_event=on_event, trace_path=args.trace)
     except MeasurementFailure as e:
         sys.stderr.write(f"[gama] STOPPED: {e}\n")
         return 3                 # 分けて返す: 設定ミスでなく実行環境の事故なので、再開が正しい対応
@@ -761,6 +761,11 @@ def build_parser() -> argparse.ArgumentParser:
                          "Refused if the ledger used a different split, since its sealed cases "
                          "would not be sealed under this one")
     pg.add_argument("--out", default=None, help="write the JSONL grow ledger")
+    pg.add_argument("--trace", default=None, metavar="PATH",
+                    help="per-call records (score, tokens, finish reason, reply head/tail) "
+                         "beside the ledger; default is --out with its extension replaced by "
+                         ".trace.jsonl (run.jsonl -> run.trace.jsonl); appended to, like the "
+                         "ledger, when --resume is the --out file, started over otherwise")
     pg.add_argument("--write-recipe", default=None,
                     help="write the champion to this recipe directory (config.json + recipe.md)")
     pg.add_argument("--hardware", default="(fill in: box, RAM, GPU)",

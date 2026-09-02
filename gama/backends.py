@@ -175,6 +175,7 @@ class OllamaBackend(ModelBackend):
         self.timeout = timeout
         self.remote_ollama = remote_ollama
         self.last_usage = None
+        self.last_finish_reason = None
         self.model_by_tier = model_by_tier or {
             ModelTier.SMALL: "gemma4:e2b",
             ModelTier.MEDIUM: self.DEFAULT_MODEL,
@@ -195,6 +196,8 @@ class OllamaBackend(ModelBackend):
             if proc.returncode != 0:
                 raise RuntimeError(
                     f"ollama over ssh ({self.ssh_host}) failed: {proc.stderr.strip()[:300]}")
+            # `ollama run` は本文しか出さない(done_reason は API だけ)。前の call の理由を残さない
+            self.last_finish_reason = None
             return proc.stdout
         import urllib.request
 
@@ -206,6 +209,8 @@ class OllamaBackend(ModelBackend):
         with urllib.request.urlopen(req, timeout=self.timeout) as resp:
             data = json.loads(resp.read())
         pt, ct = data.get("prompt_eval_count"), data.get("eval_count")
+        # ollama は done_reason("stop" / "length")。OpenAI 形式と同じ語なのでそのまま持つ。
+        self.last_finish_reason = data.get("done_reason")
         self.last_usage = (
             {"prompt_tokens": pt or 0, "completion_tokens": ct or 0,
              "total_tokens": (pt or 0) + (ct or 0)}
@@ -265,6 +270,11 @@ class SshOpenAIBackend(ModelBackend):
         # 必須フィールド(model/messages/stream)は後から上書きするので、ここで壊せない。
         self.extra_body = dict(extra_body or {})
         self.last_usage = None
+        # 応答が止まった理由(OpenAI 形式の finish_reason: "stop" / "length" ...)。tool レーンの
+        # 「コードが出なかった」が **max_tokens で切れた**のか散文で答えたのかは、これが無いと
+        # 見分けられない(2026-09-02 実測: Kimi-48B の research は 2048 tok を思考で使い切って
+        # フェンスに届かない)。直し方が正反対(枠を増やす / 先頭に道具を置く)なので分けて残す。
+        self.last_finish_reason = None
 
     def _remote_cmd(self) -> str:
         # `path` is config-controlled; the remote host runs this whole string through a
@@ -311,6 +321,7 @@ class SshOpenAIBackend(ModelBackend):
                                "total_tokens": usage.get("total_tokens", pt + ct)}
         # 応答が名乗った実体を控える。追加の呼び出しはしない(この 1 行が同一性の証拠)。
         note_served(f"{self.ssh_host}:{int(self.port)}/{model}", data.get("model"))
+        self.last_finish_reason = data["choices"][0].get("finish_reason")
         msg = data["choices"][0]["message"]
         # Reasoning models put the answer in `content`; fall back to `reasoning`
         # (or empty) so a thinking-only / truncated reply doesn't crash the call.
@@ -454,6 +465,7 @@ class GeminiBackend(ModelBackend):
         self.timeout = timeout
         self.available = bool(self.api_key)
         self.last_usage = None
+        self.last_finish_reason = None
 
     def complete(self, prompt: str, tier: ModelTier, **kwargs) -> str:  # pragma: no cover
         import urllib.request
@@ -480,6 +492,7 @@ class GeminiBackend(ModelBackend):
                 "completion_tokens": usage.get("completion_tokens", 0),
                 "total_tokens": usage.get("total_tokens", 0),
             }
+        self.last_finish_reason = data["choices"][0].get("finish_reason")
         return data["choices"][0]["message"]["content"]
 
 
@@ -526,6 +539,7 @@ class GamaBackend(ModelBackend):
         backend = self.backends[name]
         out = backend.complete(prompt, tier, **kwargs)
         self.last_usage = getattr(backend, "last_usage", None)
+        self.last_finish_reason = getattr(backend, "last_finish_reason", None)
         return out
 
 
@@ -646,6 +660,32 @@ def reset_tool_stats() -> None:
         _TOOL[k] = 0
 
 
+def clear_finish_reason(backend) -> None:
+    """``last_finish_reason`` を、この backend と**その中の全 backend** で None にする。
+
+    合成 backend(GamaBackend / ToolBackend など)は内側の値を写すだけで自分では作らない。外側
+    だけ消しても、内側が「今回は設定しなかった」(例外を握って素の返答を返す実装・毎回は
+    書かない外部の adapter)と前の call の理由が今の call に載る。消すのは読む側(``_run_one``)
+    の仕事で、読む側は木の全部を消す。子の辿り方は属性の中身で決める(dict / list / tuple の
+    中の ModelBackend も含む)ので、包む側ごとに消し方を足して回る必要が無い。
+    """
+    seen: set = set()
+    stack = [backend]
+    while stack:
+        node = stack.pop()
+        if id(node) in seen:
+            continue
+        seen.add(id(node))
+        if isinstance(node, ModelBackend):
+            if hasattr(node, "last_finish_reason"):
+                node.last_finish_reason = None
+            stack.extend(vars(node).values())
+        elif isinstance(node, dict):
+            stack.extend(node.values())
+        elif isinstance(node, (list, tuple)):
+            stack.extend(node)
+
+
 def _parses(code: str) -> bool:
     try:
         compile(code, "<tool>", "exec")
@@ -747,6 +787,8 @@ class ToolBackend(ModelBackend):
             kwargs = dict(kwargs, prefill=self.prefill)
         raw = self.backend.complete(pal, tier, **kwargs)
         self.last_usage = getattr(self.backend, "last_usage", None)
+        # 内側のモデルが止まった理由をそのまま外へ(道具の側は理由を作らない)
+        self.last_finish_reason = getattr(self.backend, "last_finish_reason", None)
         code, had_code = self._extract(raw)
         self.last_code = code
         try:

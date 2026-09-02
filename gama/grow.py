@@ -647,8 +647,13 @@ class Measurement:
 
 def measure(spec: dict, cases: list[BenchCase], tier: ModelTier = ModelTier.LARGE,
             repeats: int = 1, unit_cost: Optional[dict] = None,
-            label: str = "candidate") -> Measurement:
-    """1 つの spec を case 集合で測る。例外は ``run_bench`` 側で 0 点に落ちる(掃引を止めない)。"""
+            label: str = "candidate",
+            trace: Optional[Callable[[str, dict, list], None]] = None) -> Measurement:
+    """1 つの spec を case 集合で測る。例外は ``run_bench`` 側で 0 点に落ちる(掃引を止めない)。
+
+    ``trace`` を渡すと call ごとの記録(``run_bench`` の records)をそのまま手渡す。Measurement
+    は点に潰した形で、返答の長さ・止まった理由・末尾はここで捨てられていた。
+    """
     if not cases:
         raise ValueError("measure() needs at least one case (an empty split has no score, "
                          "and returning 0.0 would read as 'measured and failed')")
@@ -656,6 +661,8 @@ def measure(spec: dict, cases: list[BenchCase], tier: ModelTier = ModelTier.LARG
     reset_tool_stats()
     records = run_bench({label: backend}, suite=cases, tier=tier, repeats=repeats,
                         unit_cost=unit_cost or {}, run_id="grow")
+    if trace is not None:
+        trace(label, spec, records)
     agg = summarize(records)["overall"][label]
     # `run_bench` は例外を握って 0 点にする(1 つの backend が掃引を止めないため)。その 0 点は
     # 「モデルが間違えた」ではなく「**測れなかった**」で、区別を捨てると死んだ backend の
@@ -1455,6 +1462,67 @@ def _challenger_key(cand: "Candidate", m: "Measurement", prescribed: bool = Fals
     return (-m.score, 0 if prescribed else 1, _structure_size(cand.spec), cand.label)
 
 
+class CallTrace:
+    """``measure()`` の call ごとの記録を台帳の隣の JSONL に落とす書き手。
+
+    台帳(ledger)は判定に使った点と門の理由を持ち、返答そのものは持たない。「処方の +prefill は
+    なぜ search で 1.25 問負けたか」「code の出ない返答は max_tokens で切れていたのか散文で
+    答えていたのか」「format で落ちた case は中身が合っていたのか」は台帳では答えられず
+    (README の open question)、答えるには call 単位の記録が要る。台帳に混ぜると台帳が桁で太り、
+    読み手(``load_checkpoint`` / replay)が全行を舐めるので別ファイルにする。全文は持たない
+    (切れた返答は 8-9K 字): 長さ・先頭・末尾(crux は最後の整数を読む)・止まった理由・tool の
+    3 状態。gen と split は ``measure()`` が知らない(case 集合と役名しか受け取らない)ので、
+    ``grow()`` が世代の頭で ``gen`` を更新し、split は case id の所属で引く。世代の外の測定
+    (seed の search/confirm、最後の sealed)は gen None で、どちらかは split が言う。
+    """
+
+    def __init__(self, path, splits: dict, append: bool = False):
+        self.path = Path(path)
+        self.gen: Optional[int] = None
+        self.split_of = {c.case_id: name for name, cs in splits.items() for c in cs}
+        # 台帳と同じ扱い: 同じ台帳へ続ける再開だけが前の行を残し、新しい走行は空から始める。
+        # 追記だけだと前の走行の call が同じ名前で残り、走行の記録が二つ混ざる。
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        if not append:
+            self.path.write_text("", encoding="utf-8")
+        elif self.path.exists():
+            # 台帳と同じ: 落ちた時の書きかけ行の末尾に足すと次の行まで壊れるので、改行で区切る
+            with self.path.open("rb") as fh:
+                try:
+                    fh.seek(-1, 2)
+                    last = fh.read(1)
+                except OSError:          # 空の trace: 区切る行が無い
+                    last = b"\n"
+            if last != b"\n":
+                with self.path.open("a", encoding="utf-8") as fh:
+                    fh.write("\n")
+
+    def mark(self, event: str, **fields) -> None:
+        """call 以外の行(区間の境目)。続ける走行は測り直す前に ``resumed`` を書く: 台帳の
+        checkpoint に届かなかった測定(途中で落ちた世代)の call は trace に残っていて、再開後に
+        同じ世代を測り直した行と並ぶ。境目の行が無いと、台帳と突き合わせる読み手には同じ世代の
+        call が二重に見える。境目より前で、その ``from_gen`` 以降の世代を名乗る行は届かなかった
+        試みのもの。"""
+        with self.path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps({"event": event, **fields}, ensure_ascii=False) + "\n")
+
+    def __call__(self, label: str, spec: dict, records: list) -> None:
+        h = spec_hash(spec)
+        with self.path.open("a", encoding="utf-8") as fh:
+            for r in records:
+                tool = r.get("tool")
+                row = {"event": "call", "gen": self.gen, "role": label, "spec": h,
+                       "split": self.split_of.get(r["case_id"]), "case": r["case_id"],
+                       "class": r["task_type"], "rep": r["rep"], "score": r["score"],
+                       "tokens": r.get("tokens"), "latency_s": r["latency_s"],
+                       "finish": r.get("finish_reason"), "chars": r.get("output_chars"),
+                       "error": r.get("error"),
+                       # tool レーンを通っていない call は tool を書かない(0 の塊で行を太らせない)
+                       "tool": tool if tool and tool.get("calls") else None,
+                       "head": r.get("output_preview"), "tail": r.get("output_tail")}
+                fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+
 def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
          cases: Optional[list[BenchCase]] = None, suites=("wide", "hard", "brutal"),
          ratio: tuple[int, int, int] = (2, 1, 1), generations: int = 3, width: int = 6,
@@ -1464,8 +1532,15 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
          ledger_path: Optional[str] = None, unit_cost: Optional[dict] = None,
          ensemble_strategy: str = "synthesize",
          max_paired_p: Optional[float] = None,
-         on_event: Optional[Callable[[dict], None]] = None) -> dict:
+         on_event: Optional[Callable[[dict], None]] = None,
+         trace_path: Optional[str] = None) -> dict:
     """RSI を ``generations`` 世代回し、最終チャンピオンと全世代の台帳を返す。
+
+    ``trace_path`` は call ごとの記録(``CallTrace``)の置き場。None なら台帳の隣
+    (``<ledger>`` の拡張子を ``.trace.jsonl`` に替えた名前)、台帳も無ければ書かない。
+    同じ台帳へ続ける再開(``resume_from`` と ``ledger_path`` が同じファイル)では台帳と同じく
+    末尾に足す(前半の call を消さない)。明示した ``trace_path`` でも同じで、続ける走行の記録は
+    続く。台帳が空から始まる走行では trace も空から。
 
     ``patience`` 世代続けて昇格が出なければ収束とみなして打ち切る(空回りで実モデルを焚かない)。
     ``sealed`` split は世代中一切参照せず、最後に**一度だけ**開けて種と最終チャンピオンを測る。
@@ -1545,6 +1620,14 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
     archive: dict[str, dict] = {}
     history: list[dict] = []
     ledger = Path(ledger_path) if ledger_path else None
+    if trace_path is None and ledger is not None:
+        trace_path = ledger.with_suffix(".trace.jsonl")
+    # 台帳と同じファイルへ trace を書かせない: 空の走行では台帳が消え、続ける走行では call 行の
+    # 混ざった台帳を checkpoint の読み手が読む。どちらも黙って起きるので、触る前に断る。
+    if ledger is not None and trace_path is not None \
+            and Path(trace_path).resolve() == ledger.resolve():
+        raise ValueError(f"--trace must not be the ledger itself ({ledger}): the call rows "
+                         "would be mixed into the rows --resume reads")
     # 同じ台帳へ続ける再開(--out と --resume が同じファイル)では前半の行を消さない。台帳は
     # この走行の唯一の証拠で、checkpoint を読んだ直後に truncate すると seed 行と前半の世代が
     # 消え、2 回目の再開では split の検査まで空振りする(seed 行が無いので)。落ちた時の
@@ -1553,6 +1636,9 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
     # ``resume_from`` は読めた台帳。
     continuing = bool(ledger and resume_from and ledger.exists()
                       and ledger.resolve() == Path(resume_from).resolve())
+    # call の記録は台帳の隣で、台帳と同じ「続けるか空から始めるか」に従う。作るのは台帳を開く
+    # この場所(再開の拒否・seed の検査より後)で、断られた走行が前の trace を空にすることはない。
+    trace = CallTrace(trace_path, splits, append=continuing) if trace_path else None
     if ledger:
         ledger.parent.mkdir(parents=True, exist_ok=True)
         if continuing:
@@ -1605,9 +1691,11 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
         if resume.get("identity_blind"):
             resumed_blind = True
     else:
-        champ_search = measure(champion, splits["search"], tier, repeats, unit_cost, "champion")
+        champ_search = measure(champion, splits["search"], tier, repeats, unit_cost, "champion",
+                               trace=trace)
         _guard_measurement(champ_search, "seed on the search split")
-        champ_confirm = measure(champion, splits["confirm"], tier, repeats, unit_cost, "champion")
+        champ_confirm = measure(champion, splits["confirm"], tier, repeats, unit_cost, "champion",
+                                trace=trace)
         _guard_measurement(champ_confirm, "seed on the confirm split")
         start_gen = 0
     # sealed の判定に渡す confirm 側の主張(``confirm_claim``)の材料。種の測定と最終形の測り直しを
@@ -1618,6 +1706,9 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
     seed_scores: list = [champ_confirm.score]
     champ_scores: list = []          # 昇格後の測り直し(昇格時の値は入れない: 選ばれた値)
     champ_promo: Optional[float] = None
+    if trace is not None and resume:
+        # 台帳の resumed 行と同じ位置に、trace にも区間の境目を置く(理由は CallTrace.mark)
+        trace.mark("resumed", from_gen=start_gen, resumed_from_gen=resume["gen"])
     emit({"event": "resumed" if resume else "seed", "hash": spec_hash(champion),
           "resumed_from_gen": resume["gen"] if resume else None,
           "search": _meas(champ_search), "confirm": _meas(champ_confirm),
@@ -1654,6 +1745,8 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
     settled: set = set(resume.get("settled", [])) if resume else set()
     for gen in range(start_gen, generations):
         t0 = time.time()
+        if trace is not None:
+            trace.gen = gen
         # 伸びしろの尽きたクラスは変異させない。実測(run U seed): integration は 8/8 満点で
         # 伸びしろ 0.00 問なのに `tool:integration` が候補に出て、確実に無駄と分かっている
         # 測定に実モデルを焚いていた。取りうる最大の伸びが門の幅に満たないクラスは、
@@ -1665,7 +1758,7 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
         # (checkpoint 自体は `_state()` で per_case を保つようになったが、search 側と違って
         #  confirm は毎世代測り直すので、そもそも復元値に頼る必要が無い。)
         champ_confirm_now = measure(champion, splits["confirm"], tier, repeats, unit_cost,
-                                    "champion")
+                                    "champion", trace=trace)
         _guard_measurement(champ_confirm_now, f"champion on confirm (gen {gen})")
         # 種のままなら種の測定、そうでなければ最終形候補の測り直し。足して戻した設計は種と
         # 同じ hash なので種側に戻る。
@@ -1739,7 +1832,8 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
             if cached:
                 m = _restore(cached["search"])
             else:
-                m = measure(c.spec, splits["search"], tier, repeats, unit_cost, "candidate")
+                m = measure(c.spec, splits["search"], tier, repeats, unit_cost, "candidate",
+                            trace=trace)
                 _guard_measurement(m, f"candidate {c.label}")
                 # archive も**状態**。実測(112問・5世代・width 4・候補20本)で台帳全体 75.5KB、
                 # うち checkpoint が 84%。この規模なら per_case を持たせても問題にならないので、
@@ -1825,7 +1919,7 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
                 ok, reason = False, s_why
             else:
                 chal_confirm = measure(challenger.spec, splits["confirm"], tier, repeats,
-                                       unit_cost, "challenger")
+                                       unit_cost, "challenger", trace=trace)
                 _guard_measurement(chal_confirm, f"challenger {challenger.label}")
                 w, l, t = paired_gain(champ_confirm_now, chal_confirm)
                 ok, reason = promote_gate(champ_search.score, chal_search.score,
@@ -1867,7 +1961,7 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
             if shrinks:
                 cand, cand_search = min(shrinks, key=lambda t: (-t[1].score, t[0].label))
                 cand_confirm = measure(cand.spec, splits["confirm"], tier, repeats, unit_cost,
-                                       "simplifier")
+                                       "simplifier", trace=trace)
                 _guard_measurement(cand_confirm, f"simplification {cand.label}")
                 band = shrink_band(margin_floor, drift)
                 s_ok, s_reason = simplify_gate(champ_confirm_now.score, cand_confirm.score,
@@ -1908,10 +2002,14 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
     # case が足りず封印を作れなかった場合は None を返す —— 判定に使った数字を「偏っていない
     # 数字」の欄に流用するのが、この設計でいちばんやってはいけないこと。
     if splits["sealed"]:
-        sealed_seed = measure(seed, splits["sealed"], tier, repeats, unit_cost, "seed")
+        if trace is not None:
+            trace.gen = None      # 封印は世代の外(最後の世代の測定と読ませない)。split が sealed と言う
+        sealed_seed = measure(seed, splits["sealed"], tier, repeats, unit_cost, "seed",
+                              trace=trace)
         _guard_measurement(sealed_seed, "seed on the sealed split")
         sealed_champ = (sealed_seed if spec_hash(seed) == spec_hash(champion) else
-                        measure(champion, splits["sealed"], tier, repeats, unit_cost, "champion"))
+                        measure(champion, splits["sealed"], tier, repeats, unit_cost, "champion",
+                                trace=trace))
         sealed = {"seed": _meas(sealed_seed), "champion": _meas(sealed_champ)}
     else:
         sealed = None

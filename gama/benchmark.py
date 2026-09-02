@@ -1621,6 +1621,8 @@ def _run_one(name: str, backend, case: BenchCase, tier: ModelTier, rep: int,
     try:
         if hasattr(backend, "last_usage"):
             backend.last_usage = None
+        from .backends import clear_finish_reason  # run_bench と同じ遅延 import(循環を避ける)
+        clear_finish_reason(backend)               # 前の call の理由を今の call に付けない(木ごと)
         # Thread the case's external checker as `verify` so a MeshflowBackend gates its
         # cheap->expensive escalation on the SAME check the bench scores with (honest
         # measurement). Other backends accept **kwargs and ignore it.
@@ -1634,10 +1636,16 @@ def _run_one(name: str, backend, case: BenchCase, tier: ModelTier, rep: int,
     tokens = usage.get("total_tokens") if usage else None
     uc = unit_cost.get(name, 0.0)
     cost = round((tokens / 1000.0) * uc, 6) if (tokens and uc) else None
+    output = output or ""
     return {
         "backend": name, "task_type": case.task_type, "case_id": case.case_id, "rep": rep,
         "score": round(score, 4), "success": score >= 0.5, "latency_s": latency,
-        "tokens": tokens, "cost": cost, "error": error, "output_preview": (output or "")[:200],
+        "tokens": tokens, "cost": cost, "error": error, "output_preview": output[:200],
+        # 台帳は点しか残さず「なぜその点か」は答えられなかった(README の open question)。
+        # 全文は重い(切れた返答で 8-9K 字)ので、長さ・末尾(crux は最後の整数を読む)・止まった
+        # 理由を持つ。finish_reason は単体モデルと tool レーンだけが名乗れる(合議は None)。
+        "output_chars": len(output), "output_tail": output[-200:],
+        "finish_reason": getattr(backend, "last_finish_reason", None),
     }
 
 

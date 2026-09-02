@@ -1403,6 +1403,26 @@ class TestGrowCli(unittest.TestCase):
     def test_grow_without_lanes_is_an_error(self):
         self.assertEqual(main(["grow", "--suites", "hard"]), 2)
 
+    def test_out_puts_the_call_trace_beside_the_ledger_and_trace_moves_it(self):
+        with tempfile.TemporaryDirectory() as d:
+            led = Path(d) / "run.jsonl"
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                rc = main(["grow", "--smoke", "--suites", "wide", "--generations", "1",
+                           "--width", "1", "--out", str(led)])
+            self.assertEqual(rc, 0)
+            rows = [json.loads(l) for l in (Path(d) / "run.trace.jsonl").read_text(
+                encoding="utf-8").splitlines()]
+            self.assertTrue(rows)
+            self.assertEqual({r["event"] for r in rows}, {"call"})
+            # the trace answers what the ledger cannot: the shape of each reply
+            self.assertTrue(all("chars" in r and "finish" in r and "tail" in r for r in rows))
+            other = Path(d) / "calls" / "t.jsonl"
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                rc = main(["grow", "--smoke", "--suites", "wide", "--generations", "1",
+                           "--width", "1", "--out", str(led), "--trace", str(other)])
+            self.assertEqual(rc, 0)
+            self.assertTrue(other.exists())
+
     def test_smoke_runs_and_promotes_nothing(self):
         # echo/null solve none of the hard cases, so the only honest outcome is "no promotion".
         out, err = io.StringIO(), io.StringIO()
@@ -2843,3 +2863,342 @@ class TestSshExtraBody(unittest.TestCase):
         self.assertEqual(captured["repeat_penalty"], 1.15)
         self.assertNotEqual(captured["model"], "hijacked")   # 必須フィールドは奪われない
         self.assertFalse(captured["stream"])
+
+
+class TestCallTrace(ScriptedCase):
+    """台帳は点と門の理由しか持たず、「処方はなぜ search で 1.25 問負けたか」「code の出ない
+    返答は max_tokens で切れていたのか散文だったのか」に答えられなかった(README の open
+    question)。call ごとの記録を台帳の隣に落とし、返答の長さ・末尾・止まった理由を残す。"""
+
+    def _fake_openai(self, reply: dict):
+        """gama.backends.subprocess.run を、固定の chat completion を返す偽物に差し替える。
+        ToolBackend が中のコードを走らせる時も同じ関数を通るので、input 無しの呼び出しも受ける。"""
+        import json as _json
+
+        class _Proc:
+            returncode = 0
+            stdout = _json.dumps(reply)
+            stderr = ""
+
+        import gama.backends as b
+        real = b.subprocess.run
+        b.subprocess.run = lambda *a, **k: _Proc()
+        self.addCleanup(setattr, b, "subprocess", b.subprocess)
+        self.addCleanup(setattr, b.subprocess, "run", real)
+
+    def test_the_backend_names_why_the_reply_stopped_and_the_tool_lane_passes_it_on(self):
+        from gama.backends import SshOpenAIBackend, ToolBackend
+        from gama.models import ModelTier
+        reset_tool_stats()
+        self.addCleanup(reset_tool_stats)
+        be = SshOpenAIBackend(ssh_host="h")
+        self.assertIsNone(be.last_finish_reason)                  # nothing served yet
+        self._fake_openai({"choices": [{"message": {"content": "def f(): pass"},
+                                        "finish_reason": "length"}]})
+        be.complete("hi", ModelTier.LARGE)
+        self.assertEqual(be.last_finish_reason, "length")
+        tool = ToolBackend(be)
+        tool.complete("hi", ModelTier.LARGE)
+        self.assertEqual(tool.last_finish_reason, "length")       # the wrapper does not invent one
+        # a server that does not say why leaves None, not the previous call's reason
+        self._fake_openai({"choices": [{"message": {"content": "ok"}}]})
+        be.complete("hi", ModelTier.LARGE)
+        self.assertIsNone(be.last_finish_reason)
+
+    def test_the_bench_record_keeps_length_tail_and_finish_reason_per_call(self):
+        from gama.benchmark import _run_one
+        from gama.models import ModelTier
+
+        class _Stops(ModelBackend):
+            name = "stops"
+            available = True
+
+            def __init__(self):
+                self.last_finish_reason = "stale"
+                self.reason = "length"
+
+            def complete(self, prompt, tier, **kw):
+                if self.reason:
+                    self.last_finish_reason = self.reason
+                return "x" * 500 + " 42"
+
+        be = _Stops()
+        case = BenchCase("c1", "qa", "case=c1", lambda o: 1.0 if o.endswith("42") else 0.0)
+        rec = _run_one("stops", be, case, ModelTier.LARGE, 0, {})
+        self.assertEqual(rec["finish_reason"], "length")
+        self.assertEqual(rec["output_chars"], 503)
+        self.assertEqual(rec["output_tail"], ("x" * 500 + " 42")[-200:])
+        self.assertEqual(rec["output_preview"], "x" * 200)
+        self.assertEqual(rec["score"], 1.0)
+        # the reason is reset before each call: a backend that says nothing this time does
+        # not inherit "length" from the call before
+        be.reason = None
+        rec2 = _run_one("stops", be, case, ModelTier.LARGE, 1, {})
+        self.assertIsNone(rec2["finish_reason"])
+        # a backend without the attribute is fine, and so is an empty reply
+        plain = Scripted("a")
+        rec3 = _run_one("scripted", plain, case, ModelTier.LARGE, 0, {})
+        self.assertIsNone(rec3["finish_reason"])
+        self.assertEqual(rec3["output_chars"], len("BAD"))
+
+    def test_the_reset_reaches_the_lane_inside_a_composite_not_only_the_outside(self):
+        # GamaBackend copies the reason from the lane it routed to; it makes none itself. A
+        # lane that sets the reason on one call and says nothing on the next (an adapter that
+        # swallows its failure and returns a fallback) would otherwise hand the *previous*
+        # call's reason to the trace, because only the outer object was being reset.
+        from gama.backends import GamaBackend, clear_finish_reason
+        from gama.benchmark import _run_one
+        from gama.models import ModelTier
+
+        class _Sometimes(ModelBackend):
+            name = "sometimes"
+            available = True
+
+            def __init__(self):
+                self.last_finish_reason = None
+                self.say = "length"
+
+            def complete(self, prompt, tier, **kw):
+                if self.say:
+                    self.last_finish_reason = self.say
+                return "BAD"
+
+        inner = _Sometimes()
+        outer = GamaBackend(backends={"x": inner}, routing_table={"qa": "x"}, default="x")
+        case = BenchCase("c1", "qa", "case=c1", lambda o: 0.0)
+        self.assertEqual(_run_one("g", outer, case, ModelTier.LARGE, 0, {})["finish_reason"],
+                         "length")
+        inner.say = None
+        self.assertIsNone(_run_one("g", outer, case, ModelTier.LARGE, 1, {})["finish_reason"])
+        # the walk covers lanes held in a dict, a wrapper's single lane, and a member list
+        inner.last_finish_reason = "stale"
+        outer.last_finish_reason = "stale"
+        clear_finish_reason(outer)
+        self.assertIsNone(inner.last_finish_reason)
+        self.assertIsNone(outer.last_finish_reason)
+        from gama.backends import ToolBackend, EnsembleBackend
+        a, b = _Sometimes(), _Sometimes()
+        a.last_finish_reason = b.last_finish_reason = "stale"
+        ens = EnsembleBackend([a, b])
+        tool = ToolBackend(ens)
+        clear_finish_reason(tool)
+        self.assertIsNone(a.last_finish_reason)
+        self.assertIsNone(b.last_finish_reason)
+
+    def _grow(self, pool, **kw):
+        opts = dict(cases=_cases(8), generations=2, width=2, patience=5, min_margin=0.05)
+        opts.update(kw)
+        return grow(pool, **opts)
+
+    @staticmethod
+    def _rows(path):
+        return [json.loads(l) for l in Path(path).read_text(encoding="utf-8").splitlines()]
+
+    @staticmethod
+    def _sans_clock(rows):
+        """Rows without the one field the wall clock decides (repeated runs are otherwise
+        identical: the pool is scripted)."""
+        return [{k: v for k, v in r.items() if k != "latency_s"} for r in rows]
+
+    def _count_calls(self) -> list:
+        """The case ids the bench actually ran, in order, counted at ``_run_one`` (one per
+        case x rep, whatever the spec does inside: an ensemble asks several lanes for one
+        call, so ``Scripted.SEEN`` overcounts and cannot be the reference)."""
+        import gama.benchmark as bm
+        ran: list = []
+        real = bm._run_one
+
+        def counting(name, backend, case, tier, rep, unit_cost):
+            ran.append(case.case_id)
+            return real(name, backend, case, tier, rep, unit_cost)
+
+        bm._run_one = counting
+        self.addCleanup(setattr, bm, "_run_one", real)
+        return ran
+
+    def test_the_trace_beside_the_ledger_has_one_row_per_call(self):
+        Scripted.WINS = {"a": set(), "b": {"qa1", "qa2", "qa4"}}
+        pool = {"a": _lane("a"), "b": _lane("b")}
+        ran = self._count_calls()
+        with tempfile.TemporaryDirectory() as d:
+            led = Path(d) / "run.jsonl"
+            res = self._grow(pool, ledger_path=str(led))
+            trace = Path(d) / "run.trace.jsonl"
+            self.assertTrue(trace.exists(), "the trace sits beside the ledger by default")
+            rows = self._rows(trace)
+            ledger = self._rows(led)
+        # one row per call the bench ran, in that order: nothing summarised, nothing invented
+        self.assertEqual(len(rows), len(ran))
+        self.assertEqual([r["case"] for r in rows], ran)
+        need = {"event", "gen", "role", "spec", "split", "case", "class", "rep", "score",
+                "tokens", "latency_s", "finish", "chars", "error", "tool", "head", "tail"}
+        for r in rows:
+            self.assertEqual(need - set(r), set(), r)
+            self.assertEqual(r["event"], "call")
+            self.assertIn(r["split"], ("search", "confirm", "sealed"))   # every case belongs
+            self.assertEqual(r["class"], "qa")
+            self.assertIn(r["score"], (0.0, 1.0))
+            if r["tool"] is not None:                     # only a call through a tool stage
+                self.assertGreaterEqual(r["tool"]["calls"], 1)
+            self.assertIsNone(r["finish"])                # a scripted lane has no reason
+            self.assertIn(r["head"], ("GOOD", "BAD"))
+            self.assertEqual(r["chars"], len(r["head"]))
+        roles = {r["role"] for r in rows}
+        self.assertLessEqual(roles, {"champion", "candidate", "challenger", "simplifier", "seed"})
+        self.assertIn("candidate", roles)
+        # the seed's own measurements come before any generation: gen None
+        seed_rows = [r for r in rows if r["gen"] is None and r["split"] != "sealed"]
+        self.assertTrue(seed_rows)
+        self.assertEqual({r["role"] for r in seed_rows}, {"champion"})
+        self.assertEqual({r["split"] for r in seed_rows}, {"search", "confirm"})
+        self.assertTrue(all(r["tool"] is None for r in seed_rows))   # the seed has no tool stage
+        self.assertEqual(rows.index(seed_rows[-1]), len(seed_rows) - 1)  # and nothing before them
+        # what a generation measured says which generation it was
+        gens = sorted({r["gen"] for r in rows if r["gen"] is not None})
+        self.assertEqual(gens, [h["gen"] for h in res["history"]])
+        # the sealed split is touched only at the end, by the seed and the champion, and
+        # outside any generation (a sealed row under "gen 1" would read as gen 1's measurement)
+        sealed_rows = [r for r in rows if r["split"] == "sealed"]
+        self.assertTrue(sealed_rows)
+        self.assertLessEqual({r["role"] for r in sealed_rows}, {"seed", "champion"})
+        self.assertTrue(all(r["gen"] is None for r in sealed_rows))
+        self.assertEqual(rows.index(sealed_rows[0]) + len(sealed_rows), len(rows))
+        self.assertTrue(all(r["split"] != "sealed" for r in rows if r["gen"] is not None))
+        # the spec column is the ledger's hash, so a row can be joined to its candidate
+        self.assertIn(res["champion_hash"], {r["spec"] for r in rows})
+        # the candidate rows join the ledger's candidate rows of that generation by that hash
+        cand_hashes = {r["hash"] for r in ledger if r["event"] == "candidate" and r["gen"] == 0}
+        self.assertTrue(cand_hashes)
+        traced = {r["spec"] for r in rows if r["gen"] == 0 and r["role"] == "candidate"}
+        self.assertTrue(traced)
+        self.assertLessEqual(traced, cand_hashes)
+
+    def test_an_explicit_trace_path_is_honoured_and_without_one_or_a_ledger_nothing_is_written(self):
+        Scripted.WINS = {"a": set(), "b": {"qa1", "qa2", "qa4"}}
+        pool = {"a": _lane("a"), "b": _lane("b")}
+        ran = self._count_calls()
+        with tempfile.TemporaryDirectory() as d:
+            here = Path(d) / "elsewhere" / "calls.jsonl"
+            self._grow(pool, trace_path=str(here))            # no ledger at all
+            self.assertTrue(here.exists())
+            self.assertEqual([r["case"] for r in self._rows(here)], ran)
+        with tempfile.TemporaryDirectory() as d:
+            old = os.getcwd()
+            os.chdir(d)
+            try:
+                self._grow(pool)
+            finally:
+                os.chdir(old)
+            self.assertEqual(os.listdir(d), [], "no ledger and no --trace: no file appears")
+
+    def test_the_trace_may_not_be_the_ledger_itself(self):
+        # --trace L --out L would truncate the ledger on a fresh run and, on a resume, hand
+        # the checkpoint reader a ledger with call rows in it; both silently
+        Scripted.WINS = {"a": set(), "b": {"qa1", "qa2", "qa4"}}
+        pool = {"a": _lane("a"), "b": _lane("b")}
+        with tempfile.TemporaryDirectory() as d:
+            led = Path(d) / "run.jsonl"
+            self._grow(pool, generations=1, ledger_path=str(led))
+            before = led.read_text(encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "must not be the ledger"):
+                self._grow(pool, generations=1, ledger_path=str(led), trace_path=str(led))
+            with self.assertRaisesRegex(ValueError, "must not be the ledger"):
+                self._grow(pool, generations=2, ledger_path=str(led), resume_from=str(led),
+                           trace_path=str(Path(d) / "." / "run.jsonl"))   # same file, spelt differently
+            self.assertEqual(led.read_text(encoding="utf-8"), before)   # refused before any write
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                rc = main(["grow", "--smoke", "--suites", "wide", "--generations", "1",
+                           "--width", "1", "--out", str(led), "--trace", str(led)])
+            self.assertEqual(rc, 2)
+            self.assertIn("must not be the ledger", err.getvalue())
+            self.assertEqual(led.read_text(encoding="utf-8"), before)
+
+    def test_the_trace_follows_the_ledger_on_resume_and_starts_over_on_a_fresh_run(self):
+        Scripted.WINS = {"a": set(), "b": {"qa1", "qa2", "qa4"}}
+        pool = {"a": _lane("a"), "b": _lane("b")}
+        ran = self._count_calls()
+        with tempfile.TemporaryDirectory() as d:
+            led = Path(d) / "run.jsonl"
+            trace = Path(d) / "run.trace.jsonl"
+            self._grow(pool, generations=1, ledger_path=str(led))
+            first = self._rows(trace)
+            n_first = len(ran)
+            self.assertEqual(len(first), n_first)
+            # the half-written row a kill leaves behind, exactly as the ledger test does it
+            with trace.open("a", encoding="utf-8") as fh:
+                fh.write('{"event": "ca')
+            # --resume L --out L: the first segment's calls stay, the second's are appended
+            self._grow(pool, generations=3, ledger_path=str(led), resume_from=str(led))
+            text = trace.read_text(encoding="utf-8")
+            both, broken = [], 0
+            for line in text.splitlines():
+                try:
+                    both.append(json.loads(line))
+                except ValueError:
+                    broken += 1
+            self.assertEqual(broken, 1, "the half-written row is kept as is, nothing else breaks")
+            self.assertIn('{"event": "ca\n{"event": "resumed"', text)   # the next row on its own line
+            self.assertEqual(both[:n_first], first)             # byte for byte: it was appended
+            # the continued segment opens with a marker, so the two segments can be told apart
+            # (calls of a generation that never reached a checkpoint stay, before the marker)
+            self.assertEqual(both[n_first]["event"], "resumed")
+            self.assertEqual(both[n_first]["from_gen"], 1)
+            self.assertEqual(both[n_first]["resumed_from_gen"], 0)
+            self.assertEqual([r["event"] for r in both].count("resumed"), 1)
+            calls = [r for r in both if r["event"] == "call"]
+            self.assertEqual([r["case"] for r in calls], ran)
+            self.assertEqual(sorted({r["gen"] for r in calls if r["gen"] is not None}), [0, 1, 2])
+            # a resumed segment measures no seed: its rows all carry a generation, until the
+            # sealed split is opened at the very end
+            tail = calls[n_first:]
+            body = [r for r in tail if r["split"] != "sealed"]
+            self.assertTrue(body)
+            self.assertTrue(all(r["gen"] is not None for r in body))
+            self.assertEqual([r["split"] for r in tail if r["gen"] is None],
+                             ["sealed"] * sum(r["split"] == "sealed" for r in tail))
+            # a refused resume (no checkpoint at --resume) leaves the trace as it was: the
+            # trace is opened where the ledger is, after every refusal
+            with self.assertRaisesRegex(ValueError, "no checkpoint"):
+                self._grow(pool, generations=3, ledger_path=str(led),
+                           resume_from=str(Path(d) / "missing.jsonl"))
+            self.assertEqual(trace.read_text(encoding="utf-8"), text)
+            with self.assertRaisesRegex(ValueError, "no checkpoint"):
+                self._grow(pool, generations=3, ledger_path=str(led),
+                           resume_from=str(Path(d) / "missing.jsonl"),
+                           trace_path=str(trace))
+            self.assertEqual(trace.read_text(encoding="utf-8"), text)
+            # a fresh run into the same ledger path starts the trace over, like the ledger
+            del ran[:]
+            self._grow(pool, generations=1, ledger_path=str(led))
+            self.assertEqual([r["case"] for r in self._rows(trace)], ran)
+            self.assertEqual(self._sans_clock(self._rows(trace)), self._sans_clock(first))
+            self.assertTrue(all(r["event"] == "call" for r in self._rows(trace)))
+
+    def test_a_tool_lane_row_carries_the_tool_state_and_the_others_do_not(self):
+        # the same dict the ledger's tool_no_code diagnosis is made from, per call
+        from gama.grow import CallTrace
+        cases = _cases(4)
+        splits = split_cases(cases)
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "t.jsonl"
+            tr = CallTrace(path, splits)
+            tr.gen = 3
+            recs = [{"case_id": "qa1", "task_type": "qa", "rep": 0, "score": 1.0, "tokens": 12,
+                     "latency_s": 0.5, "finish_reason": "length", "output_chars": 9000,
+                     "error": None, "tool": {"calls": 1, "ran": 1, "no_code": 0},
+                     "output_preview": "```python", "output_tail": "print(42)"},
+                    {"case_id": "qa2", "task_type": "qa", "rep": 0, "score": 0.0, "tokens": None,
+                     "latency_s": 0.1, "finish_reason": None, "output_chars": 0,
+                     "error": "RuntimeError: x", "tool": {"calls": 0, "ran": 0, "no_code": 0},
+                     "output_preview": "", "output_tail": ""}]
+            tr("challenger", {"backend": "echo", "kwargs": {}}, recs)
+            rows = self._rows(path)
+        self.assertEqual(rows[0]["tool"], {"calls": 1, "ran": 1, "no_code": 0})
+        self.assertEqual(rows[0]["finish"], "length")
+        self.assertEqual(rows[0]["chars"], 9000)
+        self.assertEqual(rows[0]["gen"], 3)
+        self.assertEqual(rows[0]["role"], "challenger")
+        self.assertEqual(rows[0]["spec"], spec_hash({"backend": "echo", "kwargs": {}}))
+        self.assertIsNone(rows[1]["tool"], "a call the tool lane did not touch writes no tool state")
+        self.assertEqual(rows[1]["error"], "RuntimeError: x")
+        self.assertIn(rows[0]["split"], ("search", "confirm", "sealed"))
