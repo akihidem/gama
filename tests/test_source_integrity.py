@@ -15,21 +15,21 @@ one legitimate reason for a repeated name inside a class, and are allowed as suc
 """
 import ast
 import collections
-import os
 import pathlib
-import sys
+import tempfile
 import unittest
-
-sys.path.insert(0, os.path.dirname(__file__))
 
 PACKAGE = pathlib.Path(__file__).resolve().parent.parent / "gama"
 DEFS = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
 
 
 def _is_setter_pair(node):
-    # `@name.setter` / `@name.deleter` re-use the property's name by design.
+    # `@x.setter` / `@x.deleter` on `def x` re-use the property's name by design. The
+    # decorator has to name *this* function: `@y.setter` on `def x` is not that idiom,
+    # and letting any setter through would hide a genuine redefinition behind one.
     for d in getattr(node, "decorator_list", []):
-        if isinstance(d, ast.Attribute) and d.attr in ("setter", "deleter"):
+        if (isinstance(d, ast.Attribute) and d.attr in ("setter", "deleter")
+                and isinstance(d.value, ast.Name) and d.value.id == node.name):
             return True
     return False
 
@@ -53,30 +53,37 @@ def duplicate_definitions(path):
 
 class TestNoShadowedDefinitions(unittest.TestCase):
     def test_every_module_defines_each_name_once(self):
-        modules = sorted(PACKAGE.glob("*.py"))
+        modules = sorted(PACKAGE.rglob("*.py"))   # subpackages too, should any appear
         self.assertGreater(len(modules), 5, "the package moved; point PACKAGE at it")
         dups = [(str(p.name), *d) for p in modules for d in duplicate_definitions(p)]
         self.assertEqual(dups, [], f"a later definition silently wins: {dups}")
 
+    def _scan(self, src, name="probe"):
+        # A private directory per call: fixed /tmp names collide under parallel runs.
+        with tempfile.TemporaryDirectory() as d:
+            tmp = pathlib.Path(d) / f"{name}.py"
+            tmp.write_text(src, encoding="utf-8")
+            return duplicate_definitions(tmp)
+
     def test_the_check_sees_a_redefinition(self):
         # The floor has to be shown to catch the defect it was written for.
         src = "def f():\n    return 1\n\ndef g():\n    return 2\n\ndef f():\n    return 3\n"
-        tmp = pathlib.Path(os.environ.get("TMPDIR", "/tmp")) / "gama_dup_check.py"
-        tmp.write_text(src, encoding="utf-8")
-        try:
-            self.assertEqual(duplicate_definitions(tmp), [("gama_dup_check", "f", 2)])
-        finally:
-            tmp.unlink()
+        self.assertEqual(self._scan(src), [("probe", "f", 2)])
+
+    def test_a_redefined_method_is_seen_inside_its_class(self):
+        src = "class A:\n    def m(self):\n        return 1\n    def m(self):\n        return 2\n"
+        self.assertEqual(self._scan(src), [("probe.A", "m", 2)])
 
     def test_property_setters_are_not_flagged(self):
         src = ("class A:\n    @property\n    def x(self):\n        return 1\n"
                "    @x.setter\n    def x(self, v):\n        pass\n")
-        tmp = pathlib.Path(os.environ.get("TMPDIR", "/tmp")) / "gama_setter_check.py"
-        tmp.write_text(src, encoding="utf-8")
-        try:
-            self.assertEqual(duplicate_definitions(tmp), [])
-        finally:
-            tmp.unlink()
+        self.assertEqual(self._scan(src), [])
+
+    def test_a_setter_for_another_name_does_not_excuse_a_redefinition(self):
+        src = ("class A:\n    @property\n    def y(self):\n        return 1\n"
+               "    def x(self):\n        return 1\n"
+               "    @y.setter\n    def x(self, v):\n        pass\n")
+        self.assertEqual(self._scan(src), [("probe.A", "x", 2)])
 
 
 if __name__ == "__main__":
