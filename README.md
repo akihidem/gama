@@ -382,6 +382,38 @@ Those are skipped now. Shrink mutations are *not* skipped there: the gates are a
 (additions must be better, removals need only be not worse), so a saturated class is the best
 place to show a structure is buying nothing, not a place to stop looking.
 
+#### A tool lane has a precondition, and it can fail exactly where it would help
+
+`crux` was built to un-saturate this box, and it did: the bare model scores 0.306 on it against
+0.866 on the old pool, and 11.80 of 17 cases are still winnable against 7.48 of 56 — five times
+the headroom per case. Then the shipped champion, which routes `research` through a `tool` lane,
+fixed **zero of the four** crux research cases. Amicable numbers, the longest Collatz chain,
+derangements, Josephus: four problems a five-line program solves.
+
+The lane was never running a program. On those prompts the model emits no ```python block at
+all, so `ToolBackend` falls back to returning the raw reply — and the raw reply is unfinished
+reasoning, which scores *worse* than the bare model because the bare model at least answers.
+None of this raised an exception, so it arrived as an ordinary low score.
+
+What it is not, measured rather than assumed:
+
+| suspicion | test | result |
+|---|---|---|
+| the generated code times out | time the naive solutions | 2.9s and 0.7s against a 15s limit |
+| the prompts conflict (case says "reply with only the integer", the PAL wrapper says "only code") | resolve the conflict explicitly | still no code block |
+| the token budget is too small | 1536 / 4096 / 8192 | 1536, 4096 and **8097** completion tokens, no code block in any; at 8192 it stopped on its own |
+| greedy decoding is stuck in a loop | temperature 0.0 vs 0.8, 3 cases each | 0 of 3 against 1 of 3 — inside noise, not a fix |
+
+So the honest reading is about the model: `Kimi-Linear-48B-A3B-Instruct-IQ2_M` is a roughly
+two-bit quantization, and reliably emitting a fenced code block on a multi-sentence prompt is
+exactly the kind of instruction-following that degrades. **A PAL lane is not a free structural
+win; it is a bet that the model will actually write the program.** That bet gets *worse* as the
+problem gets harder, which is the opposite of where you want it.
+
+The loop cannot fix this, but it should never have hidden it. Tool calls and successful runs are
+counted per measurement now and reported, so "the tool lane scored badly" and "the tool lane was
+never used" stop looking identical.
+
 #### Two things the loop was doing wrong and could not see
 
 **It was not deterministic.** Among candidates tied on `search`, the challenger was picked by
