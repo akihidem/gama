@@ -877,7 +877,11 @@ def promoted_gain_cases(history: list, n_confirm: Optional[int]) -> Optional[flo
         return None
     total, seen = 0.0, False
     for h in history or []:
-        if not isinstance(h, dict) or h.get("champion_hash") == h.get("champion_after"):
+        # 両キーが無い行は「入れ替わっていない」でなく「読めない」(None == None を未変更と
+        # 読むと、古い台帳の認定合計が 0 に化ける。codex r4)。
+        if not isinstance(h, dict) or "champion_hash" not in h or "champion_after" not in h:
+            return None
+        if h["champion_hash"] == h["champion_after"]:
             continue
         seen = True
         if h.get("simplify_verdict") == "promote":
@@ -920,13 +924,23 @@ def confirm_claim(seed_scores: list, champion_scores: list, n_confirm: int,
     def _mean(xs):
         return sum(xs) / len(xs)
 
+    # 読める数だけで立てる。種の測定が一つも無ければ主張は「無い」でなく「読めない」(None)で、
+    # ``sealed_verdict`` はそれを「not recorded」と読む。ここで割り算を落とすと成果物の生成ごと
+    # 落ちる(codex r4)。
+    seed_scores = [x for x in (_num(v) for v in (seed_scores or [])) if x is not None]
+    champion_scores = [x for x in (_num(v) for v in (champion_scores or [])) if x is not None]
+    promotion_score = _num(promotion_score)
+    if not seed_scores:
+        return {"cases": None, "seed_mean": None, "seed_measurements": 0,
+                "champion_mean": None, "champion_measurements": 0,
+                "promotion_only": False, "same_as_seed": False}
     seed_mean = _mean(seed_scores)
     if not champion_scores and promotion_score is None:
-        return {"cases": 0.0, "seed_mean": round(seed_mean, 4),
-                "seed_measurements": len(seed_scores),
-                "champion_mean": round(seed_mean, 4),
-                "champion_measurements": len(seed_scores), "promotion_only": False,
-                "same_as_seed": True}
+        # 種のまま終わった走行。champion の測定は種の測定そのものなので、別個に測った数としては
+        # 0 と書く(同じ数を両方に書くと、種を n 回・champion を n 回測ったように読める)。
+        return {"cases": 0.0, "seed_mean": round(seed_mean, 4), "seed_measurements": len(seed_scores),
+                "champion_mean": round(seed_mean, 4), "champion_measurements": 0,
+                "promotion_only": False, "same_as_seed": True}
     promotion_only = not champion_scores
     champ_mean = promotion_score if promotion_only else _mean(champion_scores)
     return {"cases": (champ_mean - seed_mean) * n_confirm,   # 丸めない: 判定は正確な値で
@@ -934,7 +948,6 @@ def confirm_claim(seed_scores: list, champion_scores: list, n_confirm: int,
             "champion_mean": round(champ_mean, 4),
             "champion_measurements": 1 if promotion_only else len(champion_scores),
             "promotion_only": promotion_only, "same_as_seed": False}
-
 
 def sealed_verdict(sealed: Optional[dict], claimed_gain_cases: Optional[float] = None,
                    confirm_cases: Optional[int] = None,
@@ -978,6 +991,10 @@ def sealed_verdict(sealed: Optional[dict], claimed_gain_cases: Optional[float] =
     (codex r2: 手ごとの認定を足すと、測り直しで戻った分や相殺した分だけ最終形の主張より大きく
     見積もる)。``claim_basis`` は主張がどの測定から出たかの一句で、note にそのまま入る。
     ``claimed_gain_cases`` と ``confirm_cases`` が無ければ従来どおり(power は None)。
+    ``power`` は verdict の下位分類ではない: confirm の主張が sealed に何を予告していたかの札で、
+    verdict と独立に付く。improved なのに underpowered は「sealed の伸びが confirm の主張より
+    大きい」、regressed で evaporated は「二つの集合が同じ向きを言っている」で、どちらも矛盾では
+    なく情報。not-separable の理由として読むのは、not-separable の時だけ。
     """
     def _score(m) -> Optional[float]:
         v = m.get("score")
@@ -1583,6 +1600,7 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
     else:
         claim_basis = (f"means of {claim['champion_measurements']} champion and "
                        f"{claim['seed_measurements']} seed measurements")
+    claim_cases = None if claim["cases"] is None else round(claim["cases"], 4)
     result = {
         "champion": champion, "champion_hash": spec_hash(champion),
         "seed": seed, "seed_hash": spec_hash(seed),
@@ -1602,7 +1620,7 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
         "search": _meas(champ_search), "confirm": _meas(champ_confirm),
         # 最終形が confirm で種(再開した走行では再開点のチャンピオン)より何問上か、と
         # その推定の材料。sealed が検定した仮説の大きさそのもの。
-        "confirm_claim": dict(claim, cases=round(claim["cases"], 4)),
+        "confirm_claim": dict(claim, cases=claim_cases),
         "sealed": sealed,
         # 走行そのものの合否。confirm 上の昇格数は「何手通したか」であって「良くなったか」
         # ではない。封をした split に一度だけ言わせる。最終形の主張と昇格時の認定を渡して、
@@ -1716,7 +1734,7 @@ def write_recipe(result: dict, directory, name: Optional[str] = None,
     ]
     # 主張の材料(無いのは古い result)。この二つの差が、sealed が検定した仮説の大きさそのもの。
     claim = result.get("confirm_claim")
-    if isinstance(claim, dict) and "seed_mean" in claim:
+    if isinstance(claim, dict) and claim.get("seed_mean") is not None:
         if claim.get("same_as_seed"):
             how = f"the champion is the seed: {claim.get('seed_measurements')} measurements"
         elif claim.get("promotion_only"):

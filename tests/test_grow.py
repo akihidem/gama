@@ -1189,6 +1189,23 @@ class TestConfirmClaim(unittest.TestCase):
         self.assertEqual(c["cases"], 0.0)
         self.assertTrue(c["same_as_seed"])
         self.assertEqual(c["champion_mean"], c["seed_mean"])
+        # the seed's measurements are not counted a second time as the champion's (codex r4)
+        self.assertEqual((c["seed_measurements"], c["champion_measurements"]), (3, 0))
+
+    def test_no_readable_seed_measurement_is_an_unreadable_claim_not_a_crash(self):
+        # a total function: sealed_verdict reads cases=None as "not recorded" (codex r4)
+        for seed in ([], None, [None, "x", True]):
+            c = confirm_claim(seed, [0.9], 40, promotion_score=0.9)
+            self.assertIsNone(c["cases"])
+            self.assertEqual(c["seed_measurements"], 0)
+        sealed = {"seed": {"score": 0.85, "cases": 32}, "champion": {"score": 0.85, "cases": 32}}
+        v = sealed_verdict(sealed, c["cases"], 40, promoted_gain_cases=1.0)
+        self.assertIsNone(v["power"])
+        self.assertIn("not recorded", v["note"])
+        # unreadable entries are dropped, not averaged as zero
+        c = confirm_claim([0.8, None, "x"], [0.9, True], 40)
+        self.assertEqual((c["seed_measurements"], c["champion_measurements"]), (1, 1))
+        self.assertAlmostEqual(c["cases"], 4.0, places=6)
 
     def test_the_claim_is_not_rounded(self):
         c = confirm_claim([0.8], [0.8 + 1 / 3 / 40], 40, promotion_score=0.9)
@@ -1718,6 +1735,14 @@ def _tool_spec(tag):
                            "_grow_base": tag}},
         "routing_table": {"qa": "t"}, "default_backend": tag}}
 
+
+    def test_a_row_without_the_champion_keys_is_unreadable_not_unchanged(self):
+        # None == None must not read as "the champion did not change" (codex r4)
+        hist = [{"gen": 0, "gain_cases": 1.0}]
+        self.assertIsNone(promoted_gain_cases(hist, 56))
+        hist = [{"gen": 0, "champion_hash": "a", "champion_after": "b", "gain_cases": 1.0},
+                {"gen": 1, "champion_hash": "b"}]
+        self.assertIsNone(promoted_gain_cases(hist, 56))
 
 class TestSelectionIsDeterministic(unittest.TestCase):
     """同点の候補を実測レイテンシで割ると、走行が決定的でなくなる。壁時計は走るたび違い、
