@@ -1656,6 +1656,8 @@ def run_bench(backends: dict, suite: Optional[list[BenchCase]] = None,
     # tool レーンの健康(コードが出たか・走ったか)は backends のグローバル計数にしか残らない。
     # 合計だけ持ち帰ると「どのクラスでコードが出ないか」が消え、prefill のような**クラス単位の
     # 処方**を出す側が診断を読めない。呼び出しは直列なので、1 call ごとの差分を記録に付ける。
+    # (backend を並列に回す日が来たら、この差分は別の call の分を拾う。その時は計数を
+    # グローバルでなく backend の返り値に載せ替えること。)
     from .backends import tool_stats
     for name, backend in backends.items():
         for case in suite:

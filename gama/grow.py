@@ -51,7 +51,7 @@ from typing import Callable, Optional
 
 from .benchmark import SUITES, BenchCase, run_bench, summarize
 from .backends import (_BACKENDS, ToolBackend, note_served, reset_served, reset_tool_stats,
-                       served_conflicts, served_map, tool_stats)
+                       served_conflicts, served_map)
 from .config import build_backend
 from .models import ModelTier
 
@@ -499,7 +499,8 @@ def propose(champion: dict, pool: dict[str, dict], classes: list[str],
         first = sorted((c for c in queues["tool"]
                         if c.label.endswith("+prefill") and _class_of(c.label) in rank),
                        key=lambda c: rank[_class_of(c.label)])
-        queues["tool"] = first + [c for c in queues["tool"] if c not in first]
+        lead = {id(c) for c in first}             # 同一性で除く(Candidate は値で等しくなりうる)
+        queues["tool"] = first + [c for c in queues["tool"] if id(c) not in lead]
 
     champ_hash = spec_hash(champion)
     out: list[Candidate] = []
@@ -604,12 +605,17 @@ def measure(spec: dict, cases: list[BenchCase], tier: ModelTier = ModelTier.LARG
         by_case.setdefault(r["case_id"], []).append(r["score"])
     per_case = {cid: sum(v) / len(v) for cid, v in by_case.items()}
     error_cases = frozenset(r["case_id"] for r in records if r.get("error"))
-    ts = tool_stats()          # グローバルは一度だけ読む(呼ぶたびに変わりうる値を混ぜない)
+    # tool の計数は合計もクラス別も**記録の差分から**足す(1 つの出所)。合計だけグローバルの
+    # 累積値から読むと「クラス別の和 = 合計」が reset のタイミングに依存する偶然になり、
+    # reset を挟み忘れた呼び出し経路からずれが入る(codex diag-r1)。
+    ts = {"calls": 0, "ran": 0, "no_code": 0, "empty_out": 0}
     no_code_by_class: dict[str, int] = {}
     for r in records:
-        k = (r.get("tool") or {}).get("no_code", 0)
-        if k:
-            no_code_by_class[r["task_type"]] = no_code_by_class.get(r["task_type"], 0) + k
+        d = r.get("tool") or {}
+        for k in ts:
+            ts[k] += d.get(k, 0)
+        if d.get("no_code"):
+            no_code_by_class[r["task_type"]] = no_code_by_class.get(r["task_type"], 0) + d["no_code"]
     return Measurement(score=agg["score"], success_rate=agg["success_rate"],
                        latency_s=agg["latency_s"], n=agg["n"], cases=len(cases),
                        errors=errors, error_rate=round(errors / len(records), 4) if records else 0.0,
@@ -1205,7 +1211,9 @@ def _restore(d: dict) -> "Measurement":
     # 昇格が起きて champ_search が測り直されるまで効かないが、それが正しい向き —— 飽和は
     # 証明できたときだけ主張する。証拠が無いことを「余地なし」の側に丸めない。
     d.setdefault("per_case", {})
-    d.setdefault("tool_no_code_by_class", {})   # 同上: 診断が無いのは「症状なし」でなく「未観測」
+    # 診断の無い古い checkpoint は空で復元する。confirm は毎世代測り直すので、再開後の最初の
+    # 世代から診断は戻る。search 側の分だけは次の昇格(champ_search の測り直し)まで無い。
+    d.setdefault("tool_no_code_by_class", {})
     return Measurement(**d)
 
 
