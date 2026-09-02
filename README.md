@@ -580,6 +580,31 @@ so the truncation diagnosis could not see the class it most needed to reach. Tha
 blindness the tree walk fixes, and the size of what it was hiding is three confirm cases of the
 4.62 that `research` still has to win.
 
+#### The stage that picks what to measure was reading the wrong cases
+
+Across 48 confirm-measured challengers in every ledger on this box, the correlation between a
+challenger's gain on `search` and its gain on `confirm` is **r = 0.06** — 0.17 without the run
+whose server had died, 0.20 among the 29 whose search score actually moved, with the signs
+agreeing 41% of the time. The stage that decides which candidate is worth a confirm measurement
+was carrying almost no information about the answer.
+
+A class-scoped move can only change its own class's cases, and the loop ranked candidates by the
+mean over all of `search`. The generation after the diff above shows what that does. Its four
+candidates, by the full search delta and by the delta inside the class each move touches:
+
+| candidate | full | in its own class |
+|---|---|---|
+| `route:integration → kimi-hot` | +0.00 | +0.50 |
+| `tool:research(kimi-cold)` | +0.50 | **+1.50** |
+| `ensemble:content(cold+hot)` | +0.67 | +1.17 |
+| `meshflow:content(cold→hot)` | **+1.00** | +1.00 |
+
+The old rule picked the bottom row and spent the generation's confirm measurement on it; it came
+back at −2.63 confirm cases. The two rankings disagree outright, and the one that only reads
+cases the move can reach is the one with a mechanism behind it. Selection and the challenge gate
+both use it now, with the same one-case threshold as before — what changed is which cases the
+threshold is measured over, not how high it is.
+
 #### Things the loop was doing wrong and could not see
 
 **It was not deterministic.** Among candidates tied on `search`, the challenger was picked by
