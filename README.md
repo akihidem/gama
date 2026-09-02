@@ -553,6 +553,23 @@ one costs a real measurement on a class the instruction cannot help, so the open
 greetings ("sure", "certainly", "here's", "below is") and not reasoning openers ("let me
 compute...") or words that could be the answer ("yes").
 
+#### The class with the most to win was the one the diagnosis could not see
+
+Reading the seed measurement of the run in flight, per class, in confirm cases still to be won:
+`research` 4.62, `content` 4.58, `integration` 3.00, `qa` 1.25, `code_implementation` 0.50. The
+run prints that line now, next to what each of the three diagnoses can see in each class.
+
+`research` was the largest pool of loss and showed no known symptom at all. Its replies say why.
+Fifteen of the seed's calls returned more than a thousand characters, ended mid-sentence, and
+scored below full marks — a derivation that stops in the middle of "Thus the unique consistent
+assignment is: A = L, B = T, C =". Eight of those fifteen were recorded as `finish_reason:
+length`, and every one of the eight is `integration` or `qa`. The other seven are all `research`,
+recorded as `None`. The difference is not the model or the prompt: `research` is the one class
+the shipped champion routes through an ensemble, and an ensemble had no stop reason to report,
+so the truncation diagnosis could not see the class it most needed to reach. That is the
+blindness the tree walk fixes, and the size of what it was hiding is three confirm cases of the
+4.62 that `research` still has to win.
+
 #### Things the loop was doing wrong and could not see
 
 **It was not deterministic.** Among candidates tied on `search`, the challenger was picked by
