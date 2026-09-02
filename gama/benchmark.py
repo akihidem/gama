@@ -1653,10 +1653,17 @@ def run_bench(backends: dict, suite: Optional[list[BenchCase]] = None,
     suite = _limit_per_class(suite if suite is not None else DEFAULT_SUITE, limit_per_class)
     unit_cost = unit_cost or {}
     records: list[dict] = []
+    # tool レーンの健康(コードが出たか・走ったか)は backends のグローバル計数にしか残らない。
+    # 合計だけ持ち帰ると「どのクラスでコードが出ないか」が消え、prefill のような**クラス単位の
+    # 処方**を出す側が診断を読めない。呼び出しは直列なので、1 call ごとの差分を記録に付ける。
+    from .backends import tool_stats
     for name, backend in backends.items():
         for case in suite:
             for rep in range(max(1, repeats)):
+                before = tool_stats()
                 rec = _run_one(name, backend, case, tier, rep, unit_cost)
+                after = tool_stats()
+                rec["tool"] = {k: after[k] - before[k] for k in after}
                 records.append(rec)
                 if logger is not None:
                     logger.log(_bench_logrecord(rec, run_id))

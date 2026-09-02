@@ -298,13 +298,27 @@ def _by_class_rotation(items: list, classes: list[str], offset: int) -> list:
         depth += 1
 
 
+def _class_of(label: str) -> str:
+    """候補ラベル ``kind:class(...)`` / ``kind:class->lane`` のクラス名。"""
+    body = label.split(":", 1)[1] if ":" in label else label
+    return re.split(r"[(\->]", body, 1)[0]
+
+
 def propose(champion: dict, pool: dict[str, dict], classes: list[str],
             width: int = 6, exclude: Optional[set] = None,
             ensemble_strategy: str = "synthesize",
             generation: int = 0,
             additive_classes: Optional[list[str]] = None,
-            allow_default: bool = True) -> list[Candidate]:
+            allow_default: bool = True,
+            no_code_by_class: Optional[dict] = None) -> list[Candidate]:
     """チャンピオンから 1 手だけ動かした候補を、種類を混ぜて ``width`` 本返す。
+
+    ``no_code_by_class`` はチャンピオンの測定が残した診断(クラス → tool レーンでコードが
+    出なかった call 数)。症状のあるクラスの ``+prefill`` を tool 枠の先頭に出す。巡回は
+    「どこも均等に触る」ための順で、症状の場所を測定が既に言っているのに順番待ちさせると、
+    処方が出番を得る前に走行が終わる(run W: width 4・7 種類・5 クラスで、seed の confirm が
+    no_code 8/72 を出していても、research の prefill は 5 世代のどこにも並ばなかった)。
+    診断が無ければ巡回のまま。
 
     1 手だけなのは、勝因を測定に帰属させるため(2 手同時だとどちらが効いたか台帳から読めない)。
     種類を round-robin で混ぜるのは、``width`` を絞ったときに ``route`` 変異だけで埋まって
@@ -475,6 +489,17 @@ def propose(champion: dict, pool: dict[str, dict], classes: list[str],
 
     queues = {k: _by_class_rotation(buckets[k], ordered_classes, offset + generation)
               for offset, k in enumerate(order)}
+    # 診断で先頭に出すのは prefill だけ(no_code は tool レーンの症状で、処方も prefill だけ)。
+    # 症状の多いクラスから、同数はクラス名順。並び替えるのは tool 枠の中だけで、種類の巡回と
+    # 他の種類の順は触らない(診断は「どの種類を試すか」まで決める根拠ではない)。
+    symptoms = {c: n for c, n in (no_code_by_class or {}).items()
+                if isinstance(n, int) and not isinstance(n, bool) and n > 0}
+    if symptoms and queues["tool"]:
+        rank = {c: (-n, c) for c, n in symptoms.items()}
+        first = sorted((c for c in queues["tool"]
+                        if c.label.endswith("+prefill") and _class_of(c.label) in rank),
+                       key=lambda c: rank[_class_of(c.label)])
+        queues["tool"] = first + [c for c in queues["tool"] if c not in first]
 
     champ_hash = spec_hash(champion)
     out: list[Candidate] = []
@@ -552,6 +577,10 @@ class Measurement:
     tool_ran: int = 0
     tool_no_code: int = 0      # ```python が出てこなかった(prompt/モデル側の問題)
     tool_empty_out: int = 0    # コードは走ったが何も print しなかった(生成コード側の問題)
+    # クラス別の「コードが出てこなかった」call 数。合計は「どこかで出ていない」としか言わず、
+    # 処方(prefill はクラス単位の変異)を向ける先が読めない。空 dict は「tool レーンを通った
+    # call でコードが出なかった事は無い」で、古い checkpoint(この欄が無い)も同じ形で復元する。
+    tool_no_code_by_class: dict = field(default_factory=dict)
 
 
 def measure(spec: dict, cases: list[BenchCase], tier: ModelTier = ModelTier.LARGE,
@@ -576,12 +605,18 @@ def measure(spec: dict, cases: list[BenchCase], tier: ModelTier = ModelTier.LARG
     per_case = {cid: sum(v) / len(v) for cid, v in by_case.items()}
     error_cases = frozenset(r["case_id"] for r in records if r.get("error"))
     ts = tool_stats()          # グローバルは一度だけ読む(呼ぶたびに変わりうる値を混ぜない)
+    no_code_by_class: dict[str, int] = {}
+    for r in records:
+        k = (r.get("tool") or {}).get("no_code", 0)
+        if k:
+            no_code_by_class[r["task_type"]] = no_code_by_class.get(r["task_type"], 0) + k
     return Measurement(score=agg["score"], success_rate=agg["success_rate"],
                        latency_s=agg["latency_s"], n=agg["n"], cases=len(cases),
                        errors=errors, error_rate=round(errors / len(records), 4) if records else 0.0,
                        per_case=per_case, error_cases=error_cases,
                        tool_calls=ts["calls"], tool_ran=ts["ran"],
-                       tool_no_code=ts["no_code"], tool_empty_out=ts["empty_out"])
+                       tool_no_code=ts["no_code"], tool_empty_out=ts["empty_out"],
+                       tool_no_code_by_class=dict(sorted(no_code_by_class.items())))
 
 
 # --------------------------------------------------------------------------- #
@@ -1170,6 +1205,7 @@ def _restore(d: dict) -> "Measurement":
     # 昇格が起きて champ_search が測り直されるまで効かないが、それが正しい向き —— 飽和は
     # 証明できたときだけ主張する。証拠が無いことを「余地なし」の側に丸めない。
     d.setdefault("per_case", {})
+    d.setdefault("tool_no_code_by_class", {})   # 同上: 診断が無いのは「症状なし」でなく「未観測」
     return Measurement(**d)
 
 
@@ -1427,11 +1463,17 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
                           "headroom is below the gate"})
         # 飽和したクラスも propose には渡す。削る変異は「悪くならないこと」しか要求しないので、
         # むしろ満点のクラスこそ「その構造は何も買っていない」と言える場所になる。
+        # 診断は search と confirm の両方から(どちらも今のチャンピオンの測定)。
+        symptoms: dict[str, int] = {}
+        for m in (champ_search, champ_confirm_now):
+            for c, n in (m.tool_no_code_by_class or {}).items():
+                symptoms[c] = symptoms.get(c, 0) + n
         cands = propose(champion, pool, classes, width=width, exclude=challenged | settled,
                         ensemble_strategy=ensemble_strategy, generation=gen,
                         additive_classes=[c for c in classes if c not in saturated],
                         allow_default=_default_swap_viable(champion, classes, headroom,
-                                                           gate_cases))
+                                                           gate_cases),
+                        no_code_by_class=symptoms)
         if not cands:
             # ここまでに champion を confirm で測っている。止まるからといって捨てると、
             # 最終結果も再開状態も「測る前の値」のまま残る。checkpoint も**実際に出す**

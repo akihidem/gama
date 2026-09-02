@@ -453,6 +453,14 @@ depending on how the server treats a trailing assistant turn — continued, re-o
 and never closed — and the extractor reads all three, since the difference is the server's, not
 the model's.)
 
+The queue reads that diagnosis. Every measurement records, per class, how many tool calls came
+back without a code block (`tool_no_code_by_class`), and the `+prefill` for the most symptomatic
+class goes to the front of the tool slot. Without it the proposer is fair to a fault: run W's
+seed said "no code, 8 of 72 confirm calls", and with width 4, seven kinds and five classes the
+research prefill was not going to reach the front of the queue in five generations. The rotation
+exists so that nothing is starved; when the measurement already names the place, waiting a turn
+is the loop ignoring its own data.
+
 #### Three things the loop was doing wrong and could not see
 
 **It was not deterministic.** Among candidates tied on `search`, the challenger was picked by

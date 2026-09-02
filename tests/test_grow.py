@@ -431,6 +431,52 @@ class TestPropose(ScriptedCase):
         self.assertFalse([c for c in propose(canonical(champ), self.pool, ["qa"], width=20)
                           if c.kind == "tool"])
 
+    def test_the_diagnosis_puts_the_prefill_for_the_symptomatic_class_first(self):
+        # run W: the seed's confirm measurement said no_code 8/72, but with width 4, seven kinds
+        # and five classes the research prefill never reached the front of the tool queue in
+        # five generations. The measurement already names the class; the queue must read it.
+        class Chatty(Scripted):
+            name = "chatty"
+            supports_prefill = True
+
+        backends_mod._BACKENDS["chatty"] = Chatty
+        try:
+            pool = {"a": {"backend": "chatty", "kwargs": {"tag": "a"}}, "b": _lane("b")}
+            champ = seed_champion(pool, "a")
+            champ["kwargs"]["backends"]["tool(a)"] = {
+                "backend": "tool", "_grow_base": "a", "kwargs": {"inner": pool["a"]}}
+            for cls in ("qa", "research", "content"):
+                champ["kwargs"]["routing_table"][cls] = "tool(a)"
+            champ = canonical(champ)
+            classes = ["content", "qa", "research"]
+
+            def tool_order(**kw):
+                return [c.label for c in propose(champ, pool, classes, width=30, **kw)
+                        if c.kind == "tool"]
+
+            plain = tool_order()
+            self.assertEqual(sorted(plain), ["tool:content(a)+prefill", "tool:qa(a)+prefill",
+                                             "tool:research(a)+prefill"])
+            # no diagnosis, or one with nothing in it: the rotation is untouched
+            self.assertEqual(tool_order(no_code_by_class={}), plain)
+            self.assertEqual(tool_order(no_code_by_class={"qa": 0, "research": False}), plain)
+            # a symptom on one class moves that class's prefill to the front, nothing else moves
+            got = tool_order(no_code_by_class={"research": 3})
+            self.assertEqual(got[0], "tool:research(a)+prefill")
+            self.assertEqual(got[1:], [l for l in plain if l != "tool:research(a)+prefill"])
+            # more symptoms first; equal counts by class name
+            got = tool_order(no_code_by_class={"qa": 2, "research": 5, "content": 2})
+            self.assertEqual(got, ["tool:research(a)+prefill", "tool:content(a)+prefill",
+                                   "tool:qa(a)+prefill"])
+            # a diagnosed class that has no prefill to offer (not on a tool lane) changes nothing
+            self.assertEqual(tool_order(no_code_by_class={"integration": 9}), plain)
+            # the other kinds keep their order: the diagnosis decides within the tool slot only
+            other = lambda **kw: [c.label for c in propose(champ, pool, classes, width=30, **kw)
+                                  if c.kind != "tool"]
+            self.assertEqual(other(no_code_by_class={"research": 3}), other())
+        finally:
+            backends_mod._BACKENDS.pop("chatty", None)
+
     def test_a_deepened_lane_is_not_a_dead_end(self):
         # Until 2026-09-02 a name-parsing copy of _atomic_lane shadowed the spec-reading one, and
         # `mesh(a->b)+tool` matched neither pattern: a class that had been deepened could never be
@@ -1060,6 +1106,31 @@ class TestGrowCli(unittest.TestCase):
                            "--width", "1", "--start-from", str(cfg)])
             self.assertEqual(rc, 0)
             self.assertEqual(json.loads(out.getvalue())["seed"]["kwargs"]["default"], "echo")
+
+    def test_a_seed_whose_tool_lane_writes_no_code_says_so_by_class(self):
+        # echo never opens a fence, so a seed with a tool(echo) lane fails every tool call
+        # with "no code"; the seed line names the classes, so the prefill ordering that
+        # follows is explained before it happens rather than read off the ledger afterwards
+        with tempfile.TemporaryDirectory() as d:
+            cfg = Path(d) / "champ.json"
+            cfg.write_text(json.dumps({"system": {
+                "backend": "gama",
+                "kwargs": {"backends": {"echo": {"backend": "echo"},
+                                        "tool(echo)": {"backend": "tool", "_grow_base": "echo",
+                                                       "kwargs": {"inner": {"backend": "echo"}}}},
+                           "routing_table": {"qa": "tool(echo)"}, "default": "echo"}}}),
+                encoding="utf-8")
+            out, err = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                rc = main(["grow", "--smoke", "--suites", "wide", "--generations", "1",
+                           "--width", "1", "--start-from", str(cfg)])
+            self.assertEqual(rc, 0)
+            self.assertRegex(err.getvalue(), r"seed tool lanes returned no code on: qa \d+")
+            # and the measurement itself carries the diagnosis per class (nothing promotes on
+            # echo, so the final champion's confirm measurement is the seed's)
+            result = json.loads(out.getvalue())
+            self.assertEqual(result["promotions"], 0)
+            self.assertEqual(list(result["confirm"]["tool_no_code_by_class"]), ["qa"])
 
     def test_start_from_a_broken_config_is_a_clean_error(self):
         with tempfile.TemporaryDirectory() as d:
@@ -2256,6 +2327,28 @@ class TestToolLaneHealth(unittest.TestCase):
         # echo はコードを一切書かないので、原因は「コードが出てこない」側に立つ
         self.assertEqual(m.tool_no_code, 3)
         self.assertEqual(m.tool_empty_out, 0)
+
+    def test_the_no_code_count_is_kept_per_class(self):
+        from gama.benchmark import SUITES
+        cases = SUITES["default"][:3]
+        m = measure({"backend": "tool", "kwargs": {"inner": {"backend": "echo", "kwargs": {}}}},
+                    cases)
+        expect = {}
+        for c in cases:
+            expect[c.task_type] = expect.get(c.task_type, 0) + 1
+        self.assertEqual(m.tool_no_code_by_class, expect)
+        self.assertEqual(sum(m.tool_no_code_by_class.values()), m.tool_no_code)
+        # a lane that writes no code because it is not a tool lane has no symptom to report
+        m = measure({"backend": "echo", "kwargs": {}}, cases)
+        self.assertEqual(m.tool_no_code_by_class, {})
+
+    def test_a_checkpoint_written_before_the_diagnosis_restores_without_one(self):
+        from gama.grow import _restore, _state
+        m = measure({"backend": "echo", "kwargs": {}},
+                    __import__("gama.benchmark", fromlist=["SUITES"]).SUITES["default"][:2])
+        d = _state(m)
+        d.pop("tool_no_code_by_class")
+        self.assertEqual(_restore(d).tool_no_code_by_class, {})
 
     def test_a_lane_without_a_tool_reports_zero_calls(self):
         from gama.benchmark import SUITES

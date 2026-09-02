@@ -383,6 +383,19 @@ def cmd_grow(args: argparse.Namespace) -> int:
             sizes = {k: len(v) for k, v in row["splits"].items()}
             sys.stderr.write(f"[gama] splits {sizes} | seed search={row['search']['score']} "
                              f"confirm={row['confirm']['score']}\n")
+            # 種の診断: tool レーンがコードを出さなかったクラス。処方(+prefill)はこの順で
+            # tool 枠の先頭に出る。走行後に台帳を掘らないと「なぜその順で並んだか」が
+            # 見えないので、並ぶ前に言う。
+            symptoms: dict = {}
+            for _k in ("search", "confirm"):
+                for _c, _n in ((row.get(_k) or {}).get("tool_no_code_by_class") or {}).items():
+                    symptoms[_c] = symptoms.get(_c, 0) + _n
+            if symptoms:
+                order = sorted(symptoms, key=lambda c: (-symptoms[c], c))
+                sys.stderr.write("[gama] seed tool lanes returned no code on: "
+                                 + ", ".join(f"{c} {symptoms[c]}" for c in order)
+                                 + " (calls, search+confirm); their +prefill is proposed "
+                                   "before the other tool mutations\n")
             # sealed が何を言えるかは封を開ける前に決まっている。1 問の帯を confirm の問数に
             # 直した量より小さくしか種の上に立てなかった最終形は、転移していても NOT SEPARABLE
             # で終わる。run T/V がそれで、走行後に「分からない」と読むのは 3 時間遅い。
