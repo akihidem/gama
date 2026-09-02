@@ -233,27 +233,14 @@ def _atomic_lane(champion: dict, lane: str) -> Optional[str]:
     """
     spec = (champion.get("kwargs", {}).get("backends") or {}).get(lane) or {}
     base = spec.get("_grow_base")
-    return base if isinstance(base, str) else None
-
-
-_DERIVED_LANE = re.compile(r"^(tool|ens|mesh)\(.*\)$")
-
-
-def _lane_for(champion: dict, task_type: str) -> str:
-    kw = champion["kwargs"]
-    return kw["routing_table"].get(task_type, kw["default"])
-
-
-def _atomic_lane(champion: dict, lane: str) -> Optional[str]:
-    """合成レーンが包んでいる素のレーン名(``tool(qwen)`` -> ``qwen``)。素なら None。
-
-    区切りは合成の種類ごとに違う(``ens(a+b)`` / ``mesh(a->b)``)。片方だけ剥がすと、
-    剥がせない合成レーンが**縮む変異の効かない袋小路**になる(足す方向にしか動けなくなる)。
-
-    判定は ``validate_pool`` と**同じ述語**(``_DERIVED_LANE``)で行う。「入口で弾く名前」と
-    「合成として分解する名前」がずれると、弾かれなかった利用者のレーン名(``foo(a)`` 等)が
-    分解され、``simplify:qa->a`` という嘘のラベルで別 backend へ振り替わる。
-    """
+    if isinstance(base, str):
+        return base
+    # 手書きの種 config は ``_grow_base`` を持たない。grow 自身の名前空間(``_DERIVED_LANE``。
+    # ``validate_pool`` が利用者のレーン名を締め出している範囲)に限っては名前が構造そのものなので、
+    # そこだけ逆パースする。範囲外の名前(``foo(a)`` や deepen の ``mesh(a->b)+tool``)は読まない —
+    # 前者は嘘のラベルになり、後者は spec が答えを持っている。
+    # 2026-09-02 まで、この関数の**名前解析版が同じファイルの後ろに残っていて**こちらを上書き
+    # していた(deepen レーンに乗ったクラスは simplify も tool も一切提案されない袋小路だった)。
     if not _DERIVED_LANE.match(lane):
         return None
     inner = lane[lane.index("(") + 1:-1]
@@ -426,12 +413,12 @@ def propose(champion: dict, pool: dict[str, dict], classes: list[str],
         spec = copy.deepcopy(champion["kwargs"]["backends"][cur])
         wrapped = {"backend": "tool", "kwargs": {"inner": copy.deepcopy(pool[base])}}
         kw = spec.get("kwargs") or {}
-        if "tiers" in kw and kw["tiers"]:
-            kw["tiers"][0] = wrapped
-        elif "members" in kw and kw["members"]:
-            kw["members"][0] = wrapped
-        else:
+        stages = kw.get("tiers") or kw.get("members")
+        # 先頭段がもう tool なら包み直さない(名前でなく spec で見る: deepen 済みのレーン名は
+        # ``mesh(a->b)+tool`` で、``tool(`` では始まらない)。
+        if not stages or (stages[0].get("backend") == "tool"):
             continue
+        stages[0] = wrapped
         name = f"{cur}+tool"
         buckets["deepen"].append((task_type, Candidate(
             f"deepen:{task_type}(tool inside {cur.split('(')[0]})", "deepen",

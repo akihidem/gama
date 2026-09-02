@@ -385,6 +385,29 @@ class TestPropose(ScriptedCase):
         self.assertEqual(inner["backend"], "tool")     # the cheap tier now writes code
         build_backend(deep[0].spec)
 
+    def test_a_deepened_lane_is_not_a_dead_end(self):
+        # Until 2026-09-02 a name-parsing copy of _atomic_lane shadowed the spec-reading one, and
+        # `mesh(a->b)+tool` matched neither pattern: a class that had been deepened could never be
+        # simplified back, wrapped, or recombined — only routed away. Every direction must stay open.
+        champ = json.loads(json.dumps(self.champ))
+        champ["kwargs"]["backends"]["mesh(a->b)+tool"] = {
+            "backend": "meshflow", "_grow_base": "a",
+            "kwargs": {"tiers": [{"backend": "tool", "kwargs": {"inner": _lane("a")}}, _lane("b")],
+                       "mesh": "union"}}
+        champ["kwargs"]["routing_table"]["qa"] = "mesh(a->b)+tool"
+        cands = propose(canonical(champ), self.pool, ["qa"], width=20)
+        labels = {c.label for c in cands}
+        self.assertIn("simplify:qa->a", labels)
+        self.assertIn("tool:qa(a)", labels)
+        self.assertIn("ensemble:qa(a+b)", labels)
+        # and it is not wrapped a second time (the guard reads the spec, not the lane name)
+        self.assertFalse([c for c in cands if c.kind == "deepen"], labels)
+        # a user-named lane outside grow's namespace is never decomposed by name
+        champ["kwargs"]["backends"]["foo(a)"] = _lane("b")
+        champ["kwargs"]["routing_table"]["qa"] = "foo(a)"
+        self.assertNotIn("simplify:qa->a",
+                         {c.label for c in propose(canonical(champ), self.pool, ["qa"], width=20)})
+
     def test_never_proposes_the_champion_or_excluded(self):
         cands = propose(self.champ, self.pool, ["qa"], width=12)
         hashes = {spec_hash(c.spec) for c in cands}
