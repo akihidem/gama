@@ -69,6 +69,35 @@ def duplicate_definitions(path):
     return found
 
 
+def stranded_tests(path):
+    """Return ``[(line, name)]`` for every ``test_*`` function the runner would never see.
+
+    A method pasted after a module-level function at that function's body indentation
+    parses as a nested function of it (unreachable, after its ``return``): no error, no
+    test, and the suite count moves by one less than expected, which nobody counts. The
+    runner only collects ``test_*`` methods on ``TestCase`` classes, so a ``test_*`` that
+    is not a direct child of a class body is a test that does not exist.
+    """
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    found = []
+
+    def scan(body, in_class):
+        for n in body:
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                if n.name.startswith("test_") and not in_class:
+                    found.append((n.lineno, n.name))
+                scan(n.body, False)
+            elif isinstance(n, ast.ClassDef):
+                scan(n.body, True)
+            elif isinstance(n, (ast.If, ast.Try, ast.With, ast.For, ast.While)):
+                for attr in ("body", "orelse", "finalbody", "handlers"):
+                    for m in getattr(n, attr, []) or []:
+                        scan(getattr(m, "body", [m]), in_class)
+
+    scan(tree.body, False)
+    return found
+
+
 class TestNoShadowedDefinitions(unittest.TestCase):
     def test_every_module_defines_each_name_once(self):
         modules = sorted(PACKAGE.rglob("*.py"))   # subpackages too, should any appear
@@ -114,6 +143,42 @@ class TestNoShadowedDefinitions(unittest.TestCase):
                "def x():\n    return 1\n\n"
                "@x.setter\ndef x(v):\n    pass\n")
         self.assertEqual(self._scan(src), [("probe", "x", 2)])
+
+
+class TestNoStrandedTests(unittest.TestCase):
+    """2026-09-02: a regression test for ``promoted_gain_cases`` was inserted after a
+    module-level helper at its body indentation. The file parsed, the suite was green,
+    and the test had never run (``-k`` found 0 tests). codex read it as an
+    IndentationError; the truth was quieter than that."""
+
+    def test_every_test_function_in_the_suite_is_a_method_of_a_class(self):
+        tests = sorted(pathlib.Path(__file__).resolve().parent.glob("test_*.py"))
+        self.assertGreater(len(tests), 5, "the suite moved; point this at it")
+        stranded = [(p.name, *t) for p in tests for t in stranded_tests(p)]
+        self.assertEqual(stranded, [], f"tests the runner never collects: {stranded}")
+
+    def _scan(self, src):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = pathlib.Path(d) / "probe.py"
+            tmp.write_text(src, encoding="utf-8")
+            return stranded_tests(tmp)
+
+    def test_the_check_sees_a_method_stranded_inside_a_helper(self):
+        src = ("def helper():\n    return 1\n\n\n"
+               "    def test_x(self):\n        pass\n\n"
+               "class A:\n    def test_y(self):\n        pass\n")
+        self.assertEqual(self._scan(src), [(5, "test_x")])
+
+    def test_a_module_level_test_function_is_stranded_too(self):
+        # unittest does not collect bare functions either
+        self.assertEqual(self._scan("def test_x():\n    pass\n"), [(1, "test_x")])
+
+    def test_methods_and_helpers_are_left_alone(self):
+        src = ("def _make():\n    def inner():\n        pass\n    return inner\n\n"
+               "class A:\n    def test_y(self):\n        def test_local():\n"
+               "            pass\n        pass\n")
+        # a test_* nested inside a test method is that method's business, not a stranded test
+        self.assertEqual(self._scan(src), [(8, "test_local")])
 
 
 if __name__ == "__main__":

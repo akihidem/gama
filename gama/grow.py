@@ -930,21 +930,22 @@ def confirm_claim(seed_scores: list, champion_scores: list, n_confirm: int,
     seed_scores = [x for x in (_num(v) for v in (seed_scores or [])) if x is not None]
     champion_scores = [x for x in (_num(v) for v in (champion_scores or [])) if x is not None]
     promotion_score = _num(promotion_score)
-    if not seed_scores:
-        return {"cases": None, "seed_mean": None, "seed_measurements": 0,
-                "champion_mean": None, "champion_measurements": 0,
-                "promotion_only": False, "same_as_seed": False}
-    seed_mean = _mean(seed_scores)
+    seed_mean = _mean(seed_scores) if seed_scores else None
     if not champion_scores and promotion_score is None:
         # 種のまま終わった走行。champion の測定は種の測定そのものなので、別個に測った数としては
         # 0 と書く(同じ数を両方に書くと、種を n 回・champion を n 回測ったように読める)。
-        return {"cases": 0.0, "seed_mean": round(seed_mean, 4), "seed_measurements": len(seed_scores),
-                "champion_mean": round(seed_mean, 4), "champion_measurements": 0,
-                "promotion_only": False, "same_as_seed": True}
+        return {"cases": None if seed_mean is None else 0.0,
+                "seed_mean": None if seed_mean is None else round(seed_mean, 4),
+                "seed_measurements": len(seed_scores),
+                "champion_mean": None if seed_mean is None else round(seed_mean, 4),
+                "champion_measurements": 0,
+                "promotion_only": False, "same_as_seed": seed_mean is not None}
     promotion_only = not champion_scores
     champ_mean = promotion_score if promotion_only else _mean(champion_scores)
-    return {"cases": (champ_mean - seed_mean) * n_confirm,   # 丸めない: 判定は正確な値で
-            "seed_mean": round(seed_mean, 4), "seed_measurements": len(seed_scores),
+    # 種が読めなければ主張は「読めない」(None)。champion 側の材料は捨てずに残す(codex r5)。
+    return {"cases": None if seed_mean is None else (champ_mean - seed_mean) * n_confirm,
+            "seed_mean": None if seed_mean is None else round(seed_mean, 4),
+            "seed_measurements": len(seed_scores),
             "champion_mean": round(champ_mean, 4),
             "champion_measurements": 1 if promotion_only else len(champion_scores),
             "promotion_only": promotion_only, "same_as_seed": False}

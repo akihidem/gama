@@ -418,15 +418,6 @@ class TestSuiteChoicesTrackTheRegistry(unittest.TestCase):
                                  f"{sorted(set(SUITES) ^ set(action.choices))}")
         self.assertGreater(found, 0, "no --suite argument found to check")
 
-
-def _walk_actions(parser):
-    for action in parser._actions:
-        if hasattr(action, "choices") and isinstance(action.choices, dict):
-            for sub in action.choices.values():          # subparsers
-                yield from _walk_actions(sub)
-        else:
-            yield action
-
     def test_every_registered_suite_has_a_one_line_description(self):
         # help を手書きの写しにしていたので、qadeep / researchdeep / crux の 3 本が登録済みなのに
         # 説明に出てこない状態が続いていた。出所を 1 つにしたことを試験で固定する。
@@ -436,3 +427,12 @@ def _walk_actions(parser):
                          f"{sorted(set(SUITE_DOCS) ^ set(SUITES))}")
         for name, doc in SUITE_DOCS.items():
             self.assertTrue(doc.strip(), f"{name} has an empty description")
+
+
+def _walk_actions(parser):
+    for action in parser._actions:
+        if hasattr(action, "choices") and isinstance(action.choices, dict):
+            for sub in action.choices.values():          # subparsers
+                yield from _walk_actions(sub)
+        else:
+            yield action
