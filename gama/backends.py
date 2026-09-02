@@ -248,12 +248,16 @@ class SshOpenAIBackend(ModelBackend):
     # bad case, a server that drops the turn silently, measures as a plain tool lane under
     # another name and never promotes: wasted width, not a wrong result.
     supports_prefill = True
+    # system メッセージを 1 つ前置きできる(OpenAI 互換なのでどのサーバでも形は同じ)。
+    # grow はこれを 1 手の変異として使う: 「前置きを付けて答える」症状のクラスに、
+    # 「聞かれたものだけ返せ」を載せた同じレーンを 1 本作って門に通す。
+    supports_system = True
 
     def __init__(self, ssh_host: str | None = None, port: int = 8080,
                  path: str = "/v1/chat/completions", model_by_tier: dict | None = None,
                  ssh_opts: list | None = None, timeout: int = 900,
                  max_tokens: int | None = None, temperature: float | None = None,
-                 extra_body: dict | None = None):
+                 extra_body: dict | None = None, system: str | None = None):
         self.ssh_host = ssh_host
         self.port = port
         self.path = path
@@ -269,6 +273,9 @@ class SshOpenAIBackend(ModelBackend):
         # 組み立てないので、pool の config からは手が届かなかった。
         # 必須フィールド(model/messages/stream)は後から上書きするので、ここで壊せない。
         self.extra_body = dict(extra_body or {})
+        # 空文字は「無し」と同じに畳む(spec の書き方の揺れ)。messages は毎回ここで組み立て
+        # 直すので、extra_body に messages を入れても上書きされる(必須フィールドと同じ扱い)。
+        self.system = system or None
         self.last_usage = None
         # 応答が止まった理由(OpenAI 形式の finish_reason: "stop" / "length" ...)。tool レーンの
         # 「コードが出なかった」が **max_tokens で切れた**のか散文で答えたのかは、これが無いと
@@ -299,7 +306,8 @@ class SshOpenAIBackend(ModelBackend):
         if not self.ssh_host:
             raise RuntimeError("SshOpenAIBackend requires ssh_host")
         model = self.model_by_tier.get(tier) or self.model_by_tier.get(ModelTier.LARGE)
-        messages = [{"role": "user", "content": prompt}]
+        messages = ([{"role": "system", "content": self.system}] if self.system else [])
+        messages.append({"role": "user", "content": prompt})
         # Prefill = the opening of the reply, sent as a trailing assistant turn. What the server
         # does with it is template-dependent: llama.cpp (2026-09-02, Kimi-48B IQ2_M) starts a
         # NEW assistant turn after it rather than continuing the text, but the model then opens

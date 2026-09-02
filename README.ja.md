@@ -450,6 +450,25 @@ trace は台帳が答えられない問いに答える。trace を持つ最初�
 クラスの `+prefill` が処方として最初の席を取ってしまうと、測定が言っていない症状の治療に
 その世代を使うことになる。
 
+#### 3 つ目の症状: 答えは在って、前置きに包まれていた
+
+同じ trace の同じ種の測定で、`content` の 56 コール中 12 本が `Sure! Here's a sentence that
+meets your criteria:` と前置きしてから答えを**太字で**返していた ── prompt は「その文だけを
+出力せよ」と書いてある。他のクラスは 0 本(code 80・qa 120・research 120・integration 68 で
+いずれも 0)。`content` はこの pool で最も点の低いクラスでもある(0.387)。モデルは文を書け
+ないのではなく、文だけを渡せていない。
+
+これが 3 つ目の症状で、治療は枠でも道具でもない: レーンに system の一行を載せる ──
+「Reply with only what was asked for: no preamble, no sign-off, no commentary about the answer」。
+`SshOpenAIBackend` が `system=` を受け取り、`Measurement` は `preamble_by_class`(返答の
+先頭が挨拶で、かつ満点に届かなかった記録)を数え、`propose` は症状のあるクラスに
+`terse:<class>(<lane>)` を鋳造する ── 同じレーンの、system を受け取れて**まだ空いている**
+backend 全部にその一行を入れた写し。既に載っているものは上書きしない(それは 2 手になる)。
+
+診断はわざと狭くしてある。見落としは「席が出ない」だけだが、誤検出は効きようのないクラスに
+測定 1 回を使わせる。だから語彙は挨拶(`sure`・`certainly`・`here's`・`below is`)に限り、
+推論の書き出し(`let me compute ...`)や、答えそのものでありうる語(`yes`)は入れない。
+
 #### ループ自身が間違っていて、自分では見えなかったこと
 
 **決定的でなかった。** `search` で同点の候補から挑戦者を選ぶとき、実測レイテンシで割っていた。

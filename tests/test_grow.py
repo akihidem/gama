@@ -517,6 +517,92 @@ class TestPropose(ScriptedCase):
                                                   cut_by_class={"qa": 2}) if c.kind == "tokens"],
                          [])
 
+    def test_an_answer_wrapped_in_a_preamble_is_a_symptom_with_its_own_remedy(self):
+        # run Z's seed, measured: 12 of 56 content calls opened with "Sure! Here's ..." and
+        # scored below full marks; every other class had none. The model has the answer and
+        # loses the case on the shape of the reply, so the remedy is neither a bigger budget
+        # nor a tool — it is one system line telling the lane to answer with the answer.
+        lane = {"backend": "ssh-openai", "kwargs": {"ssh_host": "h", "max_tokens": 1536}}
+        pool = {"a": lane, "b": _lane("b")}
+        champ = canonical(seed_champion(pool, "a"))
+        classes = ["content", "qa"]
+
+        def terse(**kw):
+            return [c.label for c in propose(champ, pool, classes, width=30, **kw)
+                    if c.kind == "terse"]
+
+        self.assertEqual(terse(), [], "no symptom, no prescription")
+        self.assertEqual(terse(preamble_by_class={"content": 0}), [])
+        self.assertEqual(terse(preamble_by_class={"content": 12}), ["terse:content(a)"])
+        # it is a prescription: it takes a seat ahead of the kind rotation
+        first = propose(champ, pool, classes, width=1, preamble_by_class={"content": 12})
+        self.assertEqual([c.kind for c in first], ["terse"])
+        # ...and only for the symptom it treats
+        self.assertTrue(_prescribed(first[0], {"content": 1}, "preamble"))
+        self.assertFalse(_prescribed(first[0], {"content": 1}, "cut"))
+        # a saturated class is not treated, and a lane that cannot take a system line has no
+        # remedy of this kind
+        self.assertEqual(terse(preamble_by_class={"content": 12}, additive_classes=["qa"]), [])
+        scripted = canonical(seed_champion({"b": _lane("b")}, "b"))
+        self.assertEqual([c.kind for c in propose(scripted, {"b": _lane("b")}, classes, width=30,
+                                                  preamble_by_class={"content": 12})
+                          if c.kind == "terse"], [])
+        # one step at a time: a lane that already carries a system line is not overwritten,
+        # and when there is nothing left to fill there is no candidate
+        taken = dict(lane, kwargs=dict(lane["kwargs"], system="something else"))
+        champ_taken = canonical(seed_champion({"a": taken, "b": _lane("b")}, "a"))
+        self.assertEqual([c.kind for c in propose(champ_taken, {"a": taken}, classes, width=30,
+                                                  preamble_by_class={"content": 12})
+                          if c.kind == "terse"], [])
+        # ...but a composite whose other half is free is still treated there
+        from gama.grow import _with_system, TERSE_SYSTEM
+        half = {"backend": "ensemble", "kwargs": {"members": [
+            dict(lane, kwargs=dict(lane["kwargs"], system="something else")), dict(lane)]}}
+        got = _with_system(half)
+        self.assertEqual([m["kwargs"].get("system") for m in got["kwargs"]["members"]],
+                         ["something else", TERSE_SYSTEM])
+
+    def test_only_a_reply_that_starts_with_a_preamble_counts_as_one(self):
+        from gama.grow import _has_preamble
+        for opener in ("Sure! Here's a sentence that meets your criteria:", "Sure, the answer:",
+                       "  Certainly, the answer is 42", "Here are the three lines:",
+                       "Below is the sentence."):
+            self.assertTrue(_has_preamble(opener), opener)
+        # mid-reply prose is ordinary writing, and a reasoning opener is not this symptom
+        self.assertFalse(_has_preamble("The list is here is what remains"))
+        self.assertFalse(_has_preamble("Let me compute the sum step by step."))
+        self.assertFalse(_has_preamble(""))
+        self.assertFalse(_has_preamble(None))
+
+    def test_the_preamble_check_reads_the_head_of_the_reply(self):
+        # 症状は `output_preview` から見る。これが返答の**接頭辞**でなくなった瞬間、判定は
+        # 黙って嘘になる(codex 指摘: 生成仕様への暗黙の依存)。前提をここで固定する。
+        from gama.benchmark import _run_one
+        from gama.grow import _has_preamble
+        from gama.models import ModelTier
+
+        class Long(ModelBackend):
+            available = True
+
+            def __init__(self, tag="x"):
+                self.tag, self.last_usage = tag, None
+
+            def complete(self, prompt, tier, **kw):
+                return "Sure! " + "x" * 500
+
+        had = backends_mod._BACKENDS.get("longy")
+        backends_mod._BACKENDS["longy"] = Long
+        try:
+            case = BenchCase("c1", "qa", "case=c1", lambda o: 0.0)
+            rec = _run_one("longy", Long(), case, ModelTier.LARGE, 0, {})
+        finally:
+            if had is None:
+                backends_mod._BACKENDS.pop("longy", None)
+            else:
+                backends_mod._BACKENDS["longy"] = had
+        self.assertTrue(("Sure! " + "x" * 500).startswith(rec["output_preview"]))
+        self.assertTrue(_has_preamble(rec["output_preview"]))
+
     def test_a_cut_call_that_still_scores_full_marks_is_not_a_symptom(self):
         # the qa half of the same measurement: cut and correct. Prescribing there would spend a
         # seat and real latency on calls that are already right.
@@ -545,6 +631,31 @@ class TestPropose(ScriptedCase):
                 backends_mod._BACKENDS["cut"] = had
         # both calls were cut; only the one that lost a point is a symptom
         self.assertEqual(m.cut_by_class, {"qa": 1})
+
+    def test_the_preamble_symptom_is_counted_from_the_measurement(self):
+        from gama.models import ModelTier
+
+        class Chatty(ModelBackend):
+            available = True
+
+            def __init__(self, tag="x"):
+                self.tag, self.last_usage = tag, None
+                self.last_finish_reason = None
+
+            def complete(self, prompt, tier, **kw):
+                # 正解の case は前置き無しで当て、外す case は前置きしてから外す
+                return "GOOD" if "qa1" in prompt else "Sure! Here's the answer: BAD"
+
+        had = backends_mod._BACKENDS.get("chatty2")
+        backends_mod._BACKENDS["chatty2"] = Chatty
+        try:
+            m = measure({"backend": "chatty2"}, _cases(3), ModelTier.LARGE, 1, {}, "seed")
+        finally:
+            if had is None:
+                backends_mod._BACKENDS.pop("chatty2", None)
+            else:
+                backends_mod._BACKENDS["chatty2"] = had
+        self.assertEqual(m.preamble_by_class, {"qa": 2})
 
     def test_the_diagnosis_puts_the_prefill_for_the_symptomatic_class_first(self):
         # run W: the seed's confirm measurement said no_code 8/72 (all research), and gen1's tool

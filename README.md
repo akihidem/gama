@@ -532,6 +532,27 @@ Diagnosis and treatment are matched as a pair, not by class: with only truncatio
 would hand the first seat of the generation to a treatment for a symptom the measurement did not
 report.
 
+#### A third symptom: the answer was there, wrapped in a preamble
+
+The same trace, the same seed measurement: 12 of 56 `content` calls opened with "Sure! Here's a
+sentence that meets your criteria:" and then gave the answer in bold, on a prompt that says
+*output ONLY the sentence*. Every other class had none — 0 of 80 code calls, 0 of 120 qa, 0 of
+120 research, 0 of 68 integration. `content` is also the lowest-scoring class in that pool
+(0.387). The model is not failing to write the sentence; it is failing to hand it over alone.
+
+That is a third symptom with a third remedy, and it is neither a bigger budget nor a tool: it is
+one system line on the lane — "Reply with only what was asked for: no preamble, no sign-off, no
+commentary about the answer". `SshOpenAIBackend` takes a `system=` kwarg, `Measurement` counts
+`preamble_by_class` (replies whose first characters are a conversational opener *and* which
+missed full marks), and `propose` mints `terse:<class>(<lane>)` for a symptomatic class: the same
+lane with that system line filled into every backend inside it that can take one and does not
+already have one. It never overwrites an existing system line, because that would be two moves.
+
+The diagnosis is deliberately narrow. A missed symptom costs a seat that was not taken; a false
+one costs a real measurement on a class the instruction cannot help, so the opener list holds
+greetings ("sure", "certainly", "here's", "below is") and not reasoning openers ("let me
+compute...") or words that could be the answer ("yes").
+
 #### Things the loop was doing wrong and could not see
 
 **It was not deterministic.** Among candidates tied on `search`, the challenger was picked by
