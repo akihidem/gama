@@ -1406,7 +1406,8 @@ class TestGrowCli(unittest.TestCase):
     def test_out_puts_the_call_trace_beside_the_ledger_and_trace_moves_it(self):
         with tempfile.TemporaryDirectory() as d:
             led = Path(d) / "run.jsonl"
-            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            out, err = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
                 rc = main(["grow", "--smoke", "--suites", "wide", "--generations", "1",
                            "--width", "1", "--out", str(led)])
             self.assertEqual(rc, 0)
@@ -1416,12 +1417,29 @@ class TestGrowCli(unittest.TestCase):
             self.assertEqual({r["event"] for r in rows}, {"call"})
             # the trace answers what the ledger cannot: the shape of each reply
             self.assertTrue(all("chars" in r and "finish" in r and "tail" in r for r in rows))
+            # the run counts its own trace: the same number in the result and on stderr
+            summary = json.loads(out.getvalue())["trace"]
+            self.assertEqual(summary["calls"], len(rows))
+            self.assertEqual(summary["path"], str(Path(d) / "run.trace.jsonl"))
+            self.assertIn(f"[gama] per-call trace: {len(rows)} calls", err.getvalue())
+            self.assertIn("`run.trace.jsonl`", err.getvalue())
             other = Path(d) / "calls" / "t.jsonl"
-            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            out, err = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
                 rc = main(["grow", "--smoke", "--suites", "wide", "--generations", "1",
                            "--width", "1", "--out", str(led), "--trace", str(other)])
             self.assertEqual(rc, 0)
             self.assertTrue(other.exists())
+            self.assertEqual(json.loads(out.getvalue())["trace"]["path"], str(other))
+            self.assertIn("`t.jsonl`", err.getvalue())
+            # no ledger, no trace, and the run says nothing about one
+            out, err = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                rc = main(["grow", "--smoke", "--suites", "wide", "--generations", "1",
+                           "--width", "1"])
+            self.assertEqual(rc, 0)
+            self.assertIsNone(json.loads(out.getvalue())["trace"])
+            self.assertNotIn("per-call trace", err.getvalue())
 
     def test_smoke_runs_and_promotes_nothing(self):
         # echo/null solve none of the hard cases, so the only honest outcome is "no promotion".
@@ -3202,3 +3220,64 @@ class TestCallTrace(ScriptedCase):
         self.assertIsNone(rows[1]["tool"], "a call the tool lane did not touch writes no tool state")
         self.assertEqual(rows[1]["error"], "RuntimeError: x")
         self.assertIn(rows[0]["split"], ("search", "confirm", "sealed"))
+
+    def test_the_run_summarises_its_own_trace_and_the_recipe_prints_it(self):
+        # Nothing read the trace back: a reader had to open the file to learn whether any
+        # reply was cut at the token limit. The run counts it from the file at the end
+        # (the file is what is handed on, not the memory that wrote it) and the recipe
+        # prints the count by class, which is the unit prescriptions are made in.
+        from gama.grow import CallTrace, trace_lines
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "run.trace.jsonl"
+            tr = CallTrace(path, split_cases(_cases(4)))
+            self.assertEqual(tr.summary(), {"path": str(path), "calls": 0, "finish": {},
+                                            "length_by_class": {}})
+            rows = [{"event": "call", "class": "research", "finish": "length"},
+                    {"event": "call", "class": "research", "finish": "length"},
+                    {"event": "call", "class": "qa", "finish": "length"},
+                    {"event": "call", "class": "qa", "finish": "stop"},
+                    {"event": "call", "class": "qa", "finish": None},
+                    {"event": "call", "finish": "length"},        # a row without a class
+                    {"event": "resumed", "from_gen": 1, "resumed_from_gen": 0}]
+            path.write_text("".join(json.dumps(r) + "\n" for r in rows) + '{"event": "ca',
+                            encoding="utf-8")
+            s = tr.summary()
+            self.assertEqual(s["calls"], 6, "marker and half-written rows are not calls")
+            self.assertEqual(s["finish"], {"length": 4, "none": 1, "stop": 1})
+            self.assertEqual(s["length_by_class"], {"none": 1, "qa": 1, "research": 2})
+            self.assertEqual(json.loads(json.dumps(s)), s)   # keys survive the JSON the CLI prints
+            line, = trace_lines({"trace": s})
+            self.assertIn("6 calls", line)
+            self.assertIn("(finish=length): 4 (none: 1, qa: 1, research: 2)", line)
+            self.assertIn("`run.trace.jsonl`", line)
+            self.assertNotIn(d, line, "the recipe names the file, not this machine's path")
+            # a backend that never says why it stopped must not read as "nothing was cut"
+            silent, = trace_lines({"trace": {"path": str(path), "calls": 7,
+                                              "finish": {"none": 7}, "length_by_class": {}}})
+            self.assertIn("7 calls", silent)
+            self.assertIn("no finish reason", silent)
+            self.assertNotIn("finish=length", silent)
+            self.assertEqual(trace_lines({}), [], "a result grown before the trace existed")
+            self.assertEqual(trace_lines({"trace": None}), [], "a run without a ledger")
+        # a real run: the summary counts what the trace holds, and the recipe carries it
+        Scripted.WINS = {"a": set(), "b": {"qa1", "qa2", "qa4"}}
+        pool = {"a": _lane("a"), "b": _lane("b")}
+        ran = self._count_calls()
+        with tempfile.TemporaryDirectory() as d:
+            led = Path(d) / "run.jsonl"
+            res = self._grow(pool, ledger_path=str(led))
+            self.assertEqual(res["trace"]["path"], str(Path(d) / "run.trace.jsonl"))
+            self.assertEqual(res["trace"]["calls"], len(ran))
+            self.assertEqual(res["trace"]["finish"], {"none": len(ran)})   # scripted lanes
+            self.assertEqual(res["trace"]["length_by_class"], {})
+            md = (write_recipe(res, Path(d) / "grown") / "recipe.md").read_text(encoding="utf-8")
+            self.assertIn(f"- per-call trace: {len(ran)} calls; the backends reported no "
+                          "finish reason", md)
+            self.assertIn("`run.trace.jsonl`", md)
+            # the summary survives the JSON round trip the CLI prints
+            self.assertEqual(json.loads(json.dumps(res["trace"])), res["trace"])
+            # without a ledger there is no trace and the recipe says nothing about one
+            res2 = self._grow(pool)
+            self.assertIsNone(res2["trace"])
+            md2 = (write_recipe(res2, Path(d) / "bare") / "recipe.md").read_text(encoding="utf-8")
+            self.assertNotIn("per-call trace", md2)

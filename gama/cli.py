@@ -24,7 +24,7 @@ from .config import (
     trinity_from_config,
 )
 from .decorrelation import analyze as mesh_analyze
-from .grow import MeasurementFailure, grow, ollama_pool, write_recipe
+from .grow import MeasurementFailure, grow, ollama_pool, trace_lines, write_recipe
 from .logger import ExecutionLogger
 from .market import analyze as market_analyze
 from .models import ModelTier
@@ -603,6 +603,11 @@ def cmd_grow(args: argparse.Namespace) -> int:
             "recorded, so the boundary between the old run and this one is UNVERIFIED: if the "
             "server was restarted onto different weights in between, the generations either "
             "side are not comparable. Later generations are still checked against each other.\n")
+
+    # 切れた返答の数は走行の終わりに 1 行で言う(recipe と同じ文言・同じ関数。二か所で別の
+    # 数え方をすると、読み手には別の事実に見える)。台帳の無い走行には trace も無く、何も出ない。
+    for line in trace_lines(result):
+        sys.stderr.write(f"[gama] {line[2:] if line.startswith('- ') else line}\n")
 
     if args.write_recipe:
         d = write_recipe(result, args.write_recipe, hardware=args.hardware)

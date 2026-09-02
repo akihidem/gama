@@ -1506,6 +1506,34 @@ class CallTrace:
         with self.path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps({"event": event, **fields}, ensure_ascii=False) + "\n")
 
+    def summary(self) -> dict:
+        """走行の終わりに trace **ファイル**を読み直して数える(メモリの計数でなく配った実物。続けた
+        走行なら前半の区間も入る)。result と recipe が読むのはこれで、「何 call が max_tokens で
+        切れたか」を、trace を開かなくても走行が自分で言う。切断はクラス別に数える: 処方
+        (+prefill)はクラス単位で、切断がどのクラスに集中しているかがそのまま次の手になる。
+        """
+        calls, finish, length_by_class = 0, {}, {}
+        with self.path.open(encoding="utf-8") as fh:
+            for line in fh:
+                try:
+                    r = json.loads(line)
+                except ValueError:       # 落ちた時の書きかけ行
+                    continue
+                if r.get("event") != "call":
+                    continue
+                calls += 1
+                f = r.get("finish")
+                key = f if f is not None else "none"
+                finish[key] = finish.get(key, 0) + 1
+                if f == "length":
+                    # クラスの無い行(手で足した行・クラス無しの case)は finish と同じく "none" に
+                    # 寄せる: None と str が混ざると sorted が落ち、JSON の鍵にもならない
+                    c = r.get("class")
+                    c = c if c is not None else "none"
+                    length_by_class[c] = length_by_class.get(c, 0) + 1
+        return {"path": str(self.path), "calls": calls, "finish": dict(sorted(finish.items())),
+                "length_by_class": dict(sorted(length_by_class.items()))}
+
     def __call__(self, label: str, spec: dict, records: list) -> None:
         h = spec_hash(spec)
         with self.path.open("a", encoding="utf-8") as fh:
@@ -2094,6 +2122,8 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
         # claim と同じく result に置く(読む人が最初に開くのは result の JSON)。recipe 側は欄が
         # 無ければ世代行から数え直すので、欠けても消えない
         "prescriptions": prescription_ledger(history),
+        # call ごとの記録の要約(ファイルから数え直す)。trace の無い走行は None
+        "trace": trace.summary() if trace is not None else None,
         # 昇格した手の対応のある証拠。平均差だけ見ていると「confirm では伸びたが sealed では
         # しぼんだ/反転した」が説明できない。弱い証拠のまま通った手をここで名指しする。
         "promotion_evidence": [
@@ -2177,6 +2207,31 @@ def _prescription_lines(result: dict) -> list[str]:
     return lines
 
 
+def trace_lines(result: dict) -> list[str]:
+    """call ごとの記録の要約を 1 行にする(recipe と CLI の終了行の両方がこれを使う: 数え方が
+    二つあると読み手には別の事実に見える)。trace の無い走行(古い result・台帳無し)では何も
+    書かない。切断(finish=length)の数はクラス別に添える: 「research の code 無し返答は切れて
+    いたのか」が、この行で答えの半分まで出る(残り半分は trace の tail)。backend が理由を一つも
+    言わない走行(ollama over ssh・scripted)では「切れていない」と読ませず、そう書く。"""
+    tr = result.get("trace")
+    if not tr:
+        return []
+    name = Path(tr.get("path") or "").name or "the trace"
+    calls = tr.get("calls", 0)
+    finish = tr.get("finish") or {}
+    known = sum(n for k, n in finish.items() if k != "none")
+    if calls == 0:
+        return [f"- per-call trace: no calls recorded (`{name}`)"]
+    if known == 0:
+        return [f"- per-call trace: {calls} calls; the backends reported no finish reason, "
+                f"so whether a reply was cut at the token limit is not known (`{name}`)"]
+    length = finish.get("length", 0)
+    by = ", ".join(f"{c}: {n}" for c, n in (tr.get("length_by_class") or {}).items())
+    where = f" ({by})" if by else ""
+    return [f"- per-call trace: {calls} calls; cut at the token limit (finish=length): "
+            f"{length}{where}; each reply's length, tail and stop reason are in `{name}`"]
+
+
 def write_recipe(result: dict, directory, name: Optional[str] = None,
                  hardware: str = "(fill in: box, RAM, GPU)") -> Path:
     """勝ったチャンピオンを ``config.json`` + ``recipe.md`` として書き出す。
@@ -2255,6 +2310,7 @@ def write_recipe(result: dict, directory, name: Optional[str] = None,
         f"- promotions: {result['promotions']} over {result['generations_run']} generations "
         f"({result['archive_size']} designs measured)",
         *_prescription_lines(result),
+        *trace_lines(result),
         "- every promotion required a held-out `confirm` win larger than the champion's own "
         "re-measurement drift; no LLM judged anything.",
         f"- grown with: {json.dumps(result.get('params', {}), ensure_ascii=False)}",
