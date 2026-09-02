@@ -636,6 +636,13 @@ class Measurement:
     # 処方(prefill はクラス単位の変異)を向ける先が読めない。空 dict は「tool レーンを通った
     # call でコードが出なかった事は無い」で、古い checkpoint(この欄が無い)も同じ形で復元する。
     tool_no_code_by_class: dict = field(default_factory=dict)
+    # 平均点の標準誤差(repeats 間の散らばりから)。同じ設計を同じ case で測り直したとき平均が
+    # どれだけ動くかの見積もり。門の δ は「チャンピオン自身の測り直しの揺れ」を実測して使うが、
+    # それはチャンピオンの揺れであって挑戦者の揺れではない。この pool のチャンピオン(temperature
+    # 0)は揺れ 0 と出て δ は床(1 問)に落ち、一方 temperature 0.8 のレーンを足した挑戦者は同じ
+    # 65 問で run V が +1.1 問、run W が −0.9 問(2.0 問の往復)と出た。repeats 1 では見積もれない
+    # ので None(0.0 と書くと「揺れが無い」と読まれる)。
+    sem: Optional[float] = None
 
 
 def measure(spec: dict, cases: list[BenchCase], tier: ModelTier = ModelTier.LARGE,
@@ -659,6 +666,19 @@ def measure(spec: dict, cases: list[BenchCase], tier: ModelTier = ModelTier.LARG
         by_case.setdefault(r["case_id"], []).append(r["score"])
     per_case = {cid: sum(v) / len(v) for cid, v in by_case.items()}
     error_cases = frozenset(r["case_id"] for r in records if r.get("error"))
+    # repeats 間の散らばりから平均の標準誤差を出す: case i の r_i 回の不偏分散 s_i² を
+    # SE² = Σ_i (s_i²/r_i) / n² と足す(case をまたいで独立なサンプリング誤差の合成)。
+    # 「どの問題が split に入ったか」の誤差は含まない(それは対応のある比較の領分)。
+    # 例外で 0 点になった call も点のまま入れる(score の平均がそうしているのと揃える)。
+    # 1 回しか測れていない case が混じる測定は見積もれない(その case の分散が式から抜けて
+    # 過小に出る)ので None: 部分的な見積もりを全体の揺れとして書かない。
+    sem = None
+    if repeats >= 2 and by_case and all(len(v) >= 2 for v in by_case.values()):
+        var_sum = 0.0
+        for v in by_case.values():
+            mean = sum(v) / len(v)
+            var_sum += sum((x - mean) ** 2 for x in v) / (len(v) - 1) / len(v)
+        sem = math.sqrt(var_sum) / len(by_case)
     # tool の計数は合計もクラス別も**記録の差分から**足す(1 つの出所)。合計だけグローバルの
     # 累積値から読むと「クラス別の和 = 合計」が reset のタイミングに依存する偶然になり、
     # reset を挟み忘れた呼び出し経路からずれが入る(codex diag-r1)。
@@ -676,7 +696,23 @@ def measure(spec: dict, cases: list[BenchCase], tier: ModelTier = ModelTier.LARG
                        per_case=per_case, error_cases=error_cases,
                        tool_calls=ts["calls"], tool_ran=ts["ran"],
                        tool_no_code=ts["no_code"], tool_empty_out=ts["empty_out"],
-                       tool_no_code_by_class=dict(sorted(no_code_by_class.items())))
+                       tool_no_code_by_class=dict(sorted(no_code_by_class.items())),
+                       sem=sem)
+
+
+def remeasure_sd(a: "Measurement", b: "Measurement") -> Optional[float]:
+    """2 つの測定の差 (b − a) が、両方を独立に測り直したときどれだけ動くかの標準偏差。
+
+    差の揺れは両者の標準誤差の二乗和の平方根(独立なら分散が足し算)。門の δ に入れる
+    「チャンピオン自身の測り直しの揺れ」は片側の実測で、挑戦者側の揺れをどこも見ていなかった
+    (2026-09-02、run V/W の同じ手の往復で判明)。まずは台帳に並べるだけで門にはしない:
+    過去の走行にこの数字は無く、門にしたとき過去の昇格が何本引っかかるかを先に測る(対応の
+    ある p 値と同じ順序)。どちらかが見積もれない(repeats 1)なら None: 0 と書くと揺れが
+    無いことになる。
+    """
+    if a.sem is None or b.sem is None:
+        return None
+    return math.sqrt(a.sem ** 2 + b.sem ** 2)
 
 
 # --------------------------------------------------------------------------- #
@@ -1125,16 +1161,21 @@ def sealed_verdict(sealed: Optional[dict], claimed_gain_cases: Optional[float] =
         v = m.get("cases")
         return int(v) if isinstance(v, int) and not isinstance(v, bool) and v > 0 else None
 
+    def _sem(m) -> Optional[float]:
+        v = m.get("sem")
+        return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) \
+            and math.isfinite(v) and v >= 0 else None
+
     if not sealed or not isinstance(sealed, dict):
         return {"verdict": "unsealed", "delta_cases": None, "band_cases": None,
                 "note": "no sealed split: every number fed a decision, so read them as optimistic",
                 "claimed_confirm_cases": None, "promoted_confirm_cases": None,
-                "expected_cases": None, "power": None}
+                "expected_cases": None, "power": None, "noise_cases": None}
 
     def _unjudgeable(note):
         return {"verdict": "unjudgeable", "delta_cases": None, "band_cases": None, "note": note,
                 "claimed_confirm_cases": None, "promoted_confirm_cases": None,
-                "expected_cases": None, "power": None}
+                "expected_cases": None, "power": None, "noise_cases": None}
 
     seed_m, champ_m = sealed.get("seed"), sealed.get("champion")
     if not isinstance(seed_m, dict) or not isinstance(champ_m, dict):
@@ -1152,6 +1193,14 @@ def sealed_verdict(sealed: Optional[dict], claimed_gain_cases: Optional[float] =
                             "so this run is not judged")
 
     delta, band = c_score - s_score, 1.0 / s_n
+    # 差の測り直しの揺れ(問)。帯は split の分解能であって測定の揺れではない。この pool の種は
+    # temperature 0 で揺れ 0 だが、育った champion に temperature 0.8 のレーンが入ると sealed の
+    # 一回測定も揺れる(run W の champion は research を cold+hot の ensemble に振る)。判定は
+    # 今まで通り帯で出し、揺れは横に置く: 過去の台帳にこの数字は無く、帯を揺れまで広げたとき
+    # 何本の verdict が変わるかを測っていない。None は repeats 1 か古い台帳。
+    s_sem, c_sem = _sem(seed_m), _sem(champ_m)
+    noise_cases = (None if s_sem is None or c_sem is None
+                   else round(math.sqrt(s_sem ** 2 + c_sem ** 2) * s_n, 2))
     # 主張した伸びを sealed の問数に直す。confirm で +G 問なら sealed(n 問)では G*n/n_confirm 問が
     # 「完全に転移した時に見えるはずの量」。帯(1 問)に届かなければ、この走行は sealed に何も
     # 言わせられない設計だった。
@@ -1228,10 +1277,15 @@ def sealed_verdict(sealed: Optional[dict], claimed_gain_cases: Optional[float] =
         else:
             note = ("the held-out split cannot tell the champion from the seed at this case "
                     "count. The run neither proved nor disproved an improvement")
+    if noise_cases is not None and noise_cases > 1.0:
+        # 帯より揺れが粗いときだけ言う(帯の内側の揺れは帯が既に覆っている)。verdict は変えない。
+        note += (f". A re-measurement of this pair would move about {noise_cases:g} cases "
+                 f"(sd, from the repeats), more than the one case the split resolves: the "
+                 f"band is the split's resolution, not this measurement's")
     return {"verdict": v, "delta_cases": round(delta * s_n, 2), "band_cases": 1.0, "note": note,
             "claimed_confirm_cases": None if claimed is None else round(claimed, 2),
             "promoted_confirm_cases": None if promoted is None else round(promoted, 2),
-            "expected_cases": expected, "power": power}
+            "expected_cases": expected, "power": power, "noise_cases": noise_cases}
 
 
 def class_headroom(m: "Measurement", cases: list) -> dict:
@@ -1286,6 +1340,8 @@ def _restore(d: dict) -> "Measurement":
     # 診断の無い古い checkpoint は空で復元する。confirm は毎世代測り直すので、再開後の最初の
     # 世代から診断は戻る。search 側の分だけは次の昇格(champ_search の測り直し)まで無い。
     d.setdefault("tool_no_code_by_class", {})
+    # 揺れの見積もりが無い古い checkpoint は「見積もれなかった」で復元する(0 ではない)。
+    d.setdefault("sem", None)
     return Measurement(**d)
 
 
@@ -1701,6 +1757,12 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
                 row.update({"challenger_confirm": chal_confirm.score,
                             "gain_cases": round(
                                 (chal_confirm.score - champ_confirm_now.score) * n_confirm, 2)})
+                # 差の測り直しの揺れ(問)。δ はチャンピオンの揺れしか見ていないので、挑戦者側の
+                # 揺れは gain の横に**記録だけ**する(門にする前に、過去の昇格が何本引っかかるかを
+                # 測る。対応のある p 値と同じ順序)。None は repeats 1 で見積もれない走行。
+                noise = remeasure_sd(champ_confirm_now, chal_confirm)
+                row["confirm_noise_cases"] = (None if noise is None
+                                              else round(noise * n_confirm, 2))
                 # 対応のある比較を**記録だけ**する(この時点では門にしない)。平均差の床
                 # (1/n と drift)は「どの問題が split に入ったか」という支配的な誤差を見ていない
                 # 疑いがあり、実測 3 走で confirm の伸びが sealed で 4〜6 倍しぼみ、小さい伸びでは
@@ -1735,6 +1797,9 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
                 challenged.add(spec_hash(cand.spec))
                 row["simplify_challenger"] = cand.label
                 row["simplify_confirm"] = cand_confirm.score
+                noise = remeasure_sd(champ_confirm_now, cand_confirm)
+                row["simplify_noise_cases"] = (None if noise is None
+                                               else round(noise * n_confirm, 2))
                 row["simplify_verdict"] = "promote" if s_ok else "reject"
                 row["simplify_reason"] = s_reason
                 row["simplify_band"] = round(band, 4)
@@ -1976,9 +2041,12 @@ def write_recipe(result: dict, directory, name: Optional[str] = None,
     ]
     for h in result.get("history", []):     # a result round-tripped through JSON may omit it
         mark = "✅" if h["verdict"] == "promote" else "·"
+        # 揺れは δ の横に。δ が床のままで揺れが 1 問を超える行が、run V/W が踏んだ形。
+        noise = h.get("confirm_noise_cases")
+        noise_s = "" if noise is None else f", noise {noise:g} cases"
         lines.append(f"- {mark} gen{h['gen']} `{h['challenger']}` — search "
                      f"{h['champion_search']}→{h['challenger_search']}, confirm "
                      f"{h['champion_confirm']}→{h['challenger_confirm']} "
-                     f"(δ={h['delta']}) → {h['reason']}")
+                     f"(δ={h['delta']}{noise_s}) → {h['reason']}")
     (d / "recipe.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     return d

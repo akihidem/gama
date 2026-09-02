@@ -539,6 +539,19 @@ run was still measuring and contributed nothing to its numbers. Run X was worse:
 `HEAD` plus an uncommitted edit, and the stamp said `HEAD`. The stamp is taken once per run now,
 and it carries `dirty`, whether the package directory differed from the commit at that moment.
 
+**The gate borrowed its noise from the wrong side.** A promotion must clear
+`max(one confirm case, the champion's own re-measurement drift)`. That drift is the champion's,
+and on the 48B pool the champion runs at temperature 0: drift 0.0 every generation, so the bar
+was always the one-case floor. The challenger's noise entered nowhere. Run V promoted
+`route:content->kimi-hot` at +1.1 cases (2 wins, 0 losses); run W measured the same design on
+the same 65 confirm cases at −0.9 (1 win, 3 losses). Nothing in the ledger could have predicted
+the 2.0-case swing, although the repeats that every measurement already pays for carry the
+estimate: each measurement now records the standard error of its mean from its repeats, and
+every comparison (the challenger's gain, the simplifier's drop, the sealed verdict) writes the
+re-measurement noise of the pair beside the gain, in cases. It is a record, not a gate: no
+earlier ledger holds the number, so how many past promotions it would have stopped is not known,
+and a gate whose blast radius is unmeasured goes in after the number has been carried, not before.
+
 ## Recipes — grow it together 🌱
 `recipes/` is a community library: each recipe is a `config.json` (a combination) +
 `recipe.md` (the models, the hardware, the `gama bench` numbers). Found a small-model combo

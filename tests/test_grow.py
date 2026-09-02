@@ -41,6 +41,7 @@ from gama.grow import (
     _guard_measurement,
     Measurement,
     paired_gain,
+    remeasure_sd,
     sign_test,
     canonical,
     load_checkpoint,
@@ -87,6 +88,22 @@ class Scripted(ModelBackend):
         return "GOOD" if cid in Scripted.WINS.get(self.tag, set()) else "BAD"
 
 
+class Flaky(Scripted):
+    """A stand-in for a temperature>0 lane: on every case it answers GOOD on odd calls and
+    BAD on even ones, so a 2-repeat measurement sees [1, 0] on each case (mean 0.5, and a
+    known spread), while a 1-repeat measurement sees a coin whose noise it cannot estimate."""
+    name = "flaky"
+    CALLS: dict = {}
+
+    def complete(self, prompt, tier, **kw):
+        cid = prompt.split("case=")[1].split()[0] if "case=" in prompt else "?"
+        Scripted.SEEN.append(cid)
+        Scripted.SEEN_BY.append((self.tag, cid))
+        k = Flaky.CALLS.get((self.tag, cid), 0) + 1
+        Flaky.CALLS[(self.tag, cid)] = k
+        return "GOOD" if k % 2 == 1 else "BAD"
+
+
 def _cases(n=4, task_type="qa", prefix="qa"):
     """n cases of one class; the prompt carries the case id so Scripted can act on it."""
     return [BenchCase(f"{prefix}{i}", task_type, f"case={prefix}{i}",
@@ -107,13 +124,17 @@ def _lane(tag):
 class ScriptedCase(unittest.TestCase):
     def setUp(self):
         backends_mod._BACKENDS["scripted"] = Scripted
+        backends_mod._BACKENDS["flaky"] = Flaky
         Scripted.WINS, Scripted.SEEN, Scripted.PARTIAL = {}, [], {}
         Scripted.SEEN_BY = []
+        Flaky.CALLS = {}
 
     def tearDown(self):
         backends_mod._BACKENDS.pop("scripted", None)
+        backends_mod._BACKENDS.pop("flaky", None)
         Scripted.WINS, Scripted.SEEN, Scripted.PARTIAL = {}, [], {}
         Scripted.SEEN_BY = []
+        Flaky.CALLS = {}
 
 
 # --------------------------------------------------------------------------- #
@@ -573,6 +594,49 @@ class TestPropose(ScriptedCase):
         # no archive: unchanged
         self.assertEqual([c.label for c in propose(champ, pool, ["qa"], width=2)],
                          [c.label for c in propose(champ, pool, ["qa"], width=2, archived=set())])
+
+
+class TestMeasurementNoise(ScriptedCase):
+    """The gate's delta is max(floor, the champion's own re-measurement drift). That is the
+    champion's noise, not the challenger's: on the AWS pool the champion runs at temperature
+    0 (drift 0.0, so delta fell to the one-case floor) while a challenger with a
+    temperature-0.8 lane measured +1.1 cases in run V and -0.9 in run W on the same 65
+    confirm cases. The repeats already paid for carry the estimate; record it."""
+
+    def test_one_repeat_cannot_estimate_the_noise_so_it_says_so(self):
+        m = measure({"backend": "flaky", "kwargs": {"tag": "f"}}, _cases(4), repeats=1)
+        self.assertIsNone(m.sem)          # not 0.0: "unknown" is not "steady"
+
+    def test_a_deterministic_lane_has_no_noise(self):
+        Scripted.WINS = {"a": {"qa1", "qa2"}}
+        m = measure(_lane("a"), _cases(4), repeats=2)
+        self.assertEqual(m.sem, 0.0)
+
+    def test_the_noise_is_the_standard_error_built_from_the_repeats(self):
+        # each case sees [1, 0]: unbiased variance 0.5, divided by 2 repeats = 0.25 per case;
+        # summed over 4 independent cases = 1.0; sqrt = 1.0; divided by n = 4 -> 0.25
+        m = measure({"backend": "flaky", "kwargs": {"tag": "f"}}, _cases(4), repeats=2)
+        self.assertEqual(m.score, 0.5)
+        self.assertEqual(set(m.per_case.values()), {0.5})
+        self.assertAlmostEqual(m.sem, 0.25)
+
+    def test_the_noise_of_a_comparison_adds_in_quadrature_and_is_unknown_if_either_side_is(self):
+        Scripted.WINS = {"a": set()}
+        det = measure(_lane("a"), _cases(4), repeats=2)
+        fl = measure({"backend": "flaky", "kwargs": {"tag": "f"}}, _cases(4), repeats=2)
+        self.assertAlmostEqual(remeasure_sd(det, fl), 0.25)
+        fl2 = measure({"backend": "flaky", "kwargs": {"tag": "g"}}, _cases(4), repeats=2)
+        self.assertAlmostEqual(remeasure_sd(fl, fl2), (0.25 ** 2 * 2) ** 0.5)
+        once = measure({"backend": "flaky", "kwargs": {"tag": "h"}}, _cases(4), repeats=1)
+        self.assertIsNone(remeasure_sd(det, once))
+
+    def test_a_checkpoint_without_the_estimate_restores_as_unknown(self):
+        from gama.grow import _restore, _state
+        m = measure(_lane("a"), _cases(2), repeats=2)
+        self.assertEqual(_restore(_state(m)).sem, m.sem)
+        old = _state(m)
+        del old["sem"]
+        self.assertIsNone(_restore(old).sem)
 
 
 class TestPromoteGate(unittest.TestCase):
@@ -1059,6 +1123,29 @@ class TestGrowLoop(ScriptedCase):
         n_confirm = len(res["splits"]["confirm"])
         expected = round((gen0["challenger_confirm"] - gen0["champion_confirm"]) * n_confirm, 2)
         self.assertEqual(gen0["gain_cases"], expected)
+
+    def test_the_ledger_puts_the_comparison_noise_beside_the_gain(self):
+        # The champion `a` is deterministic (drift 0, delta = floor); the challenger routes
+        # qa to a coin. With 2 repeats the coin's confirm score is 0.5 on the one confirm
+        # case with a standard error of 0.5, so the row says the gain of 0.5 cases sits
+        # inside a re-measurement noise of 0.5 cases. The verdict is untouched: this is a
+        # record, not a gate, until a run has carried the number.
+        Scripted.WINS = {"a": set()}
+        res = self._grow({"a": _lane("a"), "f": {"backend": "flaky", "kwargs": {"tag": "f"}}},
+                         generations=1, width=2, repeats=2)
+        gen0 = res["history"][0]
+        self.assertEqual(gen0["challenger"], "route:qa->f")
+        self.assertEqual(gen0["gain_cases"], 0.5)
+        self.assertEqual(gen0["confirm_noise_cases"], 0.5)
+        self.assertEqual(gen0["bound_by"], "floor")            # delta did not move
+        # the sealed comparison carries its own noise: seed 0.0 vs the coin's 0.5 on one case
+        self.assertEqual(res["sealed_verdict"]["noise_cases"], 0.5)
+        # a 1-repeat run cannot estimate it and says so instead of writing 0
+        Flaky.CALLS = {}
+        res1 = self._grow({"a": _lane("a"), "f": {"backend": "flaky", "kwargs": {"tag": "f"}}},
+                          generations=1, width=2, repeats=1)
+        self.assertIsNone(res1["history"][0]["confirm_noise_cases"])
+        self.assertIsNone(res1["sealed_verdict"]["noise_cases"])
 
     def test_a_broken_measurement_stops_the_run(self):
         # Run S: the served model was swapped out mid-run, every later call returned 503, and
@@ -1781,6 +1868,42 @@ class TestSealedVerdict(unittest.TestCase):
         v = sealed_verdict(None)
         self.assertEqual(v["verdict"], "unsealed")
         self.assertIsNone(v["delta_cases"])
+        self.assertIsNone(v["noise_cases"])
+
+    def test_a_comparison_noisier_than_the_band_is_said_beside_the_verdict_not_instead_of_it(self):
+        # seed at temperature 0 (sem 0), champion with a hot lane: sem 0.05 on 32 cases is
+        # 1.6 cases of re-measurement noise, coarser than the one-case band. The verdict
+        # stays "improved" (the band is the rule until the number has been carried by real
+        # runs); the note says what the band does not cover.
+        sealed = {"seed": {"score": 0.7484, "cases": 32, "sem": 0.0},
+                  "champion": {"score": 0.8214, "cases": 32, "sem": 0.05}}
+        v = sealed_verdict(sealed)
+        self.assertEqual(v["verdict"], "improved")
+        self.assertEqual(v["noise_cases"], 1.6)
+        self.assertIn("would move about 1.6 cases", v["note"])
+        # inside the band: nothing to add, the band already covers it
+        sealed["champion"]["sem"] = 0.02          # 0.64 cases
+        v = sealed_verdict(sealed)
+        self.assertEqual(v["noise_cases"], 0.64)
+        self.assertNotIn("would move", v["note"])
+        # an old ledger (no sem) does not get a made-up zero
+        v = sealed_verdict(self._s(0.7484, 0.8214, n=32))
+        self.assertIsNone(v["noise_cases"])
+        self.assertNotIn("would move", v["note"])
+        # the recipe carries the sentence through the note
+        with tempfile.TemporaryDirectory() as d:
+            result = {"champion": {"backend": "echo", "kwargs": {}},
+                      "seed": {"backend": "echo", "kwargs": {}},
+                      "champion_hash": "deadbeef", "seed_hash": "cafe",
+                      "promotions": 1, "net_change": True, "bound_by": {},
+                      "generations_run": 1, "search": {"score": 0.9},
+                      "confirm": {"score": 0.8}, "archive_size": 1,
+                      "sealed": {"seed": {"score": 0.7484, "cases": 32, "sem": 0.0},
+                                 "champion": {"score": 0.8214, "cases": 32, "sem": 0.05}},
+                      "splits": {}, "history": [], "params": {}}
+            text = (write_recipe(result, d) / "recipe.md").read_text(encoding="utf-8")
+            self.assertIn("IMPROVED", text)
+            self.assertIn("would move about 1.6 cases", text)
 
     def test_the_verdict_reaches_the_recipe(self):
         with tempfile.TemporaryDirectory() as d:
