@@ -700,7 +700,9 @@ def measure(spec: dict, cases: list[BenchCase], tier: ModelTier = ModelTier.LARG
             no_code_by_class[r["task_type"]] = no_code_by_class.get(r["task_type"], 0) + d["no_code"]
     return Measurement(score=agg["score"], success_rate=agg["success_rate"],
                        latency_s=agg["latency_s"], n=agg["n"], cases=len(cases),
-                       errors=errors, error_rate=round(errors / len(records), 4) if records else 0.0,
+                       # 丸めは 6 桁。4 桁だと大きい測定で「非ゼロだが 0.0」に潰れ、止める閾値
+                       # (20%)には影響しないまま、台帳の失敗率だけが嘘になる(codex 指摘)。
+                       errors=errors, error_rate=round(errors / len(records), 6) if records else 0.0,
                        per_case=per_case, error_cases=error_cases,
                        tool_calls=ts["calls"], tool_ran=ts["ran"],
                        tool_no_code=ts["no_code"], tool_empty_out=ts["empty_out"],
@@ -1949,6 +1951,17 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
                "champion_search": champ_search.score,
                "champion_confirm": champ_confirm_now.score,
                "drift": round(drift, 4), "delta": round(delta, 4),
+               # 判定に使った測定のうち、例外で 0 点になった call の割合。20% を超えれば走行は
+               # 止まるが、**その下は素通り**する。run X gen4 の実測: 配信サーバが死につつある
+               # 世代で champion の測り直しが 2.5 問ずれ、drift 経由で門が 1 問 → 2.5 問へ上がった。
+               # 門が動いた理由が「箱が壊れかけていた」ことだと、後から台帳だけで読めるように
+               # 数字を残す(門そのものは変えない。決め方を変えずに、読み方を足す)。
+               # 丸めは 6 桁: 率の刻みは 1/n(129 問 2 回で 1/258 = 0.0039)なので、4 桁でも
+               # 足りるが、桁の大きい測定で**非ゼロを 0.0 に潰す**丸めは、この行の目的そのもの
+               # を裏切る(codex 指摘)。
+               "champion_error_rate": round(champ_confirm_now.error_rate, 6),
+               # search 側も判定に使う(挑戦権・settled・削減の選抜)ので同じく残す(codex 指摘)。
+               "champion_search_error_rate": round(champ_search.error_rate, 6),
                # どちらが敷居を決めたか。ノイズ律速なら repeats を上げる/測定を安定させる、
                # 分解能律速なら confirm の case を増やす —— 打つ手が正反対なので、台帳が
                # 「δ=0.05 だった」しか言わないと、次に何を変えればいいか読み取れない。
@@ -2021,6 +2034,8 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
                                           search_band=search_band)
                 challenged.add(spec_hash(challenger.spec))
                 row.update({"challenger_confirm": chal_confirm.score,
+                            "challenger_error_rate": round(chal_confirm.error_rate, 6),
+                            "challenger_search_error_rate": round(chal_search.error_rate, 6),
                             "gain_cases": round(
                                 (chal_confirm.score - champ_confirm_now.score) * n_confirm, 2)})
                 # 差の測り直しの揺れ(問)。δ はチャンピオンの揺れしか見ていないので、挑戦者側の
@@ -2063,6 +2078,9 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
                 challenged.add(spec_hash(cand.spec))
                 row["simplify_challenger"] = cand.label
                 row["simplify_confirm"] = cand_confirm.score
+                # 削減も同じ門で決まる。片方だけ記録すると診断が additive に偏る(codex 指摘)。
+                row["simplify_error_rate"] = round(cand_confirm.error_rate, 6)
+                row["simplify_search_error_rate"] = round(cand_search.error_rate, 6)
                 noise = remeasure_sd(champ_confirm_now, cand_confirm)
                 row["simplify_noise_cases"] = (None if noise is None
                                                else round(noise * n_confirm, 2))

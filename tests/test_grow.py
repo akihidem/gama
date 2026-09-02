@@ -1201,6 +1201,62 @@ class TestGrowLoop(ScriptedCase):
         finally:
             backends_mod._BACKENDS.pop("broken", None)
 
+    def test_a_generation_records_how_many_of_its_calls_raised(self):
+        # run X gen4: the box was taken away mid-run, the champion's re-measurement came back
+        # 2.5 cases off, and the promote gate moved from 1 case to 2.5 through drift. Under the
+        # 20% stop nothing was said at all, so "the gate moved because the backend was dying"
+        # could only be reconstructed by hand afterwards. The rate of every measurement a
+        # generation decides on is on the row now, and the CLI says it when it is not zero.
+        cases = _cases(24)
+        # one confirm case fails: 1 of 12 is under the 20% stop, so the run carries on and the
+        # failure only shows up as a lower score — which is the case this row is here for
+        doomed = split_cases(cases, ratio=(1, 2, 1))["confirm"][0].case_id
+
+        class Flaky(ModelBackend):
+            available = True
+
+            def __init__(self, tag="x"):
+                self.tag, self.last_usage = tag, None
+
+            def complete(self, prompt, tier, **kw):
+                if f"case={doomed} " in prompt + " ":
+                    raise RuntimeError("503 Loading model")
+                return "GOOD"
+
+        backends_mod._BACKENDS["flaky"] = Flaky
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                led = Path(d) / "run.jsonl"
+                grow({"x": {"backend": "flaky"}, "y": {"backend": "flaky"}}, cases=cases,
+                     generations=1, width=2, ratio=(1, 2, 1), ledger_path=str(led),
+                     min_margin=0.05)
+                rows = [json.loads(ln) for ln in led.read_text(encoding="utf-8").splitlines()]
+        finally:
+            backends_mod._BACKENDS.pop("flaky", None)
+        gen = [r for r in rows if r["event"] == "generation"][0]
+        # read which split actually holds the doomed case from the run's own seed row, rather
+        # than predicting it here: the assertion is about what the row records, not about how
+        # the splitter happens to deal (codex)
+        splits = [r for r in rows if r["event"] == "seed"][0]["splits"]
+        held_by = next(k for k, v in splits.items() if doomed in v)
+        # search is a decision too (the challenger seat, `settled`, which shrink is tried)
+        self.assertIn("champion_search_error_rate", gen)
+        field = {"confirm": "champion_error_rate", "search": "champion_search_error_rate",
+                 "sealed": None}[held_by]
+        self.assertIsNotNone(field, "the split put the doomed case where no gate reads it")
+        self.assertAlmostEqual(gen[field], 1 / len(splits[held_by]), places=5)
+        self.assertAlmostEqual(gen["champion_error_rate"] + gen["champion_search_error_rate"],
+                               gen[field], places=6,
+                               msg="a failure was counted against the wrong split")
+        from gama.cli import _raised_note
+        self.assertIn("calls that raised", _raised_note(gen))
+        self.assertEqual(_raised_note({"champion_error_rate": 0.0}), "")
+        # a rate under 1% is not written as "0%": the note exists to say it is not zero
+        self.assertIn("0.8%", _raised_note({"champion_error_rate": 1 / 130}))
+        self.assertIn("challenger search 25%",
+                      _raised_note({"challenger_search_error_rate": 0.25}))
+        self.assertIn("<0.1%", _raised_note({"champion_error_rate": 0.0004}))
+
     def test_patience_stops_a_loop_that_is_going_nowhere(self):
         Scripted.WINS = {"a": set(), "b": set()}
         res = self._grow({"a": _lane("a"), "b": _lane("b")}, generations=10, width=6, patience=2)

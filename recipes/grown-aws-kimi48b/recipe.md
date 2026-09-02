@@ -203,6 +203,61 @@ What the run showed about the loop, not the model:
   here carries `907a976` by hand, with the note. The stamp is taken once per run now (`7d995fa`),
   and it says when the tree differed from the commit.
 
+## Run X: three promotions, none sealed, and the box taken away mid-run
+
+Same seed, same 129 cases, and the same split as runs V and W (the case ids are identical, checked
+row against row), with the proposer reading the diagnosis: the tool lane's "returned no code" count
+is kept per class, and the `+prefill` for a class with symptoms gets the first seat in the tool
+queue and wins ties. Ledger: `grow-x-diag.jsonl`.
+
+| gen | challenger | confirm champion → challenger | paired | verdict |
+|---|---|---|---|---|
+| 0 | `route:content → kimi-hot` | 0.767 → 0.773 (+0.37 cases) | 3 w / 1 l, p = 0.31 | below the 1-case floor |
+| 1 | `tool:qa(cold) + prefill` | 0.767 → 0.782 (**+1.0**) | 1 / 0, p = 0.5 | **promoted** |
+| 2 | `tool:research(cold) + prefill` | 0.782 → 0.798 (**+1.0**) | 3 / 2, p = 0.5 | **promoted** |
+| 3 | `meshflow:integration(cold → hot)` | 0.782 → 0.821 (**+2.5**) | 3 / 0, p = 0.125 | **promoted** |
+| 4 | — | — | — | run stopped: 54 of 64 calls raised |
+
+**Nothing here ships.** Three promotions are three confirm-split claims; the sealed split is
+measured once, at the end, and this run has no end. The shipped `config.json` is still run W's
+champion.
+
+- **The prescription was measured, and the archive is what let it happen.** `tool:research + prefill`
+  is the design run W's diagnosis pointed at and never measured. Here it was proposed at generation
+  0, and it *lost*: 0.8568 on search against the champion's 0.8958, 1.25 cases below, outside the
+  band, settled. Under the rule runs before `07e9543` used that is the end of it. Keeping every
+  measured design in the running at no cost put it back on the list every generation, and in
+  generation 2 the same label measured 0.9193, took the challenger seat, and bought its case on
+  confirm.
+- **Two measurements of that design, two cases apart, at temperature 0.** The generation-0 and
+  generation-2 candidates carry the same label and differ in exactly one lane: whether `qa` has
+  the prefill promoted in generation 1. That lane, measured on its own in generation 1, scored a
+  tie. So either the qa prefill is worth two search cases and generation 1's tie hid it behind
+  the stochastic research ensemble it was measured against, or the search split re-measures two
+  cases apart with every lane at temperature 0. The ledger stores scores, not per-case outcomes,
+  and cannot separate the two. The per-call trace (`fe34706`) and `gama trace --diff <a> <b>`
+  answer it directly by naming the cases that moved; this run predates the trace and has none.
+- **The strongest promotion of the run was the least trustworthy.** Generation 3 took
+  `meshflow:integration` on +2.5 confirm cases at 3 wins to 0 — the only promotion here that
+  clears the floor with room. The champion's re-measurement at generation 4 came back 2.5 cases
+  lower, which is the promoted gain evaporating on the very next measurement. That re-measurement
+  was taken in the generation the backend was dying in, so it is confounded rather than damning;
+  it is recorded here because a gain that only exists in the measurement that selected it is the
+  failure mode this loop is built to catch, and the reading was available three hours before the
+  sealed split would have said anything.
+- **`crux` saturated in turn.** From generation 2 on the run skipped `code_implementation`
+  (0.5 cases of headroom) and `qa` (0.25) for additive mutations: with a tool lane in place the
+  suite written to un-saturate this box is itself out of room in those classes. `--suite edge`
+  (`360b6bd`) is the answer, aimed one band over at problems where the obvious program is wrong.
+- **How it ended.** At generation 4 a candidate raised on 54 of its 64 calls and the run stopped
+  rather than deciding on it. The cause was outside gama: the shared box swaps its GPU between
+  workloads, another workload took it, and the llama.cpp server went away. The run queued behind
+  this one started, measured its seed against nothing, and stopped the same way. Every trace row
+  of that run said `RuntimeError: ssh-openai (aws-mf) failed: ` with nothing after the colon —
+  the remote `curl -s` is silent about a refused connection, so the one record of what ended a
+  five-hour run said only that it had ended. `-sS`, and a failure that names host, port and path
+  (`360b6bd`).
+
 ## A run that had to be thrown away
 
 Run S ran this exact configuration first and produced a champion out of nothing. Partway

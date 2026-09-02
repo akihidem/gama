@@ -468,7 +468,10 @@ def cmd_grow(args: argparse.Namespace) -> int:
                 + (f"[{row['paired_wins']}w-{row.get('paired_losses', '?')}l "
                    f"p={row.get('paired_p', '?')}] " if row.get("paired_wins") is not None
                    else "")
-                + f"(delta={row['delta']}) -> {row['reason']}\n")
+                + f"(delta={row['delta']}) -> {row['reason']}"
+                # 例外で 0 点になった call がある測定で決めた世代は、その場で言う。走行を止める
+                # のは 20% からで、その下の失敗は低い点として混ざり、drift 経由で門まで動かす。
+                + _raised_note(row) + "\n")
         elif ev == "saturated":
             # gen0 のこの行は**候補を1つも測る前**に出る。走行の最後に「区別できなかった」と
             # 知るのは高い(実走で数時間)。打つ手が無いことが分かった時点で言う。
@@ -662,6 +665,39 @@ def _resolve_spec(prefix: str, rows: list) -> str:
     if not found:
         raise ValueError(f"no design in the trace starts with {prefix!r}")
     raise ValueError(f"{prefix!r} matches {len(found)} designs: {', '.join(found)}")
+
+
+_RAISED_FIELDS = (("champion", "champion_error_rate"), ("champion search", "champion_search_error_rate"),
+                  ("challenger", "challenger_error_rate"),
+                  ("challenger search", "challenger_search_error_rate"),
+                  # 表示名は台帳の鍵と同じ綴りにする(片方で grep した人がもう片方に届く)
+                  ("simplify", "simplify_error_rate"),
+                  ("simplify search", "simplify_search_error_rate"))
+
+
+def _raised_note(row: dict) -> str:
+    """判定に使った測定の失敗率(全部 0 なら何も言わない)。
+
+    小さい率を `0%` と書かない: 130 コールの 1 本が落ちた 0.77% を「0%」と出すと、
+    非ゼロだと言うために付けた行が「ゼロだ」と読める(codex 指摘)。
+    """
+    def pct(rate: float) -> str:
+        if rate >= 0.01:
+            return f"{rate:.0%}"
+        # 0.1% 未満も「0.0%」にはしない: この行は「ゼロではない」と言うために出ている。
+        return f"{rate:.1%}" if rate >= 0.001 else "<0.1%"
+
+    parts = []
+    for who, key in _RAISED_FIELDS:
+        try:
+            # 古い台帳・手で書いた行も通る入口なので、読めない値は黙って飛ばす(表示専用の
+            # 行が例外で走行の報告を止める方が悪い)。
+            rate = float(row.get(key) or 0.0)
+        except (TypeError, ValueError):
+            continue
+        if rate:
+            parts.append(f"{who} {pct(rate)}")
+    return f" [calls that raised: {', '.join(parts)}]" if parts else ""
 
 
 def cmd_trace(args: argparse.Namespace) -> int:
