@@ -576,6 +576,20 @@ def cmd_grow(args: argparse.Namespace) -> int:
             "needs a near-sweep, so this is a limit of the evidence, not proof the change is "
             "bad — read the sealed line as the check, and treat these lanes as provisional.\n")
 
+    # 認定した伸びと、選択に使っていない測り直しに残った伸びを並べる。門を通った点は候補の
+    # 中で最大だったから残った点で、測定ではない。差が大きい手は sealed を待たずに疑える。
+    for e in (result.get("promotion_evidence") or []):
+        # next と mean は別々に欠けうる。片方だけでも言えることは言う。
+        parts = []
+        if e.get("kept_cases_next") is not None:
+            parts.append(f"re-measured next generation {e['kept_cases_next']:+}")
+        if e.get("kept_cases_mean") is not None:
+            parts.append(f"mean while it stayed champion {e['kept_cases_mean']:+}")
+        if not parts or e.get("gain_cases") is None:
+            continue
+        sys.stderr.write(f"[gama] promotion gen{e.get('gen')} {e.get('challenger')}: "
+                         f"gated on {e['gain_cases']:+} cases, " + ", ".join(parts) + "\n")
+
     # 走行の合否は昇格数ではなく、封をした split が言う。run T は sealed が下がっているのに
     # 「昇格 1・成功」として champion を出していた。数字は出ていたが、誰も判定していなかった。
     sv = result.get("sealed_verdict") or {}

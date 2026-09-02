@@ -1293,6 +1293,42 @@ class TestGrowLoop(ScriptedCase):
         finally:
             backends_mod._BACKENDS.pop("broken", None)
 
+    def test_each_promotion_reports_what_survived_the_next_measurement(self):
+        # 門を通った点は「候補の中で最大だったから残った点」であって測定ではない。champion は
+        # 昇格の次の世代から毎世代測り直されるので、走行はその場で「認定した伸びのうち何問が
+        # 残ったか」を言える(7 走の台帳を手で再生して分かった数字を、走行自身に言わせる)。
+        Scripted.WINS = {"a": set(), "b": {f"qa{i}" for i in range(1, 9)}}
+        pool = {"a": _lane("a"), "b": _lane("b")}
+        cases = _cases(8, "qa", "qa") + _cases(8, "research", "re")
+        res = grow(pool, cases=cases, generations=3, width=3, patience=3, min_margin=0.05)
+        proms = [e for e in res["promotion_evidence"] if e.get("kept_cases_next") is not None]
+        self.assertTrue(proms, "a promotion with a following generation reported nothing")
+        for e in proms:
+            # scripted なので測り直しは同じ点: 認定した伸びがそのまま残る
+            self.assertAlmostEqual(e["kept_cases_next"], e["gain_cases"], places=2)
+            self.assertAlmostEqual(e["kept_cases_mean"], e["gain_cases"], places=2)
+        # 在位が途切れたらそこで打ち切る。同じ設計が後で champion に戻っても、間に別の設計が
+        # 居た行は「その昇格の測り直し」ではない
+        from gama.grow import _kept_cases
+        hist = [{"gen": 0, "verdict": "promote", "champion_confirm": 0.5, "champion_hash": "s",
+                 "champion_after": "c"},
+                {"gen": 1, "champion_confirm": 0.6, "champion_hash": "c", "champion_after": "d"},
+                {"gen": 2, "champion_confirm": 0.9, "champion_hash": "d", "champion_after": "c"},
+                {"gen": 3, "champion_confirm": 0.9, "champion_hash": "c", "champion_after": "c"}]
+        self.assertEqual(_kept_cases(hist, 0, 10),
+                         {"kept_cases_next": 1.0, "kept_cases_mean": 1.0})
+        # champion_after を持たない行(古い台帳・手組み)は None
+        self.assertEqual(_kept_cases([{"gen": 0, "champion_confirm": 0.5}], 0, 10),
+                         {"kept_cases_next": None, "kept_cases_mean": None})
+        # 後の世代が無い昇格は None(0 と書くと「残らなかった」に化ける)
+        self.assertEqual(_kept_cases([hist[0]], 0, 10),
+                         {"kept_cases_next": None, "kept_cases_mean": None})
+        # 直後の行が読めないときの next も None(飛ばして先の値を「次世代」と名乗らない)
+        gap = [hist[0], {"gen": 1, "champion_hash": "c", "champion_after": "c"},
+               {"gen": 2, "champion_confirm": 0.7, "champion_hash": "c", "champion_after": "c"}]
+        self.assertEqual(_kept_cases(gap, 0, 10),
+                         {"kept_cases_next": None, "kept_cases_mean": 2.0})
+
     def test_a_generation_records_how_many_of_its_calls_raised(self):
         # run X gen4: the box was taken away mid-run, the champion's re-measurement came back
         # 2.5 cases off, and the promote gate moved from 1 case to 2.5 through drift. Under the

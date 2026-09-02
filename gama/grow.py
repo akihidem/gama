@@ -1219,6 +1219,36 @@ def _num(v) -> Optional[float]:
             and math.isfinite(v) else None)
 
 
+def _kept_cases(history: list, i: int, n_confirm: int) -> dict:
+    """世代 ``i`` で昇格した設計の伸びが、後の測り直しにどれだけ残っているか(問)。
+
+    ``next`` は次の世代の champion 測り直し 1 回、``mean`` はその設計が**続けて** champion で
+    居た間の測り直しの平均(間に別の設計が挟まったら、そこで打ち切る)。どちらも「認定した伸び」と同じ単位(confirm 問)で、基準は昇格
+    世代の champion 点(= 挑戦者が越えた相手)。読めない/後が無い場合は None を入れる:
+    0 と書くと「残らなかった」に化ける。
+    """
+    row = history[i]
+    base, after = row.get("champion_confirm"), row.get("champion_after")
+    nxt = history[i + 1] if i + 1 < len(history) else None
+    later = []
+    for h in history[i + 1:]:
+        # **連続した在位**だけを見る。同じ設計が後で champion に戻ることは(archive から挑戦し
+        # 直せるので)ありうるので、途中で別の設計が champion だった行まで平均に混ぜない。
+        if h.get("champion_hash") != after:
+            break
+        if isinstance(h.get("champion_confirm"), (int, float)):
+            later.append(h["champion_confirm"])
+    if after is None or not isinstance(base, (int, float)) or not later or not n_confirm:
+        return {"kept_cases_next": None, "kept_cases_mean": None}
+    # ``next`` は**その次の行**でなければならない。読めない行を飛ばして先の値を拾うと、
+    # 「次の世代の測り直し」と名乗る数字が別の世代のものになる(codex 指摘)。
+    nxt_score = (nxt or {}).get("champion_confirm")
+    usable_next = (nxt is not None and nxt.get("champion_hash") == after
+                   and isinstance(nxt_score, (int, float)))
+    return {"kept_cases_next": round((nxt_score - base) * n_confirm, 2) if usable_next else None,
+            "kept_cases_mean": round((sum(later) / len(later) - base) * n_confirm, 2)}
+
+
 def prescription_ledger(history: list) -> dict:
     """処方(チャンピオン自身の診断が指した候補)が走行の中でどこまで進んだかを世代行から数える。
 
@@ -2338,12 +2368,18 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
         "trace": trace.summary() if trace is not None else None,
         # 昇格した手の対応のある証拠。平均差だけ見ていると「confirm では伸びたが sealed では
         # しぼんだ/反転した」が説明できない。弱い証拠のまま通った手をここで名指しする。
+        # ``kept_cases`` は**選択に使っていない測定**から見た同じ伸び: 昇格の次の世代から
+        # champion は毎世代 confirm を測り直されるので、その差がそのまま「認定した伸びのうち
+        # 測り直しに残った分」になる。7 走の台帳で平均 1.39 問の認定に対し次世代 1.20 問・
+        # champion で居続けた間の平均 1.08 問(gama-runs/promotion-survival.py)。
+        # 走行が自分で言えることを、後から人が台帳を再生して書かない。
         "promotion_evidence": [
-            {"gen": h["gen"], "challenger": h.get("challenger"),
-             "gain_cases": h.get("gain_cases"),
-             "wins": h.get("paired_wins"), "losses": h.get("paired_losses"),
-             "p": h.get("paired_p")}
-            for h in history if h.get("verdict") == "promote"
+            dict({"gen": h["gen"], "challenger": h.get("challenger"),
+                  "gain_cases": h.get("gain_cases"),
+                  "wins": h.get("paired_wins"), "losses": h.get("paired_losses"),
+                  "p": h.get("paired_p")},
+                 **_kept_cases(history, i, len(splits["confirm"])))
+            for i, h in enumerate(history) if h.get("verdict") == "promote"
         ],
     }
     emit({"event": "final", **{k: v for k, v in result.items() if k != "history"}})
@@ -2544,6 +2580,7 @@ def write_recipe(result: dict, directory, name: Optional[str] = None,
         "`gama bench --backends system --config config.json --suite hard`", "",
         "## What grew", "",
     ]
+    kept_by_gen = {e.get("gen"): e for e in (result.get("promotion_evidence") or [])}
     for h in result.get("history", []):     # a result round-tripped through JSON may omit it
         mark = "✅" if h["verdict"] == "promote" else "·"
         # 揺れは δ の横に。δ が床のままで揺れが 1 問を超える行が、run V/W が踏んだ形。
@@ -2553,5 +2590,20 @@ def write_recipe(result: dict, directory, name: Optional[str] = None,
                      f"{h['champion_search']}→{h['challenger_search']}, confirm "
                      f"{h['champion_confirm']}→{h['challenger_confirm']} "
                      f"(δ={h['delta']}{noise_s}) → {h['reason']}")
+        # 昇格の行には、選択に使っていない測り直しに残った分を添える。門を通った点は候補の
+        # 中で最大だったから残った点で、測定ではない(7 走の平均は認定 1.39 問に対し 1.08 問)。
+        kept = kept_by_gen.get(h.get("gen")) or {}
+        # next と mean は別々に欠けうる(直後の行が読めなくても在位の平均は取れる)。片方が
+        # 無いことを理由にもう片方を落とさない(codex 指摘)。
+        if h["verdict"] == "promote" and kept.get("gain_cases") is not None and (
+                kept.get("kept_cases_next") is not None
+                or kept.get("kept_cases_mean") is not None):
+            parts = []
+            if kept.get("kept_cases_next") is not None:
+                parts.append(f"re-measured next generation {kept['kept_cases_next']:+g}")
+            if kept.get("kept_cases_mean") is not None:
+                parts.append(f"mean while it stayed champion {kept['kept_cases_mean']:+g}")
+            lines.append(f"  - gated on {kept['gain_cases']:+g} cases; "
+                         + ", ".join(parts) + " (cases)")
     (d / "recipe.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     return d
