@@ -584,6 +584,33 @@ class EnsembleBackend(ModelBackend):
         return out
 
 
+# --------------------------------------------------------------------------- #
+# tool レーンが実際に「道具」として働いたかの計数
+# --------------------------------------------------------------------------- #
+# ToolBackend はコードを取り出せなかったとき、黙ってモデルの生テキストを返す(fall back)。
+# これは「効かなかった」ではなく**道具を使えていない**で、しかも例外にならないので
+# error_rate にも出ず、低い得点として静かに data に混ざる。実測(2026-09-02, Kimi-48B):
+# crux の research 4 問はすべて ```python が一度も出ず、生の思考文が返っていた。
+# その状態の tool レーンは素のモデルより悪くなる(答えでなく途中の思考が採点される)。
+_TOOL: dict = {"calls": 0, "ran": 0}
+
+
+def note_tool(ran: bool) -> None:
+    _TOOL["calls"] += 1
+    _TOOL["ran"] += 1 if ran else 0
+
+
+def tool_stats() -> dict:
+    """(calls, ran, fell_back)。calls が 0 なら tool レーンを一度も通っていない。"""
+    return {"calls": _TOOL["calls"], "ran": _TOOL["ran"],
+            "fell_back": _TOOL["calls"] - _TOOL["ran"]}
+
+
+def reset_tool_stats() -> None:
+    _TOOL["calls"] = 0
+    _TOOL["ran"] = 0
+
+
 class ToolBackend(ModelBackend):
     """Program-aided (PAL) wrapper — the model solves by WRITING Python that prints the
     answer; we run it and return stdout. Closes 'shared blind spot' gaps a small model
@@ -627,9 +654,13 @@ class ToolBackend(ModelBackend):
                                       text=True, timeout=self.timeout, cwd=sandbox)
             out = proc.stdout.strip()
             if out:
+                note_tool(True)
                 return out
         except Exception:
             pass
+        # ここに来たら道具は働いていない。返すのは素の返答だが、**その事実を数える**
+        # (黙って低い点になるだけだと、道具が壊れているのかモデルが弱いのか区別できない)。
+        note_tool(False)
         return raw  # fall back to the model's direct answer
 
 

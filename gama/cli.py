@@ -394,7 +394,22 @@ def cmd_grow(args: argparse.Namespace) -> int:
                     f"[gama] NOTE: no confirm cases for {row['classes_unconfirmable']} — those "
                     "classes are left alone (a win there could never be confirmed). Widen with "
                     "--suites default,hard,brutal.\n")
-        elif ev == "candidate":
+        # tool レーンが「道具として働いていない」ことは、例外にも低得点にも見えない形で
+        # 混ざる(コードが取り出せないと素の返答をそのまま返すため)。一度だけ大きく言う。
+        for _k in ("search", "confirm"):
+            _m = row.get(_k)
+            if isinstance(_m, dict) and _m.get("tool_calls") and not _m.get("tool_ran"):
+                if not seen.get("tool_warned"):
+                    seen["tool_warned"] = True
+                    sys.stderr.write(
+                        f"[gama] WARNING: a tool lane ran {_m['tool_calls']} times and NEVER "
+                        "produced runnable code — every one of those calls fell back to the "
+                        "model's raw reply. You are not measuring a tool lane, you are "
+                        "measuring the bare model with a code-writing prompt in front of it, "
+                        "which scores WORSE than the bare model. Check the lane's max_tokens: "
+                        "a reasoning model can spend the whole budget before it writes any "
+                        "code.\n")
+        if ev == "candidate":
             sys.stderr.write(f"[gama]  gen{row['gen']} {row['label']:<34} "
                              f"search={row['search']['score']}\n")
         elif ev == "generation":

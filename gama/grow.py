@@ -47,7 +47,8 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from .benchmark import SUITES, BenchCase, run_bench, summarize
-from .backends import note_served, reset_served, served_conflicts, served_map
+from .backends import (note_served, reset_served, reset_tool_stats,
+                       served_conflicts, served_map, tool_stats)
 from .config import build_backend
 from .models import ModelTier
 
@@ -515,6 +516,10 @@ class Measurement:
     # 例外で 0 点になった case。0 点は「モデルが間違えた」ではないので、対応のある比較で
     # 「負け」と数えると測定失敗が証拠に化ける。除外できるように id を持ち帰る。
     error_cases: frozenset = frozenset()
+    # tool レーンが実際にコードを走らせた回数 / 通った回数。fell_back が多いレーンは
+    # 「道具として測れていない」ので、低い得点をモデルの弱さと読んではいけない。
+    tool_calls: int = 0
+    tool_ran: int = 0
 
 
 def measure(spec: dict, cases: list[BenchCase], tier: ModelTier = ModelTier.LARGE,
@@ -525,6 +530,7 @@ def measure(spec: dict, cases: list[BenchCase], tier: ModelTier = ModelTier.LARG
         raise ValueError("measure() needs at least one case (an empty split has no score, "
                          "and returning 0.0 would read as 'measured and failed')")
     backend = build_backend(spec)
+    reset_tool_stats()
     records = run_bench({label: backend}, suite=cases, tier=tier, repeats=repeats,
                         unit_cost=unit_cost or {}, run_id="grow")
     agg = summarize(records)["overall"][label]
@@ -540,7 +546,8 @@ def measure(spec: dict, cases: list[BenchCase], tier: ModelTier = ModelTier.LARG
     return Measurement(score=agg["score"], success_rate=agg["success_rate"],
                        latency_s=agg["latency_s"], n=agg["n"], cases=len(cases),
                        errors=errors, error_rate=round(errors / len(records), 4) if records else 0.0,
-                       per_case=per_case, error_cases=error_cases)
+                       per_case=per_case, error_cases=error_cases,
+                       tool_calls=tool_stats()["calls"], tool_ran=tool_stats()["ran"])
 
 
 # --------------------------------------------------------------------------- #

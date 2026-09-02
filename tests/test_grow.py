@@ -30,7 +30,8 @@ from gama.backends import ModelBackend
 from gama.benchmark import BenchCase
 from gama.cli import build_parser, main
 from gama.config import build_backend, system_from_config
-from gama.backends import note_served, reset_served, served_conflicts, served_map
+from gama.backends import (note_served, note_tool, reset_served, reset_tool_stats,
+                           served_conflicts, served_map, tool_stats)
 from gama.grow import (
     MeasurementFailure,
     sealed_verdict,
@@ -1607,3 +1608,32 @@ class TestSaturatedClasses(ScriptedCase):
         self.assertTrue(after, "no checkpoint after the promotion")
         self.assertTrue(after[0]["champion_search"].get("per_case"),
                         "the champion lost its per-case search scores when it was promoted")
+
+
+class TestToolLaneHealth(unittest.TestCase):
+    """tool レーンはコードを取り出せないと**黙って**素の返答を返す。例外にならないので
+    error_rate にも出ず、低い得点として data に混ざる。実測(2026-09-02, Kimi-48B): crux の
+    research 4 問はすべて ```python が一度も出ず、生の思考文が採点されていた。"""
+
+    def setUp(self):
+        reset_tool_stats()
+
+    def tearDown(self):
+        reset_tool_stats()
+
+    def test_a_tool_lane_that_never_runs_code_is_counted(self):
+        from gama.benchmark import SUITES
+        # echo はコードを書かないので、tool レーンは毎回 fall back する
+        m = measure({"backend": "tool", "kwargs": {"inner": {"backend": "echo", "kwargs": {}}}},
+                    SUITES["default"][:3])
+        self.assertEqual(m.tool_calls, 3)
+        self.assertEqual(m.tool_ran, 0)
+
+    def test_a_lane_without_a_tool_reports_zero_calls(self):
+        from gama.benchmark import SUITES
+        m = measure({"backend": "echo", "kwargs": {}}, SUITES["default"][:3])
+        self.assertEqual(m.tool_calls, 0)     # 0 は「道具を通っていない」であって失敗ではない
+
+    def test_the_counter_separates_ran_from_fell_back(self):
+        note_tool(True); note_tool(False); note_tool(True)
+        self.assertEqual(tool_stats(), {"calls": 3, "ran": 2, "fell_back": 1})
