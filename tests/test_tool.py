@@ -81,6 +81,13 @@ class TestPrefill(unittest.TestCase):
         # 3. continued, but never closed (length stop)
         be = ToolBackend(FakeChat("print(4 + 4)\n"), prefill=pf)
         self.assertEqual(be.complete("q", ModelTier.LARGE), "8")
+        # 3'. the model opened its own fence mid-reply (tagged and closed, or untagged and
+        #     not): re-attaching ours would pair our opener with its opener and hand the prose
+        #     between them to the interpreter — the codex reviewer's case, reproduced
+        be = ToolBackend(FakeChat("thinking...\n```python\nprint(5 * 5)\n```"), prefill=pf)
+        self.assertEqual(be.complete("q", ModelTier.LARGE), "25")
+        be = ToolBackend(FakeChat("Here:\n```\nprint(7 * 7)"), prefill=pf)
+        self.assertEqual(be.complete("q", ModelTier.LARGE), "49")
         # 4. prose only: falls back to the reply. The fence around it was OURS, so this is
         #    the model declining to write code (no_code), not code that printed nothing.
         from gama.backends import reset_tool_stats, tool_stats

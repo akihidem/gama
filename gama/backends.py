@@ -237,6 +237,11 @@ class SshOpenAIBackend(ModelBackend):
 
     name = "ssh-openai"
     available = True
+    # The flag is about the TRANSPORT: this adapter carries a prefill as a trailing assistant
+    # turn. What the server does with it (continue the text, start a new turn, ignore it) is
+    # the server's business and is read back by ToolBackend from the reply's shape. The one
+    # bad case, a server that drops the turn silently, measures as a plain tool lane under
+    # another name and never promotes: wasted width, not a wrong result.
     supports_prefill = True
 
     def __init__(self, ssh_host: str | None = None, port: int = 8080,
@@ -692,31 +697,46 @@ class ToolBackend(ModelBackend):
     def _extract(self, raw: str) -> tuple[str, bool]:
         """The program in ``raw`` and whether one was fenced at all.
 
-        Three reply shapes reach here and all three must yield the code, because the
-        difference between them is the *server's* handling of a prefill, not the model's work:
+        Several reply shapes reach here and all must yield the code, because the difference
+        between them is the *server's* handling of a prefill, not the model's work:
           1. a closed block anywhere (no prefill, or a server that re-opened the fence);
-          2. the continuation of OUR fence: body then ``\`\`\``` with no opening fence in the reply —
-             re-attach the prefill before matching (never when the reply opens one itself, or the
-             match is the empty block between the two fences — found exactly that: three replies
-             full of code all scoring 0);
-          3. an opened fence that never closes (length stop): what follows it is the program.
+          2. the continuation of OUR fence: body, then a closing fence, with no opening fence in
+             the reply — re-attach the prefill before matching (never when the reply opens one
+             itself, or the match is the empty block between the two fences — found exactly
+             that: three replies full of code all scoring 0);
+          3. an opened fence that never closes (length stop): what follows it is the program;
+          4. the continuation of our fence that never closes: the whole reply is the program.
+        The shapes are ambiguous on the surface (a bare closing fence in a continuation also
+        reads as the model opening an untagged block; a reply that opens a fence mid-text under
+        a prefill pairs OUR opener with ITS opener and yields the prose between them as the
+        "block"), so the readings are tried in that order and the first that parses as Python
+        wins. Only if none parse does the first reading stand, and the run then fails the way
+        it always did. Parsing is a tiebreaker, not proof: a one-word remark parses too, which
+        is why the order puts the stronger readings first.
         """
         text = raw or ""
-        # Whether the fence in `text` is the model's own. When it is ours (re-attached), the fence
-        # says nothing about what the model wrote, so "had code" is decided by whether the body
-        # parses as Python: prose after our fence is the model declining to write code (no_code),
-        # not code that failed (empty_out) — the two are fixed in opposite places.
         own_fence = "```" in text
-        if self.prefill and not text.lstrip().startswith("```"):
-            text = self.prefill + text
+        continuation = bool(self.prefill) and not text.lstrip().startswith("```")
+        readings: list[str] = []
         blocks = self._PY_FENCE.findall(text)
-        if blocks:
-            code = max(blocks, key=len)
-        else:
-            m = self._OPEN_FENCE.search(text)
-            if not m:
-                return raw or "", False
-            code = text[m.end():]
+        if blocks:                                       # 1. the model's own closed block
+            readings.append(max(blocks, key=len))
+        if continuation:
+            blocks = self._PY_FENCE.findall(self.prefill + text)
+            if blocks:                                   # 2. continuation of our fence, closed
+                readings.append(max(blocks, key=len))
+        m = self._OPEN_FENCE.search(text)
+        if m:                                            # 3. the model opened, never closed
+            readings.append(text[m.end():])
+        if continuation:
+            readings.append(text)                        # 4. continued, never closed
+        if not readings:
+            return text, False
+        code = next((r for r in readings if _parses(r)), readings[0])
+        # "Had code" is about the model: a fence it wrote itself counts even when the body is
+        # not a program (that reply is code that FAILED, fixed on the generation side); prose
+        # after OUR fence is the model declining to write code (no_code, fixed on the prompt
+        # side). The two are fixed in opposite places, so they must not be counted together.
         return code, (own_fence or _parses(code))
 
     def complete(self, prompt: str, tier: ModelTier, **kwargs) -> str:

@@ -366,6 +366,9 @@ def propose(champion: dict, pool: dict[str, dict], classes: list[str],
             # 思考文が採点されていた)。prefill は実測で 0/3 → 2-3/3 のコード到達だが、もともと
             # コードを書けている問題群でどう転ぶかは未測定なので、既定にせず 1 手の変異にして
             # 門に通す。中身(inner)はそのまま、足すのは prefill だけ(2 手同時にしない)。
+            # 届く範囲は素の tool レーンだけで、deepen で合成の内側に入った tool 段(⑦)には
+            # 出さない: そこは「合成の中身を 1 手動かす」変異がまだ無く、ここだけ足すと
+            # 内側の tool 段への他の手(剥がす・差し替える)と非対称になる。
             name = f"{cur}+pf"
             buckets["tool"].append((task_type, Candidate(
                 f"tool:{task_type}({base})+prefill", "tool",
