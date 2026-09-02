@@ -2489,6 +2489,9 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
         "promotion_evidence": [
             dict({"gen": h["gen"], "challenger": h.get("challenger"),
                   "gain_cases": h.get("gain_cases"),
+                  # 差の測り直しの揺れ(問)。認定した伸びがこれより小さい昇格は、
+                  # 「もう一度測れば消えうる大きさ」で通っている。門は変えず、隣に置く。
+                  "noise_cases": h.get("confirm_noise_cases"),
                   "wins": h.get("paired_wins"), "losses": h.get("paired_losses"),
                   "p": h.get("paired_p")},
                  **_kept_cases(history, i, len(splits["confirm"])))

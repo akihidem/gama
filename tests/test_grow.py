@@ -1529,6 +1529,25 @@ class TestGrowLoop(ScriptedCase):
         self.assertEqual(_kept_cases(gap, 0, 10),
                          {"kept_cases_next": None, "kept_cases_mean": 2.0})
 
+    def test_a_promotion_inside_the_noise_says_so(self):
+        # run Z gen0 実測: 差の測り直しの揺れは 1.01 問で、床は 1 問。床ちょうどで通った昇格は
+        # 「もう一度測れば消えうる大きさ」で通っている。門は変えず、その 1 行で言う。
+        from gama.cli import cmd_grow  # noqa: F401  (import 経路の確認だけ)
+        import gama.cli as cli
+        out = io.StringIO()
+        ev = [{"gen": 1, "challenger": "tool:qa(a)+prefill", "gain_cases": 1.0,
+               "noise_cases": 1.01, "kept_cases_next": 0.5, "kept_cases_mean": 0.5,
+               "wins": 1, "losses": 0, "p": 0.5}]
+        with contextlib.redirect_stderr(out):
+            cli._promotion_lines({"promotion_evidence": ev})
+        line = out.getvalue()
+        self.assertIn("gated on +1.0 cases", line)
+        self.assertIn("inside the re-measurement noise of this comparison (1.01 cases)", line)
+        out = io.StringIO()
+        with contextlib.redirect_stderr(out):
+            cli._promotion_lines({"promotion_evidence": [dict(ev[0], gain_cases=2.5)]})
+        self.assertNotIn("inside the re-measurement noise", out.getvalue())
+
     def test_a_generation_records_how_many_of_its_calls_raised(self):
         # run X gen4: the box was taken away mid-run, the champion's re-measurement came back
         # 2.5 cases off, and the promote gate moved from 1 case to 2.5 through drift. Under the

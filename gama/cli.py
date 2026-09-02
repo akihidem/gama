@@ -600,22 +600,12 @@ def cmd_grow(args: argparse.Namespace) -> int:
 
     # 認定した伸びと、選択に使っていない測り直しに残った伸びを並べる。門を通った点は候補の
     # 中で最大だったから残った点で、測定ではない。差が大きい手は sealed を待たずに疑える。
-    for e in (result.get("promotion_evidence") or []):
-        # next と mean は別々に欠けうる。片方だけでも言えることは言う。
-        parts = []
-        if e.get("kept_cases_next") is not None:
-            parts.append(f"re-measured next generation {e['kept_cases_next']:+}")
-        if e.get("kept_cases_mean") is not None:
-            parts.append(f"mean while it stayed champion {e['kept_cases_mean']:+}")
-        if not parts or e.get("gain_cases") is None:
-            continue
-        sys.stderr.write(f"[gama] promotion gen{e.get('gen')} {e.get('challenger')}: "
-                         f"gated on {e['gain_cases']:+} cases, " + ", ".join(parts) + "\n")
+    _promotion_lines(result)
 
     # 次にどこを狙うか。走行が終わった時点で、残っている伸びしろと、そこに見えている症状は
     # 手元にある。次の走行の設定(suite・pool・処方)はその分布から決まるので、走行自身に
-    # 言わせる(台帳を再生して人が読み直す作業を毎回させない)。
-    # 文言も判定も recipe と同じ関数から取る(二つ書くと、片方だけ直したときに黙って食い違う)
+    # 言わせる(台帳を再生して人が読み直す作業を毎回させない)。文言も判定も recipe と同じ
+    # 関数から取る(二つ書くと、片方だけ直したときに黙って食い違う)。
     for line in next_lever_lines(result):
         sys.stderr.write(f"[gama] {line[2:] if line.startswith('- ') else line}\n")
 
@@ -722,6 +712,28 @@ _RAISED_FIELDS = (("champion", "champion_error_rate"), ("champion search", "cham
                   # 表示名は台帳の鍵と同じ綴りにする(片方で grep した人がもう片方に届く)
                   ("simplify", "simplify_error_rate"),
                   ("simplify search", "simplify_search_error_rate"))
+
+
+def _promotion_lines(result: dict) -> None:
+    """昇格ごとに「門が認めた伸び」と「選択に使っていない測り直し」を並べて出す。"""
+    for e in (result.get("promotion_evidence") or []):
+        # next と mean は別々に欠けうる。片方だけでも言えることは言う。
+        parts = []
+        if e.get("kept_cases_next") is not None:
+            parts.append(f"re-measured next generation {e['kept_cases_next']:+}")
+        if e.get("kept_cases_mean") is not None:
+            parts.append(f"mean while it stayed champion {e['kept_cases_mean']:+}")
+        if not parts or e.get("gain_cases") is None:
+            continue
+        # 認定した伸びが「差の測り直しの揺れ」より小さいなら、その 1 行で言う。実測(run Z gen0):
+        # 揺れ 1.01 問に対し床は 1 問 —— 床ちょうどで通った昇格は、もう一度測れば消えうる。
+        noise = e.get("noise_cases")
+        within = (isinstance(noise, (int, float)) and not isinstance(noise, bool)
+                  and abs(e["gain_cases"]) < noise)
+        sys.stderr.write(f"[gama] promotion gen{e.get('gen')} {e.get('challenger')}: "
+                         f"gated on {e['gain_cases']:+} cases, " + ", ".join(parts)
+                         + (f" — inside the re-measurement noise of this comparison "
+                            f"({noise:g} cases)" if within else "") + "\n")
 
 
 def _raised_note(row: dict) -> str:
