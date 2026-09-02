@@ -1742,7 +1742,75 @@ def _prescribed(cand: "Candidate", symptoms: dict, treats: Optional[str] = None)
     return cand.remedy is not None and cand.remedy in symptoms
 
 
-def _challenger_key(cand: "Candidate", m: "Measurement", prescribed: bool = False) -> tuple:
+def scoped_cases(champion_m: "Measurement", cand_m: "Measurement",
+                 cases: list, scope: Optional[str]) -> Optional[float]:
+    """その手が触りうるクラスの case だけで測った、champion との差(問)。
+
+    **なぜ全体でなく絞るのか(実測)**: 9 走・48 世代の台帳で、挑戦者の search 差(問)と
+    confirm 差(問)の相関は r=0.06(死んだ backend の 1 本を除いて 0.17、search が実際に
+    動いた 29 本に限ると 0.20・符号一致 41%)。選抜の段が confirm の結果をほとんど予測して
+    いない。理由は難しくない: クラス単位の手は**そのクラスの case しか動かせない**のに、
+    38 問全体の平均で順位を付けていた。触れない case は期待値ゼロで分散だけ足す。
+    `gama trace --diff` で run Z gen0 を開くと、content レーンだけを替えた手の差は
+    content −0.10 問・research +0.42 問だった —— 順位を決めていたのは触っていないクラス。
+
+    ``scope`` が ``None``(既定レーンの差し替えなど複数クラスに効く手)なら全体で測る。
+    その場合の合計差は「点の差 × 比べた case 数」なので、並び順は従来の点順と同じになる
+    (違いが出るのはエラーで case が落ちたときだけで、そこは ``paired_gain`` と同じ規約)。
+    両方に在る case だけを見るのは ``paired_gain`` と同じ(測れなかった case は負けでない)。
+
+    平均でなく**合計**なのは、門が絶対量(「confirm で丸 1 問」)で判定するから: 10 問の
+    クラスで +2 問の手は、2 問のクラスで +1 問の手より confirm で通りやすい。1 問あたりの
+    良さを競わせると、門が見る量と順位付けが別のものになる(codex 指摘への回答)。
+    比べる case が 1 つも無ければ ``None`` を返す ── 「差が無い」と「測れていない」を
+    同じ 0.0 にしない。
+    """
+    ids = {c.case_id for c in cases if scope is None or c.task_type == scope}
+    shared = ((set(champion_m.per_case) & set(cand_m.per_case) & ids)
+              - champion_m.error_cases - cand_m.error_cases)
+    if not shared:
+        return None
+    return sum(cand_m.per_case[cid] - champion_m.per_case[cid] for cid in shared)
+
+
+def scoped_search_gate(delta_cases: Optional[float], fallback: tuple,
+                       band_cases: float = 1.0) -> tuple[bool, str]:
+    """挑戦権を「その手が触れる case での差(問)」で判定する。
+
+    選抜(``_challenger_key``)と同じ量で門を作る。二つが別の量だと、絞った差では最良の候補を
+    選んでおいて全体の点で落とす、という**世代の空費**が起きる(codex 指摘)。
+
+    帯は従来と同じ大きさで、単位だけ違う: ``search_band = 1/n_search``(score)は
+    「search 1 問ぶん」で、こちらの ``band_cases=1.0`` も 1 問ぶん。変えたのは**どの case で
+    測るか**であって、敷居の高さではない。比べる case が無い(``None``)ときは呼び側が用意した
+    従来の判定に従う ── ``fallback`` は必須にしてある: 既定を「通す」にすると、呼び忘れが
+    そのまま挑戦権の付与になる(否定形の門は fail-open に倒れる)。
+
+    scope の中でエラーになった case は ``scoped_cases`` が差から外すので、この門は
+    「測れた case での差」で判断する。測れなかった case を負けとして数えないのは
+    ``paired_gain`` と同じ規約で、壊れかけの測定は 20% の床が走行ごと止める。
+    """
+    if delta_cases is None:
+        return fallback
+    if -delta_cases > band_cases + SCORE_TOL:
+        unit = "case" if abs(band_cases - 1.0) < 1e-9 else "cases"
+        return False, f"search-worse-in-scope(band={band_cases:g} {unit})"
+    return True, "search-ok"
+
+
+def errors_in_scope(cand_m: "Measurement", cases: list, scope: Optional[str]) -> int:
+    """その手が触るクラスの case のうち、例外で測れなかった数。
+
+    ``scoped_cases`` はエラーの case を外して差を出すので、**そのクラスで難しい case が
+    軒並みエラーになった候補**は残りの 1 問で首位に立てる。外で起きた単発のエラーまで
+    一律に後ろへ回すのは行き過ぎなので(codex 指摘)、数えるのは scope の中だけ。
+    """
+    ids = {c.case_id for c in cases if scope is None or c.task_type == scope}
+    return len(set(cand_m.error_cases) & ids)
+
+
+def _challenger_key(cand: "Candidate", m: "Measurement", prescribed: bool = False,
+                    scoped: Optional[float] = None, broken: bool = False) -> tuple:
     """同点の候補をどう並べるか。**再現しない量を読まない**ことがこの関数の要件。
 
     点数(``m.score``)は読む —— 同じ spec を同じ case 集合で測れば同じ値になるので、
@@ -1754,7 +1822,8 @@ def _challenger_key(cand: "Candidate", m: "Measurement", prescribed: bool = Fals
     判定に入れてしまっていた。構造の大きさは spec だけで決まり、追加コールを生んでいる
     当のものなので、意図を保ったまま再現する。
     分けて名前を与えてあるのは、この性質を文字列検査でなく**振る舞いとして**試験できる
-    ようにするため。並び順は「点の高い順 → 処方が先 → 構造の小さい順 → ラベル順」。
+    ようにするため。並び順は「scope 内にエラーの無いものが先 → 差(``scoped``。無ければ
+    全体の点)の大きい順 → 処方が先 → 構造の小さい順 → ラベル順」。
 
     ``prescribed`` は「チャンピオンの診断が指した処方」(``_prescribed``)。同点の中で先に
     confirm を測るのは処方: search はそのクラスをほぼ取り切っていて payoff を見せられず
@@ -1766,7 +1835,16 @@ def _challenger_key(cand: "Candidate", m: "Measurement", prescribed: bool = Fals
     測られない。入れれば gen0 で挑戦する。処方かどうかはラベルと診断だけで決まるので走行を
     またいで再現する。
     """
-    return (-m.score, 0 if prescribed else 1, _structure_size(cand.spec), cand.label)
+    # scope の中で測れなかった case がある候補は後ろへ。絞った差は error の case を外して
+    # 計算するので、そのままだと「そのクラスの難しい case が全部エラーになった候補」が
+    # 残りの 1 問で先頭に来られる。全体の点で並べていた頃はエラーが 0 点として効いていた。
+    # 実運用ではこの項はほぼ常に 0(健全な走行の error_rate は 0 で、20% を超えれば走行ごと
+    # 止まる)。効くのは壊れかけている時だけで、その時は後ろへ回す方が正しい。
+    # 次の項は「触れる case での差(問)」。渡されなければ(または比べる case が無ければ)
+    # 従来どおり全体の点で並ぶ。
+    lead = -m.score if scoped is None else -scoped
+    return (1 if broken else 0, lead, 0 if prescribed else 1,
+            _structure_size(cand.spec), cand.label)
 
 
 def trace_rows(path) -> list[dict]:
@@ -2313,11 +2391,22 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
             # 再現性はこの repo の売りそのものなので、判定に測定ゆらぎを一切入れない。
             # 構造の大きさは spec だけで決まり、追加コールを生んでいる当のものなので、
             # 「同点なら安い方」の意図もそのまま保つ(shrink 側の Occam と同じ向き)。
+            # 順位は「その手が触れる case での差(問)」で付ける。全体の平均で順位を付けていた
+            # 頃、選抜は confirm をほとんど予測していなかった(48 世代で r=0.06〜0.20)。
+            # 比べる case が無い候補(そのクラスの search case が無い等)は None が返るので、
+            # 従来どおり全体の点で並ぶ ── 「評価不能」を「差ゼロ」と混ぜない。
+            def _scoped(t):
+                return scoped_cases(champ_search, t[1], splits["search"], t[0].scope)
+
             challenger, chal_search = min(
                 additive, key=lambda t: _challenger_key(
                     *t, prescribed=(_prescribed(t[0], symptoms, "no_code")
                                     or _prescribed(t[0], cut_symptoms, "cut")
-                                    or _prescribed(t[0], preamble_symptoms, "preamble"))))
+                                    or _prescribed(t[0], preamble_symptoms, "preamble")),
+                    scoped=_scoped(t),
+                    broken=bool(errors_in_scope(t[1], splits["search"], t[0].scope))))
+            chal_scoped = scoped_cases(champ_search, chal_search, splits["search"],
+                                       challenger.scope)
             # search で band を超えて負けた設計は、**このチャンピオンの下では決着済み**:
             # 挑戦権 ① は search だけで決まり、チャンピオンの search はチャンピオンが替わるまで
             # 測り直されない(= 同じ hash の候補は archive の同じ点を返し続ける)。だから confirm を
@@ -2331,12 +2420,19 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
             # **その世代に選ばれた 1 本だけ**を同じ search の門にかけ、落ちたらそこで settled に
             # 入れる(選ばれなかった削減は測っていないので、決着していない)。
             for c, m in additive:
-                if not search_gate(champ_search.score, m.score, search_band)[0]:
+                ok = scoped_search_gate(
+                    scoped_cases(champ_search, m, splits["search"], c.scope),
+                    fallback=search_gate(champ_search.score, m.score, search_band))[0]
+                if not ok:
                     settled.add(spec_hash(c.spec))
             chal_hash = spec_hash(challenger.spec)
             row.update({"challenger": challenger.label, "kind": challenger.kind,
                         "challenger_hash": chal_hash,
                         "challenger_search": chal_search.score,
+                        # 選抜に使った数字(触れる case での差・問)。全体の点も上に残るので、
+                        # 二つが食い違う世代は「触っていないクラスの揺れ」が見えている世代。
+                        "challenger_search_in_scope": (None if chal_scoped is None
+                                                       else round(chal_scoped, 3)),
                         # 踏み石から上がった挑戦者か、この世代の新顔か。archive の点で挑戦する
                         # 設計はこの世代に search を測っていない、と台帳だけで読めるように。
                         "challenger_from": "archive" if chal_hash in archived_before else "new",
@@ -2348,7 +2444,11 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
                             or _prescribed(challenger, cut_symptoms, "cut")
                             or _prescribed(challenger, preamble_symptoms, "preamble")),
                         "search_band": round(search_band, 4)})
-            s_ok, s_why = search_gate(champ_search.score, chal_search.score, search_band)
+            s_ok, s_why = scoped_search_gate(
+                chal_scoped,
+                fallback=search_gate(champ_search.score, chal_search.score, search_band))
+            # どちらの門が判定したかを台帳に残す(帯の大きさは同じで、測る case が違う)
+            row["search_gate"] = "scope" if chal_scoped is not None else "score"
             if not s_ok:
                 # 門 ① を通れないと分かっている候補の confirm は測らない。理由は promote_gate が
                 # 返すのと同じ関数から取り、台帳の読み方を二通りにしない。
@@ -2417,10 +2517,16 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
                 band = shrink_band(margin_floor, drift)
                 row["simplify_challenger"] = cand.label
                 row["simplify_search_error_rate"] = round(cand_search.error_rate, 6)
-                # 判定に使った帯だけを、使った門の名前で残す。confirm を測らずに search で
+                # 判定に使った帯と、どちらの門が判定したか。confirm を測らずに search で
                 # 落とした行に confirm 側の帯(shrink_band)を書くと、台帳を読む側は
-                # 「この帯で悪いと判定された」と読む(codex 指摘)。
+                # 「この帯で悪いと判定された」と読む(codex 指摘)。単位が違うので鍵も分ける:
+                # 既存の `simplify_search_band` は score 単位の search_band のまま置き、
+                # 絞った門で決めた世代は `simplify_search_gate` が "scope" と言う。
+                cand_scoped = scoped_cases(champ_search, cand_search, splits["search"],
+                                           cand.scope)
                 row["simplify_search_band"] = round(search_band, 4)
+                row["simplify_search_band_cases"] = 1.0 if cand_scoped is not None else None
+                row["simplify_search_gate"] = "scope" if cand_scoped is not None else "score"
                 # 追加側と同じ**コストの門**を先に通す: search で帯を超えて負けている削減に
                 # confirm(search の 2 倍の問数)を焚かない。過去 9 走の削減 14 本を並べると、
                 # 帯を超えて負けた 13 本は全部 confirm でも「明確に悪い」で却下されており、
@@ -2432,7 +2538,9 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
                 # 承知で入れている: (1) 追加側は同じ前提でこの門を使っている、(2) 実測 14 本で
                 # 判定は 1 つも変わらない、(3) 落ちた先は settled で、チャンピオンが替われば
                 # 空になる —— 永久追放ではなく「この champion の点に対しては決着」。
-                s_ok, s_reason = search_gate(champ_search.score, cand_search.score, search_band)
+                s_ok, s_reason = scoped_search_gate(
+                    cand_scoped,
+                    fallback=search_gate(champ_search.score, cand_search.score, search_band))
                 if not s_ok:
                     # ここは **settled**(この チャンピオンの search 点に対する決着)であって
                     # challenged(confirm で決着)ではない。search の点はチャンピオンが替われば

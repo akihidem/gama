@@ -1305,6 +1305,7 @@ class TestGrowLoop(ScriptedCase):
         self.assertIsNone(h["simplify_confirm"], "the confirm measurement was spent anyway")
         self.assertEqual(h["simplify_verdict"], "reject")
         self.assertIn("search", h["simplify_reason"])
+        self.assertIn("in-scope", h["simplify_reason"])
         self.assertNotIn("measurably-worse", h["simplify_reason"])
         self.assertIsNone(h.get("simplify_noise_cases"))
         # 判定に使った帯だけを、使った門の名前で残す(confirm 側の帯は書かない)
@@ -1611,6 +1612,78 @@ class TestGrowLoop(ScriptedCase):
         self.assertEqual(_kept_cases(gap, 0, 10),
                          {"kept_cases_next": None, "kept_cases_mean": 2.0})
 
+    def test_the_challenger_is_chosen_on_the_cases_its_move_can_touch(self):
+        # 9 走 48 世代の実測: 挑戦者の search 差と confirm 差の相関は r=0.06(外れ値を除いて
+        # 0.17、search が実際に動いた 29 本で 0.20・符号一致 41%)。クラス単位の手を 38 問
+        # 全体の平均で順位付けていたので、順位を決めていたのは触れないクラスの揺れだった。
+        from gama.grow import scoped_cases, _challenger_key
+        cases = _cases(2, "qa", "qa") + _cases(2, "research", "re")
+        champ = Measurement(score=0.5, success_rate=0.5, latency_s=1.0, n=4, cases=4,
+                            per_case={"qa1": 0.0, "qa2": 0.0, "re1": 1.0, "re2": 1.0})
+        # qa を 1 問取り返し、research は測り直しの揺れで 1 問落とした候補
+        cand = Measurement(score=0.5, success_rate=0.5, latency_s=1.0, n=4, cases=4,
+                           per_case={"qa1": 1.0, "qa2": 0.0, "re1": 0.0, "re2": 1.0})
+        self.assertEqual(scoped_cases(champ, cand, cases, "qa"), 1.0)
+        self.assertEqual(scoped_cases(champ, cand, cases, "research"), -1.0)
+        # scope が無い手は全体で見る(差し引き 0)
+        self.assertEqual(scoped_cases(champ, cand, cases, None), 0.0)
+        # 並び順の第一項が scoped に替わる: 全体の点が同じでも、触れるクラスで勝つ方が先
+        a = Candidate("route:qa->b", "route", {"kwargs": {"backends": {}, "routing_table": {}}})
+        b = Candidate("route:research->b", "route",
+                      {"kwargs": {"backends": {}, "routing_table": {}}})
+        self.assertLess(_challenger_key(a, cand, scoped=1.0),
+                        _challenger_key(b, cand, scoped=-1.0))
+        # scoped を渡さなければ従来どおり全体の点で並ぶ
+        worse = Measurement(score=0.25, success_rate=0.25, latency_s=1.0, n=4, cases=4)
+        self.assertLess(_challenger_key(a, cand), _challenger_key(b, worse))
+        # 比べる case が無い scope は None(「差ゼロ」と混ぜない)。並びは全体の点に戻る
+        self.assertIsNone(scoped_cases(champ, cand, cases, "content"))
+        self.assertEqual(_challenger_key(a, cand, scoped=None), _challenger_key(a, cand))
+        # scope の中で測れなかった case がある候補は後ろ(絞った差はエラー case を外すので、
+        # そのままだと「そのクラスの難しい case が全部エラー」の候補が首位に立てる)
+        from gama.grow import errors_in_scope
+        errored = Measurement(score=0.5, success_rate=0.5, latency_s=1.0, n=4, cases=4,
+                              errors=1, error_rate=0.25,
+                              per_case={"qa1": 1.0, "qa2": 0.0, "re1": 1.0, "re2": 1.0},
+                              error_cases=frozenset({"qa2"}))
+        self.assertEqual(errors_in_scope(errored, cases, "qa"), 1)
+        self.assertEqual(errors_in_scope(errored, cases, "research"), 0)
+        self.assertGreater(_challenger_key(a, errored, scoped=2.0, broken=True),
+                           _challenger_key(b, cand, scoped=0.5))
+        # scope の外のエラーは順位を落とさない
+        self.assertLess(_challenger_key(a, errored, scoped=2.0, broken=False),
+                        _challenger_key(b, cand, scoped=0.5))
+        # エラーになった case は差の計算から外れる(負けとして数えない)
+        self.assertEqual(scoped_cases(champ, errored, cases, "qa"), 1.0)
+        # 合計で比べる: 大きいクラスの +2 問は、小さいクラスの +1 問より先(門は絶対量で見る)
+        big = _cases(10, "qa", "qa")
+        champ_big = Measurement(score=0.0, success_rate=0.0, latency_s=1.0, n=10, cases=10,
+                                per_case={c.case_id: 0.0 for c in big})
+        cand_big = Measurement(score=0.2, success_rate=0.2, latency_s=1.0, n=10, cases=10,
+                               per_case={c.case_id: (1.0 if i < 2 else 0.0)
+                                         for i, c in enumerate(big)})
+        self.assertEqual(scoped_cases(champ_big, cand_big, big, "qa"), 2.0)
+        self.assertLess(_challenger_key(a, cand_big, scoped=2.0),
+                        _challenger_key(b, cand, scoped=1.0))
+
+    def test_the_challenge_gate_measures_the_same_cases_the_selection_did(self):
+        # 選抜と門が別の量だと、絞った差で最良の候補を選んでおいて全体の点で落とす、という
+        # 世代の空費が起きる。帯の大きさは同じ(1 問ぶん)で、変えたのは測る case の方。
+        from gama.grow import scoped_search_gate
+        pass_through = (True, "search-ok")
+        self.assertEqual(scoped_search_gate(0.0, pass_through)[0], True)
+        self.assertEqual(scoped_search_gate(-1.0, pass_through)[0], True)   # 帯ちょうどは通す
+        ok, why = scoped_search_gate(-1.5, pass_through)
+        self.assertFalse(ok)
+        self.assertIn("search-worse-in-scope", why)
+        self.assertIn("1 case", why)
+        # 比べる case が無ければ呼び側の従来判定に従う(fallback は必須: 既定で通すと
+        # 呼び忘れがそのまま挑戦権になる)
+        self.assertEqual(scoped_search_gate(None, (False, "search-worse(band=0.03)")),
+                         (False, "search-worse(band=0.03)"))
+        with self.assertRaises(TypeError):
+            scoped_search_gate(None)
+
     def test_the_scope_of_a_move_is_read_from_the_spec_not_from_where_it_was_minted(self):
         # scope は「鋳造したときの task_type」ではなく、champion と候補の spec を突き合わせて
         # 「通る中身が変わったクラス」から決める。前提を構成で固定すると、複数クラスに効く手が
@@ -1661,6 +1734,8 @@ class TestGrowLoop(ScriptedCase):
         self.assertLessEqual(h["paired_wins_in_scope"] + h["paired_losses_in_scope"],
                              4 if h["scope"] else 8)
         self.assertIsNotNone(h["paired_p_in_scope"])
+        # どちらの門が判定したかも残る(帯は同じ大きさで、測る case が違う)
+        self.assertEqual(h["search_gate"], "scope" if h["scope"] else "score")
         # 絞った伸びは、そのクラスの case の点差の合計(scripted は 0/1 なので勝敗の差)
         self.assertAlmostEqual(h["gain_cases_in_scope"],
                                h["paired_wins_in_scope"] - h["paired_losses_in_scope"],
