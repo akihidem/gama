@@ -527,6 +527,13 @@ replay: 4, 4, 4, 3, 0, 0, the zeros because the fifteen one-step designs are all
 and the ledger separates `candidates` (listed) from `new_candidates` (measured) and records whether
 the challenger was new or came from the archive.
 
+**The recipe named the wrong code.** The ledger stamps the git commit so that two runs under the
+same conditions can be told apart when the judging changed between them. It read `HEAD` at write
+time. Run W's seed row says `e7e5e63`; its recipe says `ffdb5bf`, a commit that landed while the
+run was still measuring and contributed nothing to its numbers. Run X was worse: it imported
+`HEAD` plus an uncommitted edit, and the stamp said `HEAD`. The stamp is taken once per run now,
+and it carries `dirty`, whether the package directory differed from the commit at that moment.
+
 ## Recipes — grow it together 🌱
 `recipes/` is a community library: each recipe is a `config.json` (a combination) +
 `recipe.md` (the models, the hardware, the `gama bench` numbers). Found a small-model combo

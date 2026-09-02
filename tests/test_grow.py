@@ -746,6 +746,55 @@ class TestGrowLoop(ScriptedCase):
         self.assertEqual(seed["code"]["version"], stamp["version"])
         self.assertEqual(res["params"]["code"], stamp)
 
+    def test_the_stamp_is_taken_once_so_the_recipe_names_the_code_that_ran(self):
+        # Run W: the seed row said e7e5e63, the recipe said ffdb5bf. Commits landed while it
+        # ran and the final row re-read HEAD. The process was running the tree it imported at
+        # the start; the later SHA contributed nothing to the numbers.
+        import unittest.mock as mock
+        grow_mod = sys.modules["gama.grow"]      # `from gama import grow` is the function
+        stamps = iter([{"version": "v", "commit": "start00", "dirty": False},
+                       {"version": "v", "commit": "later00", "dirty": False}])
+        Scripted.WINS = {"a": set()}
+        events = []
+        with mock.patch.object(grow_mod, "code_stamp", side_effect=lambda: next(stamps)) as cs:
+            res = self._grow({"a": _lane("a")}, generations=2, width=1,
+                             on_event=events.append)
+        seed = [e for e in events if e["event"] == "seed"][0]
+        self.assertEqual(cs.call_count, 1)
+        self.assertEqual(seed["code"]["commit"], "start00")
+        self.assertEqual(res["params"]["code"], seed["code"])
+
+    def test_the_stamp_says_when_the_tree_is_not_the_commit(self):
+        # Run X imported HEAD ffdb5bf plus an uncommitted grow.py and its stamp said ffdb5bf.
+        # The SHA alone cannot say "this is not all of it"; `dirty` can.
+        import shutil
+        import subprocess
+        if shutil.which("git") is None:
+            self.skipTest("git not available")
+        with tempfile.TemporaryDirectory() as d:
+            def git(*args):
+                return subprocess.run(["git", "-C", d, *args], capture_output=True, text=True,
+                                      check=True)
+            git("init", "-q")
+            git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty",
+                "-m", "seed")
+            Path(d, "mod.py").write_text("x = 1\n")
+            git("add", "mod.py")
+            git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "one")
+            clean = code_stamp(where=Path(d))
+            self.assertIsInstance(clean["commit"], str)
+            self.assertIs(clean["dirty"], False)
+            Path(d, "mod.py").write_text("x = 2\n")
+            self.assertIs(code_stamp(where=Path(d))["dirty"], True)
+            self.assertEqual(code_stamp(where=Path(d))["commit"], clean["commit"])
+            git("checkout", "-q", "--", "mod.py")
+            Path(d, "new.py").write_text("y = 1\n")            # untracked counts too
+            self.assertIs(code_stamp(where=Path(d))["dirty"], True)
+        # Not a checkout at all: nothing is claimed, and nothing is invented.
+        with tempfile.TemporaryDirectory() as d:
+            bare = code_stamp(where=Path(d))
+            self.assertEqual((bare["commit"], bare["dirty"]), (None, None))
+
     def test_margin_floor_defaults_to_one_confirm_case(self):
         Scripted.WINS = {"a": set()}
         res = self._grow({"a": _lane("a")}, generations=1, width=1, min_margin=None)

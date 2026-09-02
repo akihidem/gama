@@ -799,28 +799,46 @@ def promote_gate(champion_search: float, challenger_search: float,
 _COMPOSITES = ("tool", "ensemble", "meshflow", "trinity", "abmcts")
 
 
-def code_stamp() -> dict:
+def code_stamp(where: Optional[Path] = None) -> dict:
     """どのコードがこの数字を出したかを台帳に残すための刻印。
 
     この loop は稼働しながら**判定そのもの**を何度も変えてきた(探索の巡回・ensemble の集約・
     削減の門・その許容幅)。台帳に走行条件(suites/ratio/repeats)しか無いと、同じ条件で取った
     はずの数字が実は別の門で出ていた、という比較を後から検出できない。checkout から動いている
     ときは git の短縮 SHA を、そうでなければ version だけを残す(取れないこと自体は異常でない)。
+
+    SHA だけでは足りなかった。run X(2026-08-30)は HEAD ffdb5bf の上に未コミットの grow.py を
+    載せた tree を import して走り、刻印は ffdb5bf と言った。数字を出したのは HEAD でなく tree
+    なので、package dir に HEAD と違う物があるかを `dirty` として並べて残す(True は「SHA が
+    全部ではない」の意味。None は git で確かめられなかった)。見るのは `where` の配下だけで、
+    実走では package dir: README や tests の編集は数字を変えない。未追跡のファイルも数える。
+    import されうる新しい module は commit に無いし、どれが読まれるかをここで知る手は無いので、
+    `dirty` は「振る舞いが違う」でなく「commit と違う」を言う。
+    `where` はテストが自前の repo を指すためのもの。repo root を渡せば root 配下全部を見る。
     """
     import subprocess
 
-    sha = None
+    where = Path(__file__).resolve().parent if where is None else Path(where)
+    sha, dirty = None, None
     try:
-        proc = subprocess.run(["git", "-C", str(Path(__file__).resolve().parent),
-                               "rev-parse", "--short", "HEAD"],
+        proc = subprocess.run(["git", "-C", str(where), "rev-parse", "--short", "HEAD"],
                               capture_output=True, text=True, timeout=5)
         if proc.returncode == 0:
             sha = proc.stdout.strip() or None
     except Exception:      # git が無い / インストール済みパッケージ / 何であれ致命ではない
         sha = None
+    if sha:
+        # 取れた SHA は status が転んでも手放さない(dirty だけ None に残る)。
+        try:
+            proc = subprocess.run(["git", "-C", str(where), "status", "--porcelain", "--", "."],
+                                  capture_output=True, text=True, timeout=5)
+            if proc.returncode == 0:
+                dirty = bool(proc.stdout.strip())
+        except Exception:
+            dirty = None
     from . import __version__
 
-    return {"version": __version__, "commit": sha}
+    return {"version": __version__, "commit": sha, "dirty": dirty}
 
 
 def _structure_size(spec: dict) -> int:
@@ -1369,6 +1387,10 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
     # **走り終わってから**分かるのでは遅いので、入口で粗さを申告する。
     coarse = one_case > 0.1
 
+    # 刻印は走行につき 1 回。run W は seed 行に e7e5e63、recipe に ffdb5bf と書いた:
+    # 走行中に commit が進み、終わりの行が書かれる時に HEAD を読み直したから。プロセスが
+    # 動かしているのは最初に import した tree で、途中の commit はこの数字に何も寄与していない。
+    stamp = code_stamp()
     resume = load_checkpoint(resume_from) if resume_from else None
     if resume_from:
         before = _ledger_splits(resume_from)
@@ -1476,7 +1498,7 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
           # 台帳をイベントログとして読む人が、復元後の実体を row だけで読めるようにする
           # (global state を覗きに行かないと分からない、という形にしない)。
           "served": served_map(), "identity_blind": resumed_blind,
-          "code": code_stamp(),
+          "code": stamp,
           "margin_floor": round(margin_floor, 4),
           "margin_floor_source": "auto(one confirm case)" if min_margin is None else "explicit",
           "margin_floor_coarse": coarse,
@@ -1815,7 +1837,7 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
                    "min_margin_source": "auto(one confirm case)" if min_margin is None
                                         else "explicit",
                    "ensemble_strategy": ensemble_strategy,
-                   "max_paired_p": max_paired_p, "code": code_stamp()},
+                   "max_paired_p": max_paired_p, "code": stamp},
         # この走行が実際に測った相手。空なら同一性を名乗れない backend(echo 等)で、
         # 「確認できなかった」ことがそのまま読める(黙って保証したことにしない)。
         "served": served_map(),

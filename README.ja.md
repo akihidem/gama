@@ -448,6 +448,13 @@ research の prefill は gen2、巡回 1 つ後ろに並ぶ。この段落は最
 15 本を測り切ったから）。台帳は `candidates`（並んだ数）と `new_candidates`（測った数）を分け、
 挑戦者が新顔か archive から来たかを残す。
 
+**recipe が違うコードの名を書いていた。** 台帳は git の commit を刻印する。判定が変わった
+2 走を、同じ走行条件のまま見分けるためのもの。それを書く時点で `HEAD` を読んでいた。run W の
+seed 行は `e7e5e63`、recipe は `ffdb5bf`。後者は走行が測定中に積まれた commit で、数字には
+何も寄与していない。run X はもっと悪く、`HEAD` に未コミットの編集を載せた tree を import して、
+刻印は `HEAD` と言った。刻印は走行につき 1 回になり、その時点で package dir が commit と
+違っていたかを `dirty` として並べて残す。
+
 ## レシピ ── みなで育てる 🌱
 `recipes/` はコミュニティ・ライブラリ。1 レシピ = `config.json`（組み合わせ）＋ `recipe.md`
 （モデル群・ハード・`gama bench` の数値）。あなたの箱で大きいモデルに並ぶ小型の組み合わせを
