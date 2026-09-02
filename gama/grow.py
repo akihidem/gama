@@ -865,7 +865,7 @@ def claimed_gain_cases(history: list, n_confirm: Optional[int]) -> Optional[floa
     あって手ごとの差ではないから。読めない行(古い台帳・測っていない世代)は 0 ではなく None を返す:
     「主張が無い」と「主張が読めない」を同じ数にすると、後者が「検定力あり」に化ける。
     """
-    if not n_confirm:
+    if not isinstance(n_confirm, int) or isinstance(n_confirm, bool) or n_confirm <= 0:
         return None
     total, seen = 0.0, False
     for h in history or []:
@@ -873,15 +873,21 @@ def claimed_gain_cases(history: list, n_confirm: Optional[int]) -> Optional[floa
             continue
         seen = True
         if h.get("simplify_verdict") == "promote":
-            a, b = h.get("simplify_confirm"), h.get("champion_confirm")
-            if not isinstance(a, (int, float)) or not isinstance(b, (int, float)):
+            a, b = _num(h.get("simplify_confirm")), _num(h.get("champion_confirm"))
+            if a is None or b is None:
                 return None
             total += (a - b) * n_confirm
-        elif isinstance(h.get("gain_cases"), (int, float)):
-            total += h["gain_cases"]
+        elif _num(h.get("gain_cases")) is not None:
+            total += _num(h["gain_cases"])
         else:
             return None
     return round(total, 2) if seen else 0.0
+
+
+def _num(v) -> Optional[float]:
+    """JSON 由来の値を数として読む。bool は数ではない(台帳の true が 1 問に化ける)。"""
+    return (float(v) if isinstance(v, (int, float)) and not isinstance(v, bool)
+            and math.isfinite(v) else None)
 
 
 def sealed_verdict(sealed: Optional[dict], claimed_gain_cases: Optional[float] = None,
@@ -952,14 +958,15 @@ def sealed_verdict(sealed: Optional[dict], claimed_gain_cases: Optional[float] =
     # 「完全に転移した時に見えるはずの量」。帯(1 問)に届かなければ、この走行は sealed に何も
     # 言わせられない設計だった。
     expected = power = None
-    claimed = (float(claimed_gain_cases)
-               if isinstance(claimed_gain_cases, (int, float))
-               and not isinstance(claimed_gain_cases, bool) and math.isfinite(claimed_gain_cases)
-               else None)
-    if claimed is not None and isinstance(confirm_cases, int) and confirm_cases > 0:
-        expected = round(claimed * s_n / confirm_cases, 2)
+    claimed = _num(claimed_gain_cases)
+    if claimed is not None and isinstance(confirm_cases, int) \
+            and not isinstance(confirm_cases, bool) and confirm_cases > 0:
+        # 判定は丸める前の値で。表示用に 2 桁へ丸めた値で分岐すると 1.004 問が 1.00 になって
+        # 「検定力なし」に化ける(この repo が門で一度踏んだ罠と同じ形)。
+        exact = claimed * s_n / confirm_cases
+        expected = round(exact, 2)
         power = ("nothing-claimed" if claimed <= 0
-                 else "underpowered" if expected <= 1.0 else "powered")
+                 else "underpowered" if exact <= 1.0 else "powered")
     if delta > band:
         v, note = "improved", "the held-out split agrees the champion is better than the seed"
     elif delta < -band:

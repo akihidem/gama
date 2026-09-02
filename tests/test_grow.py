@@ -1445,6 +1445,15 @@ class TestSealedVerdict(unittest.TestCase):
             self.assertIsNone(sealed_verdict(self._s(0.85, 0.85), bad, 56)["power"])
         self.assertIsNone(sealed_verdict(self._s(0.85, 0.85), 2.0, 0)["power"])
 
+    def test_power_is_decided_on_the_exact_expectation_not_the_rounded_one(self):
+        # 1.004 sealed cases expected (rounds to 1.00) is still more than the band
+        v = sealed_verdict(self._s(0.85, 0.85, n=32), claimed_gain_cases=2.0, confirm_cases=63)
+        self.assertGreater(2.0 * 32 / 63, 1.0)
+        self.assertEqual(v["expected_cases"], 1.02)
+        self.assertEqual(v["power"], "powered")
+        v = sealed_verdict(self._s(0.85, 0.85, n=32), claimed_gain_cases=2.0, confirm_cases=64)
+        self.assertEqual(v["power"], "underpowered")       # exactly one case is inside the band
+
     def test_power_does_not_override_a_real_verdict(self):
         v = sealed_verdict(self._s(0.6375, 0.8542, n=20), claimed_gain_cases=0.5, confirm_cases=40)
         self.assertEqual(v["verdict"], "improved")           # sealed moved; that stands
@@ -1481,6 +1490,14 @@ class TestClaimedGain(unittest.TestCase):
             [self._gen(0, True, simplify_verdict="promote")], 56))
         self.assertIsNone(claimed_gain_cases([self._gen(0, True, gain_cases=1.0)], 0))
         self.assertIsNone(claimed_gain_cases([self._gen(0, True, gain_cases=1.0)], None))
+
+    def test_booleans_and_non_finite_values_are_not_numbers(self):
+        # a ledger's true/false must not be read as 1/0 cases (bool is an int in Python)
+        self.assertIsNone(claimed_gain_cases([self._gen(0, True, gain_cases=True)], 56))
+        self.assertIsNone(claimed_gain_cases([self._gen(0, True, gain_cases=float("nan"))], 56))
+        self.assertIsNone(claimed_gain_cases(
+            [self._gen(0, True, simplify_verdict="promote", simplify_confirm=True)], 56))
+        self.assertIsNone(claimed_gain_cases([self._gen(0, True, gain_cases=1.0)], True))
 
 
 def _lane_spec(tag):
