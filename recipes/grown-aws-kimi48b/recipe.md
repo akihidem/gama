@@ -237,14 +237,25 @@ champion.
   cases apart with every lane at temperature 0. The ledger stores scores, not per-case outcomes,
   and cannot separate the two. The per-call trace (`fe34706`) and `gama trace --diff <a> <b>`
   answer it directly by naming the cases that moved; this run predates the trace and has none.
-- **The strongest promotion of the run was the least trustworthy.** Generation 3 took
-  `meshflow:integration` on +2.5 confirm cases at 3 wins to 0 — the only promotion here that
-  clears the floor with room. The champion's re-measurement at generation 4 came back 2.5 cases
-  lower, which is the promoted gain evaporating on the very next measurement. That re-measurement
-  was taken in the generation the backend was dying in, so it is confounded rather than damning;
-  it is recorded here because a gain that only exists in the measurement that selected it is the
-  failure mode this loop is built to catch, and the reading was available three hours before the
-  sealed split would have said anything.
+- **The strongest promotion of the run is the one with the least evidence behind it.** Generation
+  3 took `meshflow:integration` on +2.5 confirm cases at 3 wins to 0 — the only promotion here
+  that clears the floor with room. Generation 4 re-measured the champion 2.5 cases away from
+  where generation 3 left it (the gate it printed, 2.5 cases, is `drift × n_confirm`, and drift
+  is an absolute difference: the generation row that would have carried the direction was never
+  written, so *which way* it moved is not in the ledger). It moved in the generation the backend
+  was dying in, so the reading is confounded either way. What the run does establish is that a
+  promotion's re-measurement is available one generation later, three hours before the sealed
+  split says anything.
+
+  Across every ledger on this box that has a generation after a promotion (7 promotions in runs
+  R, T, V, W and X — `gama-runs/promotion-survival.py`), the promoted gain averages 1.39 cases
+  and 1.20 of it is still there when the same design is measured again in the next generation
+  (87%). Averaged over *every* re-measurement while that design stayed champion it is 1.08 cases
+  (78%), so the number keeps sliding toward the seed the longer a champion is watched — which is
+  why the shipped claim is taken from `confirm_claim`'s average of unselected measurements rather
+  than from the gate's own reading. Individual promotions move by a case in both directions (run
+  X's generation 2 kept none of its +1.0; run W's generation 1 came back half a case higher than
+  it was promoted on), which is the size of the floor itself and the reason the floor exists.
 - **`crux` saturated in turn.** From generation 2 on the run skipped `code_implementation`
   (0.5 cases of headroom) and `qa` (0.25) for additive mutations: with a tool lane in place the
   suite written to un-saturate this box is itself out of room in those classes. `--suite edge`
