@@ -3121,6 +3121,55 @@ class TestSaturatedClasses(ScriptedCase):
         self.assertEqual(gen0["challenger_search"], gen0["champion_search"])   # 同点で挑戦
         self.assertEqual(gen0["reason"], "promote")
 
+    def test_the_new_diagnoses_survive_a_resume(self):
+        # 「checkpoint から落ちて再開後に静かに死ぬ」は、この repo で 3 回作った欠陥の形。
+        # 症状は不在(何も起きない)なので、挙動のテストでは映らない。診断が 3 種類になった
+        # ところで、切断と前置きの 2 つが再開をまたぐことを固定する。
+        class Sick(ModelBackend):
+            available = True
+
+            def __init__(self, tag="x"):
+                self.tag, self.last_usage = tag, None
+                self.last_finish_reason = None
+
+            def complete(self, prompt, tier, **kw):
+                self.last_finish_reason = "length"        # 切断の症状
+                return "Sure! Here's the answer: BAD"     # 前置きの症状(かつ不正解)
+
+        had = backends_mod._BACKENDS.get("sick")
+        backends_mod._BACKENDS["sick"] = Sick
+        try:
+            pool = {"x": {"backend": "sick"}, "y": {"backend": "sick"}}
+            with tempfile.TemporaryDirectory() as d:
+                led = Path(d) / "run.jsonl"
+                first = grow(pool, cases=_cases(8), generations=1, width=2,
+                             ledger_path=str(led), min_margin=0.05)
+                ck = load_checkpoint(led)
+                seen = []
+                grow(pool, cases=_cases(8), generations=2, width=2, resume_from=str(led),
+                     min_margin=0.05, on_event=lambda r: seen.append(r))
+        finally:
+            if had is None:
+                backends_mod._BACKENDS.pop("sick", None)
+            else:
+                backends_mod._BACKENDS["sick"] = had
+        self.assertTrue(first["history"][0]["cut_symptoms"], "the cut symptom was never seen")
+        self.assertTrue(first["history"][0]["preamble_symptoms"])
+        # 本命は checkpoint 側。世代行だけ見ると、confirm は毎世代測り直されるので
+        # **checkpoint が落としていても通ってしまう**(症状が復元されたのか、その場で
+        # 測り直されたのかを区別できない)。復元される側 = search の状態を直接見る。
+        for side in ("champion_search", "champion_confirm"):
+            self.assertTrue(ck[side].get("cut_by_class"),
+                            f"the checkpoint dropped the cut diagnosis on {side}")
+            self.assertTrue(ck[side].get("preamble_by_class"),
+                            f"the checkpoint dropped the preamble diagnosis on {side}")
+        after = [r for r in seen if r["event"] == "generation"]
+        self.assertTrue(after, "the resumed run ran no generation")
+        self.assertTrue(after[0]["cut_symptoms"],
+                        "the cut diagnosis was dropped by the checkpoint")
+        self.assertTrue(after[0]["preamble_symptoms"],
+                        "the preamble diagnosis was dropped by the checkpoint")
+
     def test_saturation_still_applies_after_a_resume(self):
         # per_case を checkpoint から落としていたせいで、再開後に静かに死ぬ機能を 3 回作った。
         # 3 回目は「見せる形」と「続きを走らせる形」を分けて直したので、そこを固定する。
