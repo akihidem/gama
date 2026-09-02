@@ -1260,6 +1260,69 @@ class TestGrowLoop(ScriptedCase):
         self.assertEqual(res["champion"]["kwargs"]["routing_table"], {})
         self.assertEqual(res["history"][0]["structure_size"], 0)
 
+    def test_a_removal_that_loses_search_is_refused_before_its_confirm_measurement(self):
+        # 過去 9 走の削減 14 本: search で帯を超えて負けた 13 本は confirm でも全部「明確に
+        # 悪い」で却下されており、判定は 1 つも変わらない。唯一の昇格(run S gen4)は
+        # サーバが死んで両方 0.0 になった走行のもので、この門はそれを**測る前に**落とす。
+        # 節約は 1 世代あたり confirm 測定 1 本(この箱の実走で約 20 分)。
+        Scripted.WINS = {"a": {f"qa{i}" for i in range(1, 9)}, "b": set()}
+        pool = {"a": _lane("a"), "b": _lane("b")}
+        champ = seed_champion(pool, "a")
+        # 剥がすと素の `b`(全問外す)に戻るレーン: 削減は search で大きく負ける
+        champ["kwargs"]["backends"]["ens(b+b)"] = {
+            "backend": "ensemble", "_grow_base": "b",
+            "kwargs": {"members": [_lane("a"), _lane("a")], "strategy": "first"}}
+        champ["kwargs"]["routing_table"]["qa"] = "ens(b+b)"
+        with tempfile.TemporaryDirectory() as d:
+            led = Path(d) / "run.jsonl"
+            res = grow(pool, cases=_cases(8), seed_spec=canonical(champ), generations=1,
+                       width=4, patience=3, min_margin=0.05, ledger_path=str(led))
+            trace = [json.loads(ln) for ln in
+                     (led.with_suffix(".trace.jsonl")).read_text(encoding="utf-8").splitlines()]
+            ledger_rows = [json.loads(ln) for ln in
+                           led.read_text(encoding="utf-8").splitlines()]
+        h = res["history"][0]
+        self.assertEqual(h.get("simplify_challenger"), "simplify:qa->b")
+        self.assertIsNone(h["simplify_confirm"], "the confirm measurement was spent anyway")
+        self.assertEqual(h["simplify_verdict"], "reject")
+        self.assertIn("search", h["simplify_reason"])
+        self.assertNotIn("measurably-worse", h["simplify_reason"])
+        self.assertIsNone(h.get("simplify_noise_cases"))
+        # 判定に使った帯だけを、使った門の名前で残す(confirm 側の帯は書かない)
+        self.assertIn("simplify_search_band", h)
+        self.assertNotIn("simplify_band", h)
+        self.assertEqual([r for r in trace if r.get("role") == "simplifier"], [],
+                         "a removal refused on search was still measured on confirm")
+        # search での決着はチャンピオンの点に対するものなので、永久追放(challenged)でなく
+        # 昇格で空になる側(settled)に入る。逆にすると、後で通りうる削減を閉じてしまう。
+        ck = [r for r in ledger_rows if r["event"] == "checkpoint"][-1]
+        self.assertTrue(ck["settled"], "the refused removal was not recorded as settled")
+        self.assertNotIn(ck["settled"][0], ck["challenged"])
+
+    def test_a_removal_inside_the_search_band_still_gets_its_confirm_measurement(self):
+        # 前段の門は「帯を超えて負けている」削減だけを落とす。帯の内側(同点・わずかに下)は
+        # 削減の本来の門(confirm で悪くなっていないか)に進ませる ── そこが政策の境界で、
+        # ここを緩めると「search で少し負けた」だけで構造が守られてしまう。
+        Scripted.WINS = {"a": {f"qa{i}" for i in range(1, 9)}}
+        pool = {"a": _lane("a")}
+        champ = seed_champion(pool, "a")
+        # 同じ scripted を包んだだけの tool レーン: 剥がしても search は 1 問も動かない
+        champ["kwargs"]["backends"]["tool(a)"] = {
+            "backend": "tool", "_grow_base": "a", "kwargs": {"inner": _lane("a")}}
+        champ["kwargs"]["routing_table"]["qa"] = "tool(a)"
+        with tempfile.TemporaryDirectory() as d:
+            led = Path(d) / "run.jsonl"
+            res = grow(pool, cases=_cases(8), seed_spec=canonical(champ), generations=1,
+                       width=4, patience=3, min_margin=0.05, ledger_path=str(led))
+            trace = [json.loads(ln) for ln in
+                     (led.with_suffix(".trace.jsonl")).read_text(encoding="utf-8").splitlines()]
+        h = res["history"][0]
+        self.assertEqual(h.get("simplify_challenger"), "simplify:qa->a")
+        self.assertIsNotNone(h["simplify_confirm"],
+                             "a removal inside the search band was refused without measuring")
+        self.assertIn("simplify_band", h)
+        self.assertTrue([r for r in trace if r.get("role") == "simplifier"])
+
     def test_a_shrink_counts_as_a_promotion(self):
         # The champion changed; a ledger that says "0 promotions" because the additive gate
         # said reject is a record that disagrees with what happened.

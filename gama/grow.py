@@ -2270,8 +2270,9 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
             # 挑戦者 1 本だけでなく、この世代に search で測った**全候補**を見る: 次点以下も
             # 同じチャンピオンの同じ点に負けているので、同じ結論が今この場で出せる。
             # band の内側の候補は入れない(最高点が confirm で落ちた次の世代に、archive の点の
-            # まま挑戦者になれる踏み石)。**削る候補も入れない**(削減の門は search を見ないので、
-            # search で負けていても confirm で「悪くなっていない」を示せば通る)。
+            # まま挑戦者になれる踏み石)。削る候補はここでは入れない: 削減は下の枝で
+            # **その世代に選ばれた 1 本だけ**を同じ search の門にかけ、落ちたらそこで settled に
+            # 入れる(選ばれなかった削減は測っていないので、決着していない)。
             for c, m in additive:
                 if not search_gate(champ_search.score, m.score, search_band)[0]:
                     settled.add(spec_hash(c.spec))
@@ -2340,25 +2341,52 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
                        and spec_hash(c.spec) not in challenged]
             if shrinks:
                 cand, cand_search = min(shrinks, key=lambda t: (-t[1].score, t[0].label))
-                cand_confirm = measure(cand.spec, splits["confirm"], tier, repeats, unit_cost,
-                                       "simplifier", trace=trace)
-                _guard_measurement(cand_confirm, f"simplification {cand.label}")
                 band = shrink_band(margin_floor, drift)
-                s_ok, s_reason = simplify_gate(champ_confirm_now.score, cand_confirm.score,
-                                               band, _structure_size(champion),
-                                               _structure_size(cand.spec))
-                challenged.add(spec_hash(cand.spec))
                 row["simplify_challenger"] = cand.label
-                row["simplify_confirm"] = cand_confirm.score
-                # 削減も同じ門で決まる。片方だけ記録すると診断が additive に偏る(codex 指摘)。
-                row["simplify_error_rate"] = round(cand_confirm.error_rate, 6)
                 row["simplify_search_error_rate"] = round(cand_search.error_rate, 6)
-                noise = remeasure_sd(champ_confirm_now, cand_confirm)
-                row["simplify_noise_cases"] = (None if noise is None
-                                               else round(noise * n_confirm, 2))
-                row["simplify_verdict"] = "promote" if s_ok else "reject"
-                row["simplify_reason"] = s_reason
-                row["simplify_band"] = round(band, 4)
+                # 判定に使った帯だけを、使った門の名前で残す。confirm を測らずに search で
+                # 落とした行に confirm 側の帯(shrink_band)を書くと、台帳を読む側は
+                # 「この帯で悪いと判定された」と読む(codex 指摘)。
+                row["simplify_search_band"] = round(search_band, 4)
+                # 追加側と同じ**コストの門**を先に通す: search で帯を超えて負けている削減に
+                # confirm(search の 2 倍の問数)を焚かない。過去 9 走の削減 14 本を並べると、
+                # 帯を超えて負けた 13 本は全部 confirm でも「明確に悪い」で却下されており、
+                # 判定は 1 つも変わらない(gama-runs の台帳から実測)。唯一の昇格は run S の
+                # 「サーバが死んで両方 0.0」の 1 本で、この門はそれを**測る前に**落とす。
+                # 門の非対称(足す側は良くなること・削る側は悪くならないこと)は confirm の
+                # 判定側の話で、そこへ進むかどうかの費用判断は同じでよい。理屈の上では
+                # 「search で負けたが confirm では悪くない」削減を測らずに落としうる。それを
+                # 承知で入れている: (1) 追加側は同じ前提でこの門を使っている、(2) 実測 14 本で
+                # 判定は 1 つも変わらない、(3) 落ちた先は settled で、チャンピオンが替われば
+                # 空になる —— 永久追放ではなく「この champion の点に対しては決着」。
+                s_ok, s_reason = search_gate(champ_search.score, cand_search.score, search_band)
+                if not s_ok:
+                    # ここは **settled**(この チャンピオンの search 点に対する決着)であって
+                    # challenged(confirm で決着)ではない。search の点はチャンピオンが替われば
+                    # 基準ごと変わるので、昇格のたびに空にする側へ入れる。追加側の search 落ち
+                    # と同じ扱い(codex 指摘: 永久追放にすると、後で通りうる削減を閉じる)。
+                    settled.add(spec_hash(cand.spec))
+                    row["simplify_confirm"] = None
+                    row["simplify_verdict"] = "reject"
+                    row["simplify_reason"] = s_reason
+                    cand_confirm = None
+                else:
+                    cand_confirm = measure(cand.spec, splits["confirm"], tier, repeats, unit_cost,
+                                           "simplifier", trace=trace)
+                    _guard_measurement(cand_confirm, f"simplification {cand.label}")
+                    s_ok, s_reason = simplify_gate(champ_confirm_now.score, cand_confirm.score,
+                                                   band, _structure_size(champion),
+                                                   _structure_size(cand.spec))
+                    challenged.add(spec_hash(cand.spec))
+                    row["simplify_confirm"] = cand_confirm.score
+                    # 削減も同じ門で決まる。片方だけ記録すると診断が additive に偏る(codex 指摘)。
+                    row["simplify_error_rate"] = round(cand_confirm.error_rate, 6)
+                    noise = remeasure_sd(champ_confirm_now, cand_confirm)
+                    row["simplify_noise_cases"] = (None if noise is None
+                                                   else round(noise * n_confirm, 2))
+                    row["simplify_verdict"] = "promote" if s_ok else "reject"
+                    row["simplify_reason"] = s_reason
+                    row["simplify_band"] = round(band, 4)
                 if s_ok:
                     champion, champ_search, champ_confirm = cand.spec, cand_search, cand_confirm
                     stale = 0
