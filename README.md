@@ -656,10 +656,12 @@ stone came back only when the rotation happened to land on it. The archive is th
 now. Every measured, unsettled design is listed every generation outside the width (the same
 replay: 4, 4, 4, 3, 0, 0, the zeros because the fifteen one-step designs are all measured by then),
 and the ledger separates `candidates` (listed) from `new_candidates` (measured) and records whether
-the challenger was new or came from the archive. That last field is worth reading before believing
-this paragraph: across every ledger on this box, no generation has yet taken its challenger from
-the archive. What the archive has demonstrably bought is the number of *new* designs a generation
-can afford; the stepping stone coming back is still a mechanism waiting for its first instance.
+the challenger was new or came from the archive. The first run to record that field answered the
+question the paragraph raises: generations 0 to 2 challenged new designs, and generations 3 and 4
+took `default → kimi-hot` and `ensemble:content(cold+hot)` **from the archive**, at zero extra
+calls, out of a listed pool that had grown to 11 and 12 while the width stayed at 4. Both lost on
+`confirm`, which is the mechanism working as intended: a stone that comes back for free and is
+refused costs one measurement, not a generation.
 
 **The recipe named the wrong code.** The ledger stamps the git commit so that two runs under the
 same conditions can be told apart when the judging changed between them. It read `HEAD` at write
