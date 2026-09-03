@@ -1109,6 +1109,76 @@ def promote_gate(champion_search: float, challenger_search: float,
     return True, "promote"
 
 
+def promote_gate_cases(gain_cases: Optional[float], delta_cases: float,
+                       paired: Optional[tuple[int, int, int]] = None,
+                       max_paired_p: Optional[float] = None,
+                       search_ok: tuple[bool, str] = None,
+                       unmeasured_in_scope: int = 0) -> tuple[bool, str]:
+    """``promote_gate`` と同じ 3 条件を、**その手が触れる case の問数**で判定する。
+
+    測っているものは同じ「confirm でどれだけ上に立ったか」で、変えたのは**どの case で測るか**。
+    クラス単位の手はそのクラスの case しか動かせないので、触れない case は期待値ゼロで分散だけ
+    足す。実測(run Z の 5 世代・全部この形):
+
+    | gen | 手のクラス | 門が見ていた差 | 触れるクラスでの差 |
+    |---|---|---|---|
+    | 0 | content | +0.50 問 | −0.00 問 |
+    | 1 | content | −2.62 | −0.25 |
+    | 2 | integration | +0.50 | +0.00 |
+    | 3 | (既定の差し替え) | −3.42 | −3.42 |
+    | 4 | content | −0.46 | +0.04 |
+
+    クラス単位の 4 手はどれも**自分のクラスでは何もしていない**のに、門の数字は +0.50〜−2.62 に
+    振れていた(平均の絶対値 1.50 問 → 0.07 問)。判定は 6 世代(run Z の 5 + run AA の 1)で
+    1 つも変わらないので、床を動かさずに**推定量だけ**を差し替える。
+
+    床(``delta_cases``)は運用者の ``--min-margin`` を問数へ直したもの(既定は confirm 1 問)と
+    「チャンピオン自身の測り直しの揺れ(そのクラスで)」の大きい方。床は**走行全体に対する
+    絶対量**として読む: 「この走行が何問ぶん良くなったか」が問いなので、クラスが小さくても
+    要求する量は変わらない。
+
+    ``gain_cases`` が ``None``(比べる case が無い)なら**通さない**。門は肯定形で、
+    「良くなったと証明できた」ときだけ通す(比べていない = 証明していない)。
+
+    **触れないクラスは見なくてよい**のか: ``scope`` は「champion と候補で*通る backend spec が
+    変わったクラス*」を spec の突き合わせで出したもので(``_scope_of``)、1 つに定まらなければ
+    ``None`` になって全体で判定する。だから scope が付いた手では、他のクラスは**同一の
+    backend をそのまま通る**。そこに出る差は測り直しの揺れであって手の効果ではない
+    (この不変条件はテストで固定してある: 触っていないクラスの resolved spec は一致する)。
+
+    ``unmeasured_in_scope`` は、その手が触るクラスの case のうち例外で測れなかった数。
+    1 つでもあれば通さない: 絞った差はエラーの case を外して計算するので、そのままだと
+    「そのクラスの難しい case が落ちて、残りで +1 問」が昇格になりうる(codex 指摘)。
+    旧 score 版ではエラーが 0 点として点に効いていた。エラーを負けと数えない規約
+    (``paired_gain``)は保ったまま、**穴のある証拠では認定しない**方で塞ぐ。
+    """
+    # 理由の優先順位は score 版と同じ「① 挑戦権 → ② confirm → ③ 幅 → ④ 対応のある検定」。
+    # 落ち方は常にいちばん基本的なものを名指しする(codex 指摘)。
+    if search_ok is None:
+        # 呼び忘れを「通す」に倒さない(否定形の門は fail-open へ倒れる)
+        raise ValueError("promote_gate_cases requires search_ok=(ok, reason)")
+    ok, why = search_ok
+    if not ok:
+        return False, why
+    if unmeasured_in_scope:
+        # 全部エラーで比べられない場合も、理由は「穴がある」の方が具体的
+        return False, f"unmeasured-in-scope({unmeasured_in_scope})"
+    if gain_cases is None:
+        return False, "no-comparable-cases"
+    if gain_cases <= 0:
+        return False, "confirm-not-better"
+    if gain_cases < delta_cases - SCORE_TOL:
+        return False, f"below-margin(delta={round(delta_cases, 2)} cases)"
+    if max_paired_p is not None:
+        if paired is None:
+            raise ValueError("promote_gate_cases(max_paired_p=...) requires `paired` counts")
+        w, l, _ = paired
+        pv = sign_test(w, l)
+        if pv > max_paired_p:
+            return False, f"paired-not-significant(p={pv:.3f},{w}w-{l}l)"
+    return True, "promote"
+
+
 _COMPOSITES = ("tool", "ensemble", "meshflow", "trinity", "abmcts")
 
 
@@ -2253,7 +2323,16 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
         delta = max(margin_floor, drift)
         # 飽和の閾値も δ で見る。床だけで見ると、揺れが床より大きい世代に「床は越えられるが
         # δ は越えられない」クラスが候補に残り、通りようのない測定を焚くことになる。
-        gate_cases = delta * len(splits["confirm"])
+        # 昇格の門がクラスごとの揺れで床を作るようになったので、こちらも**クラスごと**に作る:
+        # 全体の drift で切ると、触れないクラスの揺れで「まだ通りうるクラス」を提案前に
+        # 落としてしまう(codex 指摘)。
+        n_confirm_cases = len(splits["confirm"])
+        gate_cases = delta * n_confirm_cases          # scope の取れない手(既定の差し替え)用
+        floor_cases = margin_floor * n_confirm_cases
+        gate_by_class = {}
+        for c in classes:
+            d = scoped_cases(champ_confirm, champ_confirm_now, splits["confirm"], c)
+            gate_by_class[c] = max(floor_cases, abs(d) if d is not None else gate_cases)
         # 挑戦権の帯は search の分解能(1 問ぶん)。search 側はチャンピオンを測り直さないので
         # drift は取れず、床だけになる。
         search_band = 1.0 / len(splits["search"])
@@ -2263,11 +2342,14 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
         # 挑戦権が「厳密に上回ること」だった頃の算術。今の門 ①(search_gate)は同点を通すので、
         # 取り切ったクラスへの変異も confirm に伸びしろがある限り挑戦できる(run V では qa が
         # confirm に 1.25 問残しながら search 側の理由だけで 5 世代とも試されなかった)。
-        saturated = sorted(c for c in classes if c in headroom and headroom[c] < gate_cases)
+        saturated = sorted(c for c in classes
+                           if c in headroom and headroom[c] < gate_by_class.get(c, gate_cases))
         if saturated:
             emit({"event": "saturated", "gen": gen,
                   "classes": {c: round(headroom.get(c, 0.0), 2) for c in saturated},
-                  "gate_cases": round(gate_cases, 2),
+                  "gate_cases": round(max(gate_by_class.get(c, gate_cases) for c in saturated), 2),
+                  "gate_by_class": {c: round(gate_by_class.get(c, gate_cases), 2)
+                                    for c in saturated},
                   "note": "no additive mutation on these classes can be promoted: the confirm "
                           "headroom is below the gate"})
         # 飽和したクラスも propose には渡す。削る変異は「悪くならないこと」しか要求しないので、
@@ -2458,22 +2540,36 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
                                        unit_cost, "challenger", trace=trace)
                 _guard_measurement(chal_confirm, f"challenger {challenger.label}")
                 w, l, t = paired_gain(champ_confirm_now, chal_confirm)
-                # 手が触りうるクラスだけに絞った同じ数字。判定には**使わない**(門を変える前に
-                # 「過去の判定が何本変わるか」を測る、というこの repo の順序)。触れないクラスの
-                # case は期待値ゼロで分散だけ足すので、こちらの方が手の効果に近いはず。
+                # 手が触りうるクラスだけに絞った同じ数字。**判定はこちらで行う**(6 世代の
+                # 実測で判定は 1 つも変わらず、推定量の揺れだけが 1.50 問 → 0.07 問になる。
+                # 詳細は promote_gate_cases の docstring)。全体の数字も台帳に残す。
                 in_class = {c.case_id for c in splits["confirm"]
                             if challenger.scope is None or c.task_type == challenger.scope}
                 cw, cl, ct = paired_gain(champ_confirm_now, chal_confirm, only=in_class)
-                gain_in_class = sum(
-                    chal_confirm.per_case[cid] - champ_confirm_now.per_case[cid]
-                    for cid in in_class
-                    if cid in chal_confirm.per_case and cid in champ_confirm_now.per_case
-                    and cid not in chal_confirm.error_cases
-                    and cid not in champ_confirm_now.error_cases)
-                ok, reason = promote_gate(champ_search.score, chal_search.score,
-                                          champ_confirm_now.score, chal_confirm.score, delta,
-                                          paired=(w, l, t), max_paired_p=max_paired_p,
-                                          search_band=search_band)
+                gain_in_class = scoped_cases(champ_confirm_now, chal_confirm,
+                                             splits["confirm"], challenger.scope)
+                # 床も同じ単位で作る: 運用者の床(既定は confirm 1 問ぶん)と「チャンピオン自身の
+                # 測り直しの揺れ(そのクラスで)」の大きい方。全体の drift を使うと、触れない
+                # クラスの揺れで床が上下する。--min-margin は score 単位なので問数へ直す。
+                d_scope = scoped_cases(champ_confirm, champ_confirm_now,
+                                       splits["confirm"], challenger.scope)
+                # 測れない(古い checkpoint・全部エラー)ときは 0 でなく**全体の drift**を使う:
+                # 0 に丸めると床が下がって昇格が緩くなる(codex 指摘)。保守側へ倒す。
+                drift_in_class = abs(d_scope) if d_scope is not None else drift * n_confirm
+                delta_cases = max(margin_floor * n_confirm, drift_in_class)
+                # 触るクラスの中で測れなかった case の数(champion 側も挑戦者側も)。
+                # 同じ case が両方で落ちたら穴は 1 つ(足すと台帳の数字が二重に見える)
+                scope_ids = {c.case_id for c in splits["confirm"]
+                             if challenger.scope is None or c.task_type == challenger.scope}
+                unmeasured = len((set(chal_confirm.error_cases)
+                                  | set(champ_confirm_now.error_cases)) & scope_ids)
+                ok, reason = promote_gate_cases(
+                    gain_in_class, delta_cases, paired=(cw, cl, ct),
+                    max_paired_p=max_paired_p, unmeasured_in_scope=unmeasured,
+                    search_ok=scoped_search_gate(
+                        chal_scoped,
+                        fallback=search_gate(champ_search.score, chal_search.score,
+                                             search_band)))
                 challenged.add(spec_hash(challenger.spec))
                 row.update({"challenger_confirm": chal_confirm.score,
                             "challenger_error_rate": round(chal_confirm.error_rate, 6),
@@ -2493,7 +2589,11 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
                 row.update({"paired_wins": w, "paired_losses": l, "paired_ties": t,
                             "paired_p": round(sign_test(w, l), 4),
                             "scope": challenger.scope,
-                            "gain_cases_in_scope": round(gain_in_class, 2),
+                            "gain_cases_in_scope": (None if gain_in_class is None
+                                                   else round(gain_in_class, 2)),
+                            "delta_cases_in_scope": round(delta_cases, 2),
+                            "drift_cases_in_scope": round(drift_in_class, 2),
+                            "unmeasured_in_scope": unmeasured,
                             "paired_wins_in_scope": cw, "paired_losses_in_scope": cl,
                             "paired_p_in_scope": round(sign_test(cw, cl), 4)})
         row.update({"verdict": "promote" if ok else "reject", "reason": reason})

@@ -1243,6 +1243,75 @@ class TestGrowLoop(ScriptedCase):
         taken = grow({"a": _lane("a"), "b": _lane("b")}, min_margin=0.3, **opts)
         self.assertEqual(taken["promotions"], 1)
 
+    def test_the_promote_gate_decides_on_the_cases_the_move_can_touch(self):
+        # run Z の 5 世代を per-case で開くと、クラス単位の 4 手はどれも**自分のクラスでは
+        # 何もしていない**のに、門が見ていた数字は +0.50〜−2.62 問に振れていた
+        # (平均の絶対値 1.50 問 → 0.07 問)。判定は 6 世代で 1 つも変わらないので、床は
+        # 動かさず推定量だけ差し替える。
+        from gama.grow import promote_gate_cases
+        passed = (True, "search-ok")
+        ok, why = promote_gate_cases(1.0, 1.0, search_ok=passed)
+        self.assertTrue(ok, why)                       # 床ちょうどは通す
+        self.assertEqual(promote_gate_cases(0.9, 1.0, search_ok=passed)[0], False)
+        self.assertIn("below-margin(delta=1.0 cases)",
+                      promote_gate_cases(0.9, 1.0, search_ok=passed)[1])
+        self.assertEqual(promote_gate_cases(0.0, 1.0, search_ok=passed)[1], "confirm-not-better")
+        self.assertEqual(promote_gate_cases(-1.0, 1.0, search_ok=passed)[1], "confirm-not-better")
+        # 比べる case が無ければ通さない(fail-open にしない)
+        self.assertEqual(promote_gate_cases(None, 1.0, search_ok=passed),
+                         (False, "no-comparable-cases"))
+        # ① の挑戦権が落ちていれば、その理由をそのまま返す(順序は score 版と同じ)
+        self.assertEqual(promote_gate_cases(2.0, 1.0,
+                                            search_ok=(False, "search-worse-in-scope"))[1],
+                         "search-worse-in-scope")
+        # ④ の対応のある検定は要求されたときだけ、①〜③ の後に見る
+        self.assertEqual(promote_gate_cases(2.0, 1.0, paired=(1, 0, 0), max_paired_p=0.05,
+                                            search_ok=passed)[0], False)
+        with self.assertRaises(ValueError):
+            promote_gate_cases(2.0, 1.0, max_paired_p=0.05, search_ok=passed)
+        # search_ok を渡し忘れたら通さず落とす(既定で通すと呼び忘れが昇格になる)
+        with self.assertRaises(ValueError):
+            promote_gate_cases(2.0, 1.0)
+        # 触るクラスの中に測れなかった case があれば通さない(絞った差はエラーを外して
+        # 計算するので、そのままだと「難しい case が落ちて残りで +1 問」が昇格になる)
+        self.assertEqual(promote_gate_cases(2.0, 1.0, unmeasured_in_scope=1, search_ok=passed),
+                         (False, "unmeasured-in-scope(1)"))
+
+    def test_a_promotion_needs_every_case_in_its_class_measured(self):
+        # 統合側: 挑戦者がそのクラスの case で例外を出した世代は昇格しない。落とすのは
+        # confirm に入る research の 1 問だけ(全体では 20% の停止床に届かない割合にする)。
+        cases = _cases(12, "qa", "qa") + _cases(12, "research", "re")
+        doomed = [c for c in split_cases(cases)["confirm"] if c.task_type == "research"][0]
+
+        class Halfdead(ModelBackend):
+            available = True
+
+            def __init__(self, tag="x"):
+                self.tag, self.last_usage = tag, None
+
+            def complete(self, prompt, tier, **kw):
+                if f"case={doomed.case_id} " in prompt + " ":
+                    raise RuntimeError("503")
+                return "GOOD"
+
+        had = backends_mod._BACKENDS.get("halfdead")
+        backends_mod._BACKENDS["halfdead"] = Halfdead
+        try:
+            Scripted.WINS = {"a": set()}
+            res = grow({"a": _lane("a"), "h": {"backend": "halfdead"}}, cases=cases,
+                       generations=1, width=4, patience=3, min_margin=0.05)
+        finally:
+            if had is None:
+                backends_mod._BACKENDS.pop("halfdead", None)
+            else:
+                backends_mod._BACKENDS["halfdead"] = had
+        h = res["history"][0]
+        self.assertEqual(h["scope"], "research", h["challenger"])
+        self.assertEqual(h["unmeasured_in_scope"], 1)
+        self.assertEqual(h["verdict"], "reject")
+        self.assertTrue(h["reason"].startswith("unmeasured-in-scope"), h["reason"])
+        self.assertEqual(res["promotions"], 0)
+
     def test_exactly_one_confirm_case_is_enough(self):
         # The floor is "at least one case", not "more than one case" — the README says the
         # same thing, and a gate that disagrees with its own docs is the bug either way.
