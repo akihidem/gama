@@ -605,6 +605,32 @@ cases the move can reach is the one with a mechanism behind it. Selection and th
 both use it now, with the same one-case threshold as before — what changed is which cases the
 threshold is measured over, not how high it is.
 
+#### All of the noise was in one class
+
+The champion of that run never changed, so its `confirm` score was measured six times on the same
+73 cases. Splitting those re-measurements by class:
+
+| gen | code | content | integration | qa | research | whole split |
+|---|---|---|---|---|---|---|
+| 0 | 0.00 | 0.00 | 0.00 | 0.00 | −0.38 | −0.38 |
+| 1 | 0.00 | 0.00 | 0.00 | 0.00 | +1.38 | +1.38 |
+| 2 | 0.00 | 0.00 | 0.00 | 0.00 | −0.88 | −0.88 |
+| 3 | 0.00 | 0.00 | 0.00 | 0.00 | +1.50 | +1.50 |
+| 4 | 0.00 | 0.00 | 0.00 | 0.00 | −1.00 | −1.00 |
+
+Four of the five classes re-measure **exactly** identically, five times over. Every case of drift
+in the run lives in `research`, the one class this champion routes through an ensemble with a
+temperature-0.8 member. The floor the loop was using — one case or the champion's drift, whichever
+is larger — was therefore applying `research`'s noise to decisions about `content`, and the
+generation that promoted nothing at a 1.66-case bar was being held to that bar by a class the
+candidate never touched.
+
+The floor is per class now, from the same per-case arithmetic: for a move on `content` the drift
+term is 0.00 and the bar is exactly one case, deterministic; for a move on `research` the bar
+rises to that class's own spread, which is what a noisy lane deserves. It also answers the
+question the run's closing line asked — `--repeats` is the lever only for `research`; the other
+four classes have nothing to average away.
+
 #### Things the loop was doing wrong and could not see
 
 **It was not deterministic.** Among candidates tied on `search`, the challenger was picked by
