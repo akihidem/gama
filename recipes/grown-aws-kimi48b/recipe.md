@@ -273,6 +273,48 @@ champion.
   five-hour run said only that it had ended. `-sS`, and a failure that names host, port and path
   (`360b6bd`).
 
+## Run Z: five generations, no promotion, and the reason written in its own numbers
+
+The first run with a per-call trace, and the first on the 149-case pool (`crux` plus the new
+`edge`). Seed: the shipped champion, split 38 / 73 / 38. Ledger: `grow-z.jsonl`, trace beside it.
+
+| gen | challenger | confirm champion → challenger | paired | verdict |
+|---|---|---|---|---|
+| 0 | `route:content → kimi-hot` | 0.8037 → 0.8105 (+0.50 cases) | 3 w / 3 l, p = 0.66 | below the floor |
+| 1 | `meshflow:content(cold → hot)` | 0.8225 → 0.7865 (−2.63) | 2 / 5 | rejected |
+| 2 | `ensemble:integration(cold+hot)` | 0.8105 → 0.8174 (+0.50) | 2 / 1, p = 0.5 | below the floor |
+| 3 | `default → kimi-hot` (from the archive) | 0.8311 → 0.7841 (−3.43) | 2 / 9 | rejected |
+| 4 | `ensemble:content(cold+hot)` (archive) | 0.8174 → 0.8111 (−0.46) | 3 / 3 | rejected |
+
+Sealed: 0.8237 → 0.8237. The champion is the seed, so there was nothing for the held-out split to
+tell apart, and the run says so rather than counting it as a pass.
+
+**The run's own numbers say why nothing moved.** The champion never changed, so its confirm score
+was measured six times on the same 73 cases: 0.8088, 0.8037, 0.8225, 0.8105, 0.8311, 0.8174. That
+is a spread of **2.0 confirm cases for one design against itself**. The promote floor is one case.
+Three of the five generations were bound by drift rather than by the floor, and the run's closing
+line names the lever: `--repeats`, not more cases.
+
+Two things follow, and both are now in the loop rather than in this file:
+
+- **The gate was reading cases the move could not touch.** Generations 0 and 1 both changed the
+  `content` lane. Replaying the trace per case, the `content` cases moved −0.00 and −0.25 cases;
+  the rest of the +0.50 and −2.63 came from classes the move never touched, chiefly `research`,
+  which routes through an ensemble with a temperature-0.8 member. Across every ledger here the
+  correlation between a challenger's search gain and its confirm gain is r = 0.06. Selection and
+  the challenge gate now measure the cases the move can reach; the promote gate records both and
+  still decides on the full split, until there are enough generations to count what would flip.
+- **The truncation diagnosis was blind to the ensemble.** This run's trace has 405 replies cut at
+  the token limit — `qa` 236, `integration` 113, `research` 32 — but its `cut_by_class` is empty:
+  the reason was read off the outermost backend, and an ensemble reports none. The next run, with
+  the tree walk, sees `research` cut 6 times on search and 4 on confirm at the seed, and its first
+  challenger is the remedy for it.
+
+Smaller things this run settled: the archive produced its first challengers (generations 3 and 4,
+at zero extra calls, from a listed pool of 11 and 12 designs against a width of 4), and the `edge`
+suite measured 0.679 at the seed against 0.385 on `crux` and 0.850 on `wide` — headroom, though
+not where it was aimed, since all 12 `edge` code calls scored full marks.
+
 ## A run that had to be thrown away
 
 Run S ran this exact configuration first and produced a champion out of nothing. Partway
