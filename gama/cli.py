@@ -644,7 +644,9 @@ def cmd_grow(args: argparse.Namespace) -> int:
                 "That is not a failure, but it is not an improvement either — say so when "
                 "quoting these numbers.\n")
     elif sv.get("verdict") == "improved":
-        sys.stderr.write(f"[gama] HELD-OUT VERDICT: IMPROVED ({sv['delta_cases']:+} cases on "
+        scope = sv.get("scope_classes")
+        where = f" in {', '.join(scope)}" if scope else ""
+        sys.stderr.write(f"[gama] HELD-OUT VERDICT: IMPROVED ({sv['delta_cases']:+} cases{where} on "
                          "cases that never fed a decision).\n")
 
     if result.get("identity_verified") is False:

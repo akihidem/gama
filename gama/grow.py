@@ -1556,7 +1556,8 @@ def confirm_claim(seed_scores: list, champion_scores: list, n_confirm: int,
 def sealed_verdict(sealed: Optional[dict], claimed_gain_cases: Optional[float] = None,
                    confirm_cases: Optional[int] = None,
                    promoted_gain_cases: Optional[float] = None,
-                   claim_basis: Optional[str] = None) -> dict:
+                   claim_basis: Optional[str] = None,
+                   scoped: Optional[dict] = None) -> dict:
     """封をした split が、この走行そのものについて何と言っているか。
 
     ここまでのゲートはすべて confirm の上で判定していて、confirm は世代をまたいで**繰り返し
@@ -1641,6 +1642,27 @@ def sealed_verdict(sealed: Optional[dict], claimed_gain_cases: Optional[float] =
                             "so this run is not judged")
 
     delta, band = c_score - s_score, 1.0 / s_n
+    # 種と最終形で**通るレーンが変わったクラス**だけで測り直した差(問)。走行中の門と同じ
+    # 理屈で、変わっていないクラスの case は期待値ゼロで分散だけ足す。実測(run Z): 同じ設計を
+    # 6 回測ると 5 クラス中 4 つは 1 問も動かず、揺れは合議に振った 1 クラスに全部入っていた。
+    # 封は 1 回しか測れないので平均で消せない ── だから見る case を絞る方で対処する。
+    # ``scoped`` は {"delta_cases": float, "classes": [...]} で、grow が per_case から作る。
+    # 絞った差で判定するなら、**どのクラスに絞ったのかも読める**ことを条件にする。片方だけ
+    # 通すと「範囲を言えないのに全体でない差で判定した」状態になる(codex 指摘)。
+    scoped_delta = scope_classes = None
+    scope_n = None
+    if isinstance(scoped, dict):
+        d = scoped.get("delta_cases")
+        ks = scoped.get("classes")
+        n_scope = scoped.get("cases")
+        if isinstance(d, (int, float)) and not isinstance(d, bool) and math.isfinite(d) \
+                and isinstance(ks, list) and ks and all(isinstance(x, str) for x in ks):
+            # 表示順は呼び側に依存させない(recipe と CLI が同じ順で出る)
+            scoped_delta, scope_classes = float(d), sorted(ks)
+            # 説明の分母も判定に合わせる。全体の問数のまま語ると、絞って判定したのに
+            # 「全 sealed でその差が出た」と読める(codex 指摘)。
+            if isinstance(n_scope, int) and not isinstance(n_scope, bool) and n_scope > 0:
+                scope_n = n_scope
     # 差の測り直しの揺れ(問)。帯は split の分解能であって測定の揺れではない。この pool の種は
     # temperature 0 で揺れ 0 だが、育った champion に temperature 0.8 のレーンが入ると sealed の
     # 一回測定も揺れる(run W の champion は research を cold+hot の ensemble に振る)。判定は
@@ -1661,7 +1683,8 @@ def sealed_verdict(sealed: Optional[dict], claimed_gain_cases: Optional[float] =
     if claimed is not None and has_confirm_n:
         # 判定は丸める前の値で。表示用に 2 桁へ丸めた値で分岐すると 1.004 問が 1.00 になって
         # 「検定力なし」に化ける(この repo が門で一度踏んだ罠と同じ形)。
-        exact = claimed * s_n / confirm_cases
+        judged_n = scope_n or s_n          # 判定した split の問数(絞ったならその問数)
+        exact = claimed * judged_n / confirm_cases
         expected = round(exact, 2)
         if claimed > 0:
             power = "underpowered" if exact <= 1.0 else "powered"
@@ -1676,9 +1699,13 @@ def sealed_verdict(sealed: Optional[dict], claimed_gain_cases: Optional[float] =
                  if promoted is not None else "the promotion-time total is not recorded")
     if claim_basis:
         certified = f"{claim_basis}; {certified}"
-    if delta > band:
+    # 判定は**問数**でする(帯は 1 問)。取れるなら「変わったクラスに絞った差」、絞れない走行
+    # (古い台帳・全クラスが変わった・per_case が無い)は全体の差。score に割り戻してから
+    # 1/n と比べるのは同じ式だが、読む側が「どの分母で割るのか」を毎回考えることになる。
+    decide_cases = scoped_delta if scoped_delta is not None else delta * s_n
+    if decide_cases > 1.0:
         v, note = "improved", "the held-out split agrees the champion is better than the seed"
-    elif delta < -band:
+    elif decide_cases < -1.0:
         v, note = ("regressed",
                    "the held-out split says the champion is WORSE than the seed it started "
                    "from: the gains measured on confirm did not survive contact with cases "
@@ -1688,12 +1715,15 @@ def sealed_verdict(sealed: Optional[dict], claimed_gain_cases: Optional[float] =
         if power == "underpowered":
             # 分離に要る sealed の問数(この主張のまま)と、この sealed で分離に要る主張の大きさ。
             # 「どちらを動かすか」は運用者の判断なので両方言う。
+            # 分母は**判定した split**(絞ったならその問数)。全体の問数で語ると、絞って
+            # 判定したのに「全 sealed でその量が出るはず」と読める。
             need_n = int(confirm_cases / claimed) + 1
-            need_g = round(confirm_cases / s_n, 2)
+            need_g = round(confirm_cases / judged_n, 2)
             note = (f"the held-out split cannot tell the champion from the seed, and it never "
                     f"could have: on confirm the champion stands {claimed:+.2f} of "
                     f"{confirm_cases} cases over the seed ({certified}), which is {expected:g} "
-                    f"of the {s_n} sealed cases, not beyond the one case this split resolves. This "
+                    f"of the {judged_n} sealed cases it was judged on, not beyond the one case "
+                    f"this split resolves. This "
                     f"verdict was fixed before the split was opened. To be separable at this "
                     f"gain the sealed split needs at least {need_n} cases; on this split the "
                     f"champion would have to stand more than {need_g:g} confirm cases over "
@@ -1702,8 +1732,9 @@ def sealed_verdict(sealed: Optional[dict], claimed_gain_cases: Optional[float] =
             note = (f"the held-out split cannot tell the champion from the seed, although it "
                     f"could have: on confirm the champion stands {claimed:+.2f} of "
                     f"{confirm_cases} cases over the seed ({certified}), which should show as "
-                    f"{expected:g} of the {s_n} sealed cases if it were real, and the split "
-                    f"shows {delta * s_n:+.2f}. The confirm gains did not transfer: read the "
+                    f"{expected:g} of the {judged_n} sealed cases it was judged on if it were "
+                    f"real, and the split shows {decide_cases:+.2f}. The confirm gains did not "
+                    f"transfer: read the "
                     f"promotions as selection on confirm, not as an improvement")
         elif power == "evaporated":
             note = (f"the held-out split cannot tell the champion from the seed, and the run's "
@@ -1730,10 +1761,43 @@ def sealed_verdict(sealed: Optional[dict], claimed_gain_cases: Optional[float] =
         note += (f". A re-measurement of this pair would move about {noise_cases:g} cases "
                  f"(sd, from the repeats), more than the one case the split resolves: the "
                  f"band is the split's resolution, not this measurement's")
-    return {"verdict": v, "delta_cases": round(delta * s_n, 2), "band_cases": 1.0, "note": note,
+    # ``delta_cases`` は**判定に使った差**。verdict と食い違う数字を同じ行に出すと、
+    # 「+2 問なのに regressed」という読めない組になる(codex 指摘)。全体の差は別の鍵で残す。
+    return {"verdict": v,
+            "delta_cases": round(decide_cases, 2),
+            "delta_cases_full": round(delta * s_n, 2),
+            "band_cases": 1.0, "note": note,
+            "scope_classes": scope_classes,
             "claimed_confirm_cases": None if claimed is None else round(claimed, 2),
             "promoted_confirm_cases": None if promoted is None else round(promoted, 2),
             "expected_cases": expected, "power": power, "noise_cases": noise_cases}
+
+
+def sealed_scope_of(seed: dict, champion: dict, classes: list, cases: list,
+                    seed_m: "Measurement", champ_m: "Measurement") -> Optional[dict]:
+    """封の差を「種と最終形で通るレーンが変わったクラス」だけで測る材料。絞れなければ None。
+
+    封は走行の最初と最後に 1 回ずつしか測れず、揺れを平均で消せない。だから見る case を絞る
+    方で対処する(走行中の門と同じ理屈)。絞らないのは 3 つの場合:
+      * 変わったクラスが無い(最終形が種と同じ)
+      * 全クラスが変わった(絞る意味が無い)
+      * **その scope の中に測れなかった case がある** —— 穴のある証拠で判定を絞ると、
+        エラーで落ちた難しい case を外した差で「改善」と言える(昇格の門と同じ塞ぎ方)。
+    """
+    changed = [c for c in classes
+               if _resolved_lane(seed, c) != _resolved_lane(champion, c)]
+    if not changed or len(changed) >= len(classes):
+        return None
+    ids = {c.case_id for c in cases if c.task_type in changed}
+    if (set(seed_m.error_cases) | set(champ_m.error_cases)) & ids:
+        return None
+    shared = (set(seed_m.per_case) & set(champ_m.per_case) & ids)
+    # 部分欠損も穴として扱う: 両側が**その scope の全 case**を持っているときだけ絞る
+    # (欠けた case を外した差で「改善」と言わせない)。
+    if not shared or shared != ids:
+        return None
+    return {"classes": sorted(changed), "cases": len(shared),
+            "delta_cases": sum(champ_m.per_case[c] - seed_m.per_case[c] for c in shared)}
 
 
 def class_headroom(m: "Measurement", cases: list) -> dict:
@@ -2703,8 +2767,10 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
                         measure(champion, splits["sealed"], tier, repeats, unit_cost, "champion",
                                 trace=trace))
         sealed = {"seed": _meas(sealed_seed), "champion": _meas(sealed_champ)}
+        sealed_scope = sealed_scope_of(seed, champion, classes, splits["sealed"],
+                                       sealed_seed, sealed_champ)
     else:
-        sealed = None
+        sealed = sealed_scope = None
     # sealed が検定する仮説の confirm 側の対応物: 最終形が confirm で種よりどれだけ上に立つか。
     # 昇格時の認定を足し上げた量ではない(昇格の次の世代から champion は測り直され、点は種の
     # 側へ戻る。run V は認定 +1.10 問に対し測り直しの平均は −0.08 問)。推定の中身は
@@ -2753,7 +2819,7 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
         "sealed_verdict": sealed_verdict(
             sealed, claim["cases"], n_confirm,
             promoted_gain_cases=promoted_gain_cases(history, n_confirm),
-            claim_basis=claim_basis),
+            claim_basis=claim_basis, scoped=sealed_scope),
         # クラスごとの伸びしろ(問)。「どこに case を足すべきか」を一般論でなく実測で言う。
         # **変異できるクラスだけ**に絞る(confirm には居るが search に居ないクラスは
         # そもそも触れないので、そこに余地が無いと警告しても打てる手が無い)。
@@ -3019,8 +3085,11 @@ def write_recipe(result: dict, directory, name: Optional[str] = None,
               "unjudgeable": "NOT JUDGED"}
     lines += [
         f"**Held-out verdict: {_label.get(verdict['verdict'], verdict['verdict'])}** "
-        + (f"({verdict['delta_cases']:+} cases on the sealed split, which resolves "
-           f"{verdict['band_cases']:g})" if verdict.get("delta_cases") is not None else ""),
+        + (f"({verdict['delta_cases']:+} cases"
+           + (f" in {', '.join(verdict['scope_classes'])}" if verdict.get("scope_classes")
+              else "")
+           + f" on the sealed split, which resolves {verdict['band_cases']:g})"
+           if verdict.get("delta_cases") is not None else ""),
         "",
         verdict["note"] + ".",
         "",

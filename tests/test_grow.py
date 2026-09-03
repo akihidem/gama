@@ -1243,6 +1243,73 @@ class TestGrowLoop(ScriptedCase):
         taken = grow({"a": _lane("a"), "b": _lane("b")}, min_margin=0.3, **opts)
         self.assertEqual(taken["promotions"], 1)
 
+    def test_the_sealed_verdict_reads_the_classes_that_actually_changed(self):
+        # 封は走行の最初と最後に 1 回ずつしか測れないので、揺れを平均で消せない。だから
+        # 「種と最終形で通るレーンが変わったクラス」だけで測る(走行中の門と同じ理屈)。
+        base = {"seed": {"score": 0.80, "cases": 40, "sem": 0.0},
+                "champion": {"score": 0.80, "cases": 40, "sem": 0.0}}
+        # 全体では引き分けでも、変わったクラスで 2 問勝っていれば improved
+        v = sealed_verdict(base, scoped={"classes": ["qa"], "delta_cases": 2.0})
+        self.assertEqual(v["verdict"], "improved")
+        # delta_cases は**判定に使った差**(verdict と同じ根拠)。全体の差は別の鍵に残す
+        self.assertEqual(v["delta_cases"], 2.0)
+        self.assertEqual(v["delta_cases_full"], 0.0)
+        self.assertEqual(v["scope_classes"], ["qa"])
+        # 逆も同じ: 全体で勝っていても、変わったクラスで負けていれば regressed
+        won = {"seed": {"score": 0.80, "cases": 40, "sem": 0.0},
+               "champion": {"score": 0.85, "cases": 40, "sem": 0.0}}
+        v2 = sealed_verdict(won, scoped={"classes": ["content"], "delta_cases": -2.0})
+        self.assertEqual(v2["verdict"], "regressed")
+        self.assertEqual(v2["delta_cases"], -2.0)
+        self.assertEqual(v2["delta_cases_full"], 2.0)
+        # 絞れない走行(古い台帳・全クラスが変わった)は従来どおり全体で判定する
+        v3 = sealed_verdict(won)
+        self.assertEqual(v3["verdict"], "improved")
+        self.assertEqual(v3["delta_cases"], v3["delta_cases_full"])
+        self.assertIsNone(v3["scope_classes"])
+        # 説明の分母も判定した split に合わせる(scoped["cases"] を渡した場合)
+        powered = sealed_verdict(
+            {"seed": {"score": 0.80, "cases": 40, "sem": 0.0},
+             "champion": {"score": 0.80, "cases": 40, "sem": 0.0}},
+            claimed_gain_cases=4.0, confirm_cases=40,
+            scoped={"classes": ["qa"], "cases": 8, "delta_cases": 0.0})
+        self.assertEqual(powered["verdict"], "not-separable")
+        self.assertIn("of the 8 sealed cases it was judged on", powered["note"])
+        # クラスは順序を正規化して返す(recipe と CLI が同じ順で出る)
+        self.assertEqual(sealed_verdict(base, scoped={"classes": ["qa", "content"],
+                                                      "delta_cases": 2.0})["scope_classes"],
+                         ["content", "qa"])
+        # 壊れた classes では絞らない(範囲を言えないのに全体でない差で判定しない)
+        v4 = sealed_verdict(base, scoped={"classes": "qa", "delta_cases": 2.0})
+        self.assertEqual(v4["verdict"], "not-separable")
+        self.assertIsNone(v4["scope_classes"])
+        self.assertEqual(v4["delta_cases"], v4["delta_cases_full"])
+
+    def test_the_sealed_scope_is_refused_when_its_evidence_has_holes(self):
+        from gama.grow import _with_lane, sealed_scope_of
+        cases = _cases(2, "qa", "qa") + _cases(2, "research", "re")
+        lane_a, lane_b = _lane("a"), _lane("b")
+        seed = canonical(seed_champion({"a": lane_a, "b": lane_b}, "a"))
+        champ = canonical(_with_lane(seed, "qa", "b", lane_b))
+        m = Measurement(score=0.5, success_rate=0.5, latency_s=1.0, n=4, cases=4,
+                        per_case={"qa1": 0.0, "qa2": 0.0, "re1": 1.0, "re2": 1.0})
+        better = Measurement(score=0.75, success_rate=0.75, latency_s=1.0, n=4, cases=4,
+                             per_case={"qa1": 1.0, "qa2": 0.0, "re1": 1.0, "re2": 1.0})
+        got = sealed_scope_of(seed, champ, ["qa", "research"], cases, m, better)
+        self.assertEqual(got, {"classes": ["qa"], "cases": 2, "delta_cases": 1.0})
+        # scope の中に測れなかった case があれば絞らない(穴のある証拠で判定を絞らない)
+        holed = Measurement(score=0.75, success_rate=0.75, latency_s=1.0, n=4, cases=4,
+                            per_case={"qa1": 1.0, "re1": 1.0, "re2": 1.0},
+                            error_cases=frozenset({"qa2"}))
+        self.assertIsNone(sealed_scope_of(seed, champ, ["qa", "research"], cases, m, holed))
+        # 部分欠損(per_case にその case が無い)も穴として扱う
+        partial = Measurement(score=0.75, success_rate=0.75, latency_s=1.0, n=4, cases=4,
+                              per_case={"qa1": 1.0, "re1": 1.0, "re2": 1.0})
+        self.assertIsNone(sealed_scope_of(seed, champ, ["qa", "research"], cases, m, partial))
+        # 何も変わっていない / 全クラス変わった、のどちらも絞らない
+        self.assertIsNone(sealed_scope_of(seed, seed, ["qa", "research"], cases, m, better))
+        self.assertIsNone(sealed_scope_of(seed, champ, ["qa"], cases, m, better))
+
     def test_the_promote_gate_decides_on_the_cases_the_move_can_touch(self):
         # run Z の 5 世代を per-case で開くと、クラス単位の 4 手はどれも**自分のクラスでは
         # 何もしていない**のに、門が見ていた数字は +0.50〜−2.62 問に振れていた
