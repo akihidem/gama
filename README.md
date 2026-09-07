@@ -403,6 +403,15 @@ is visible too — that one still returns an answer, and the ledger would otherw
 score of a three-model design to a single model. Only 42 of the 114 fall outside the window
 where real errors were also being recorded, so this was not purely one outage.
 
+Run SS also showed where a width slot was going. Its `gen0` produced a four-way tie: three
+budget prescriptions and one route change, all scoring exactly what the champion scored on the
+search split, because a class-scoped move cannot touch cases outside its class. The tie fell
+through to alphabetical order, which picked `integration` — the class with the least room left
+of the three (1.00 search cases unearned, against `qa`'s 5.00). A repeat of the run on the same
+box, same seed, same four candidates, with only the tie-break changed to prefer the class with
+the most room, picked `tokens:qa` instead. In the original run `tokens:research` was listed as a
+prescription in all five generations and was never once measured on `confirm`.
+
 And the culprit is narrower than "ensembles are noisy". Run SS's own champion carries one:
 its second promotion routed `content` to `ens(m24+q7)`, two models voting. Its drift stayed
 0.00 all the same, because both members answer at temperature 0. What moves the floor is not
