@@ -307,14 +307,12 @@ def _budget_still_worth_trying(champion: dict, task_type: str,
     チャンピオンの枠を基準にするので、処方が昇格して枠が上がれば上限も一緒に上がる
     (昇格は「この向きは効いた」という証拠で、その先をもう一度試す資格がある)。
     """
-    tried = _remembered_cut_short(champion, task_type, cut_short)
-    limit = _lane_token_limit(champion, task_type) or 0
-    return not (limit and tried >= limit * 4)
+    return _remembered_cut_short(champion, task_type, cut_short) < 2
 
 
 def _remembered_cut_short(champion: dict, task_type: str,
                           cut_short: Optional[dict]) -> int:
-    """このチャンピオンのそのクラスに**当てはまる**「この枠でも切れた」。無ければ 0。
+    """このチャンピオンのそのクラスで、**測って足りなかった段数**。無ければ 0。
 
     記憶はレーンの同一性ごと。今そのクラスが通っているレーンと別のレーンで取った記録は、
     このクラスの用量について何も言っていない。
@@ -324,11 +322,11 @@ def _remembered_cut_short(champion: dict, task_type: str,
         return 0
     if got.get("lane") != _lane_identity(champion, task_type):
         return 0
-    return int(got.get("limit") or 0)
+    return int(got.get("steps") or 0)
 
 
-def _note_cut_short(seen: dict, spec: dict, cut_by_class: dict) -> dict:
-    """「この枠でも切れた」を覚える。``seen`` はクラス → 足りないと実測した ``max_tokens``。
+def _note_cut_short(seen: dict, spec: dict, cut_by_class: dict, steps: int) -> dict:
+    """「この用量でも切れた」を覚える。``seen`` はクラス → ``{"steps": 段数, "lane": 同一性}``。
 
     枠 2 倍の処方はチャンピオンの枠からしか上げないので、一度測って切断が消えなかった用量が
     次の世代でもう一度出てくる(run SS: 3072 が gen0・gen2・gen4 の 3 世代で提案され、
@@ -337,19 +335,18 @@ def _note_cut_short(seen: dict, spec: dict, cut_by_class: dict) -> dict:
     そのクラスが通る枠と一致するとは限らない。
     """
     for cls, n in (cut_by_class or {}).items():
-        if not n:
-            continue
-        limit = _lane_token_limit(spec, cls)
-        if not limit:
+        if not n or not steps:
             continue
         lane = _lane_identity(spec, cls)
+        if lane is None:
+            continue
         prev = seen.get(cls)
-        # 同じレーンなら大きい方を残し、別のレーンなら置き換える(前のレーンの記録は、
+        # 同じレーンなら多い方を残し、別のレーンなら置き換える(前のレーンの記録は、
         # 今のレーンの用量について何も言っていない)。
         if (isinstance(prev, dict) and prev.get("lane") == lane
-                and int(prev.get("limit") or 0) >= limit):
+                and int(prev.get("steps") or 0) >= steps):
             continue
-        seen[cls] = {"limit": limit, "lane": lane}
+        seen[cls] = {"steps": int(steps), "lane": lane}
     return seen
 
 
@@ -433,6 +430,9 @@ class Candidate:
     # content レーンだけを替えた挑戦者の +0.32 問のうち、content は −0.10 で research が
     # +0.42 —— 触っていないクラスの揺れが門の数字を作っていた。
     scope: Optional[str] = field(default=None, compare=False)
+    # 枠の処方が**何段**上げた写しか(1 段 = 2 倍)。鋳造した側が書く: 測定の後に「この用量でも
+    # 切れた」を記録する時、ラベルの数字(=今回上がった枠)からは段数が読めない。
+    dose_steps: Optional[int] = field(default=None, compare=False)
 
 
 MAX_TOKENS_CAP = 8192
@@ -542,16 +542,20 @@ def _raised_to(before, after) -> Optional[int]:
     return max(grew) if grew else None
 
 
-def _with_more_tokens(spec, cap: int = MAX_TOKENS_CAP, at_least: Optional[int] = None):
-    """レーンの中の ``max_tokens`` を全部 2 倍(上限で頭打ち)にした写しを返す。上げられる枠が
-    1 つも無ければ ``None``。
+def _with_more_tokens(spec, cap: int = MAX_TOKENS_CAP, times: int = 1):
+    """レーンの中の ``max_tokens`` を全部 ``times`` 段(1 段 = 2 倍・上限で頭打ち)上げた写しを
+    返す。上げられる枠が 1 つも無ければ ``None``。
 
-    ``at_least`` は「この値では**足りないと実測した**」枠。渡されると、2 倍とその倍のうち
-    大きい方まで上げる。2 倍だけだと、既に測って切断が消えなかった用量を出し直すことになる:
-    run SS gen0 の ``tokens:integration(m24)x3072`` は 1536 から 3072 へ確かに伸びていて
+    ``times`` を持つのは、同じ用量を出し直さないため。run SS gen0 の
+    ``tokens:integration(m24)x3072`` は 1536 から 3072 へ確かに伸びていて
     (``edge-int-digitsum`` の返答が 1577 → 3113 token)、**それでもまだ切れていた**。同じ症状の
     まま gen2・gen4 でもう一度 3072 が提案され、3 世代ぶんの枠がその用量に使われている。
-    足りないと分かっている量を出発点にする。
+
+    「足りなかった token 数」でなく**段数**で持つのは、合成レーンの枠が揃っていない時に
+    数では表せないから(codex 指摘)。枠が ``[512, 2048]`` のレーンで最小の 512 を覚えると、
+    次の候補は champion の各枠から作るので ``[2048, 4096]`` になり、大きい側は 1 段しか
+    上がっていないのに「2 段試した」と数えて打ち切ってしまう。段数なら全メンバーに同じだけ
+    かかる。
 
     ``max_tokens`` という鍵は backend spec では常に「1 回の生成の上限」を意味する前提で、
     どの深さにあっても同じ意味として扱う(spec の形はこの repo が決めている)。
@@ -573,11 +577,7 @@ def _with_more_tokens(spec, cap: int = MAX_TOKENS_CAP, at_least: Optional[int] =
                     # 上限済みなら候補ごと捨てる形にすると、内側が既に大きいだけで**外側の
                     # 明らかに足りない枠**まで治療不能になる(codex 指摘)。2 倍が上限を超える
                     # 枠は上限まで上げる: 「まだ上限に届いていないのに上げない」帯を作らない。
-                    want = v * 2
-                    if at_least:
-                        # 足りないと実測した枠より上へ。2 倍が既にそれを超えていれば 2 倍のまま
-                        want = max(want, at_least * 2)
-                    out[k] = min(want, cap)
+                    out[k] = min(v * (2 ** max(1, times)), cap)
                     raised[0] = raised[0] or out[k] != v
                 else:
                     out[k] = walk(v)
@@ -649,8 +649,10 @@ def propose(champion: dict, pool: dict[str, dict], classes: list[str],
             archived: Optional[set[str]] = None) -> list[Candidate]:
     """チャンピオンから 1 手だけ動かした候補を、種類を混ぜて**新顔** ``width`` 本返す。
 
-    ``cut_short`` は「クラス → その枠でも切断が残ると実測した ``max_tokens``」。枠 2 倍の処方は
-    ここを下限にして上げる(同じ用量を出し直さないため。``_with_more_tokens`` を見よ)。
+    ``cut_short`` は「クラス → ``{"steps": 段数, "lane": レーンの同一性}``」で、**その段数まで
+    上げても切断が残ると実測した**という記憶。枠の処方はこの次の段から出す(同じ用量を出し
+    直さないため)。``lane`` が今のレーンと違う記憶は効かない(別モデルの履歴で処方を止めない)。
+    2 段まで上げてなお切れるクラスには処方を出さない(``_budget_still_worth_trying``)。
 
     ``archived`` は search で測定済みの設計のハッシュ集合。測定済みは ``width`` の席を消費せず、
     除外されていない限り**全部**返す(呼び側は archive の点をそのまま使うのでコール 0)。
@@ -768,15 +770,15 @@ def propose(champion: dict, pool: dict[str, dict], classes: list[str],
         if task_type in cut and _budget_still_worth_trying(champion, task_type, cut_short):
             # ②'' 返答の枠を 2 倍にする。そのクラスで「この枠でも切れた」と実測済みの上限が
             # あれば、そこから上げる(無ければ従来どおりチャンピオンの枠の 2 倍)。
-            bigger = _with_more_tokens(
-                cur_spec, at_least=_remembered_cut_short(champion, task_type, cut_short))
+            steps = _remembered_cut_short(champion, task_type, cut_short) + 1
+            bigger = _with_more_tokens(cur_spec, times=steps)
             if bigger is not None:
                 name = f"{cur}+tok"
                 got = _raised_to(cur_spec, bigger)
                 buckets["tokens"].append((task_type, Candidate(
                     f"tokens:{task_type}({base})x{got}", "tokens",
                     _with_lane(champion, task_type, name, _rooted(bigger, base, pool)),
-                    remedy=task_type, treats="cut")))
+                    remedy=task_type, treats="cut", dose_steps=steps)))
         # ③ 2 モデルの合議。既定は synthesize —— majority は**自由文では機能しない**。逐語一致が
         # まず起きないので Counter が全部 1 になり、most_common が「最初に入れたメンバー」を返す。
         # 実測(graded 20 問): majority 0.705 に対し素の 3B 単体が 0.830、synthesize は 0.975
@@ -2667,8 +2669,9 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
                 # 切断でも記録すると、たまたま大きい枠を持つ別レーンへ振っただけの手
                 # (route:qa->big など)の切断が「クラス qa は 8192 でも足りない」に化け、
                 # 1536 の champion への処方が一段で上限へ飛ぶ。段を刻むのは要件の方。
-                if c.treats == "cut" and c.remedy:
-                    _note_cut_short(cut_short, c.spec, {c.remedy: m.cut_by_class.get(c.remedy, 0)})
+                if c.treats == "cut" and c.remedy and c.dose_steps:
+                    _note_cut_short(cut_short, c.spec,
+                                    {c.remedy: m.cut_by_class.get(c.remedy, 0)}, c.dose_steps)
                 measured += 1
                 emit({"event": "candidate", "gen": gen, "label": c.label, "kind": c.kind,
                       "hash": h, "search": _meas(m)})
@@ -2866,6 +2869,10 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
             champion, champ_search, champ_confirm = challenger.spec, chal_search, chal_confirm
             stale = 0
             settled = set()          # search の決着は旧チャンピオンの点に対するものだった
+            if challenger.treats == "cut" and challenger.remedy:
+                # 枠を上げる手が昇格した = この向きは効いた。段数は新しいチャンピオンの枠から
+                # 数え直す(残しておくと、既に上がった枠にさらに 2 段ぶんが乗って一気に飛ぶ)。
+                cut_short.pop(challenger.remedy, None)
             champ_scores, champ_promo = [], chal_confirm.score
         else:
             champ_confirm = champ_confirm_now       # 次世代の drift 基準は常に最新の実測

@@ -488,7 +488,7 @@ class TestPropose(ScriptedCase):
             # 記憶はレーンの同一性ごと(別モデルへ移ったら効かない)。テストは champ の
             # そのクラスのレーンに紐づけて渡す。
             if "cut_short" in kw:
-                kw["cut_short"] = {c: {"limit": n, "lane": _lane_identity(champ, c)}
+                kw["cut_short"] = {c: {"steps": n, "lane": _lane_identity(champ, c)}
                                    for c, n in kw["cut_short"].items()}
             return [c.label for c in propose(champ, pool, classes, width=30, **kw)
                     if c.kind == "tokens"]
@@ -528,33 +528,44 @@ class TestPropose(ScriptedCase):
         self.assertEqual([c.kind for c in propose(champ_maxed, {"a": maxed}, classes, width=30,
                                                   cut_by_class={"qa": 2})
                           if c.kind == "tokens"], [], "the cap stops the escalation")
-        # 「その枠でも切れた」と実測した用量からは、その 2 倍へ上がる。同じ用量を出し直さない:
-        # run SS では 3072 が gen0/gen2/gen4 の 3 世代で提案され、edge-int-digitsum は毎回その
-        # 3072 で切れていた(1536 -> 3072 に伸びてはいた。効いたが足りなかった)。
+        # 1 段試して切れたなら次は 2 段(4 倍)。同じ用量を出し直さない: run SS では 3072 が
+        # gen0/gen2/gen4 の 3 世代で提案され、edge-int-digitsum は毎回その 3072 で切れていた
+        # (1536 -> 3072 に伸びてはいた。効いたが足りなかった)。
         self.assertEqual(tokens(cut_by_class={"integration": 4},
-                                cut_short={"integration": 3072}),
+                                cut_short={"integration": 1}),
                          ["tokens:integration(a)x6144"])
-        # 2 倍が既にその上なら 2 倍のまま(下限であって固定値ではない)
-        self.assertEqual(tokens(cut_by_class={"integration": 4},
-                                cut_short={"integration": 512}),
+        # 段数で持つので、枠の揃っていない合成レーンでも全メンバーに同じだけかかる。
+        # 「足りなかった token 数」で持つと、次の候補は champion の各枠から作るので
+        # 大きい側が 1 段しか上がらないのに「2 段試した」と数えることになる。
+        from gama.grow import _with_more_tokens as _more
+        uneven = {"kwargs": {"members": [{"kwargs": {"max_tokens": 512}},
+                                         {"kwargs": {"max_tokens": 2048}}]}}
+        two = _more(uneven, times=2)
+        self.assertEqual([m["kwargs"]["max_tokens"] for m in two["kwargs"]["members"]],
+                         [2048, 8192])
+        one = _more(uneven, times=1)
+        self.assertEqual([m["kwargs"]["max_tokens"] for m in one["kwargs"]["members"]],
+                         [1024, 4096])
+        # 記録が無ければ 1 段(従来どおり 2 倍)
+        self.assertEqual(tokens(cut_by_class={"integration": 4}, cut_short={}),
                          ["tokens:integration(a)x3072"])
         # 別のクラスの実測は効かない(処方はクラス単位)
-        self.assertEqual(tokens(cut_by_class={"integration": 4}, cut_short={"qa": 3072}),
+        self.assertEqual(tokens(cut_by_class={"integration": 4}, cut_short={"qa": 1}),
                          ["tokens:integration(a)x3072"])
         # 2 段(チャンピオンの枠の 4 倍)まで上げてなお切れるなら、枠はこの症状のレバーでは
         # ない。処方をやめて枠を別の手に回す。ここを止めないと、切断が枠のせいでない
         # クラスで毎世代 1 本ずつ新しい用量を実測する暴走になる。
         self.assertEqual(tokens(cut_by_class={"integration": 4},
-                                cut_short={"integration": 1536 * 4}), [])
+                                cut_short={"integration": 2}), [])
         self.assertEqual(tokens(cut_by_class={"integration": 4},
-                                cut_short={"integration": MAX_TOKENS_CAP}), [])
+                                cut_short={"integration": 5}), [])
         # 1 段目で打ち切らない: 「6144 あれば終わる」返答は 2 段目で治るので取り逃がす
         self.assertEqual(tokens(cut_by_class={"integration": 4},
-                                cut_short={"integration": 1536 * 2}),
+                                cut_short={"integration": 1}),
                          ["tokens:integration(a)x6144"])
         # 止まるのはそのクラスだけ(別のクラスの処方は出る)
         self.assertEqual(tokens(cut_by_class={"integration": 4, "qa": 2},
-                                cut_short={"integration": 1536 * 4}),
+                                cut_short={"integration": 2}),
                          ["tokens:qa(a)x3072"])
 
         # an archived tokens prescription comes back outside the width, like every other kind
@@ -1865,10 +1876,50 @@ class TestGrowLoop(ScriptedCase):
             self.assertIn((0, "route:qa->big"), listed)
             cps = [e for e in events if e.get("event") == "checkpoint"]
             # それでも覚えているのは処方自身が試した 3072 だけ(8192 ではない)
-            self.assertEqual([c["cut_short"]["qa"]["limit"] for c in cps if c["gen"] == 0],
-                             [3072])
+            self.assertEqual([c["cut_short"]["qa"]["steps"] for c in cps if c["gen"] == 0], [1])
             # 結果として次の用量は 6144。段が消えていない
             self.assertIn((1, "tokens:qa(a)x6144"), listed)
+        finally:
+            backends_mod._BACKENDS.pop("cutter", None)
+
+    def test_promoting_the_budget_remedy_starts_the_count_over(self):
+        # 枠を上げる手が昇格した = この向きは効いた。段数を残すと、既に上がった枠にさらに
+        # 2 段ぶんが乗って一気に飛ぶ。新しいチャンピオンの枠から数え直す。
+        class Cutter(ModelBackend):
+            name = "cutter"
+            available = True
+
+            def __init__(self, tag="a", max_tokens=1536):
+                self.tag, self.max_tokens = tag, max_tokens
+                self.last_usage = None
+                self.last_finish_reason = None
+
+            def complete(self, prompt, tier, **kw):
+                # 常に「枠で切れた」と名乗る。枠が上がると confirm の問だけ解けるので、
+                # 昇格しつつ search 側には切断が残る = 「効いたが、まだ切れている」形になる
+                # (この形でないと、昇格した手の測定に切断が残らず記憶も生まれない)。
+                self.last_finish_reason = "length"
+                cid = prompt.split("case=")[1].split()[0] if "case=" in prompt else "?"
+                return "GOOD" if (self.max_tokens > 1536 and cid == "qa2") else "BAD"
+
+        backends_mod._BACKENDS["cutter"] = Cutter
+        try:
+            lane = {"backend": "cutter", "kwargs": {"tag": "a", "max_tokens": 1536}}
+            events = []
+            grow({"a": lane}, cases=_cases(4), generations=2, width=1, patience=9,
+                 min_margin=0.05, on_event=events.append)
+            gens = [e for e in events if e.get("event") == "generation"]
+            self.assertEqual(gens[0]["verdict"], "promote")
+            listed = [(e["gen"], e["label"]) for e in events
+                      if e.get("event") == "candidate" and e["label"].startswith("tokens:")]
+            self.assertIn((0, "tokens:qa(a)x3072"), listed)
+            # gen0(昇格した世代)の checkpoint を見る。走行の頭にも gen -1 の行が出るので、
+            # 先頭を取ると常に空で、何を消しても緑になる。
+            cp0 = [e for e in events
+                   if e.get("event") == "checkpoint" and e["gen"] == 0][0]
+            # 1 段目は切れたまま測られたので、昇格が無ければ記憶に 1 段が残る形。
+            # 昇格したのでその記憶は消えている(次の段は新しい枠から数え直す)。
+            self.assertEqual(cp0["cut_short"], {})
         finally:
             backends_mod._BACKENDS.pop("cutter", None)
 
@@ -1882,7 +1933,7 @@ class TestGrowLoop(ScriptedCase):
         b = {"kwargs": {"backends": {"b": {"backend": "two", "kwargs": {"max_tokens": 1536}}},
                         "routing_table": {}, "default": "b"}}
         self.assertNotEqual(_lane_identity(a, "qa"), _lane_identity(b, "qa"))
-        tried_on_a = {"qa": {"limit": 1536 * 4, "lane": _lane_identity(a, "qa")}}
+        tried_on_a = {"qa": {"steps": 2, "lane": _lane_identity(a, "qa")}}
         self.assertFalse(_budget_still_worth_trying(a, "qa", tried_on_a))  # A では打ち切り
         self.assertTrue(_budget_still_worth_trying(b, "qa", tried_on_a))   # B では未検証
         # 用量が違うだけの同じレーンは同じ同一性(1536 と 3072 は同じ梯子の別の段)
@@ -1910,24 +1961,21 @@ class TestGrowLoop(ScriptedCase):
         self.assertEqual(_lane_token_limit(mixed, "qa"), 3072)
         self.assertNotEqual(_lane_token_limit(mixed, "qa"), MAX_TOKENS_CAP)
         seen = {}
-        _note_cut_short(seen, spec, {"qa": 2, "research": 1})
-        self.assertEqual({c: v["limit"] for c, v in seen.items()},
-                         {"qa": 3072, "research": 1536})
+        _note_cut_short(seen, spec, {"qa": 2, "research": 1}, 2)
+        self.assertEqual({c: v["steps"] for c, v in seen.items()}, {"qa": 2, "research": 2})
         self.assertEqual(seen["qa"]["lane"], _lane_identity(spec, "qa"))
-        # 同じレーンなら大きい方だけ残る(小さい枠での切断は、大きい枠の反証にならない)
-        _note_cut_short(seen, dict(spec, kwargs=dict(
-            spec["kwargs"], backends={"small": {"kwargs": {"max_tokens": 1536}},
-                                      "big": {"kwargs": {"max_tokens": 512}}})), {"qa": 9})
-        self.assertEqual(seen["qa"]["limit"], 3072)
+        # 同じレーンなら段数の多い方だけ残る(浅い段での切断は、深い段の反証にならない)
+        _note_cut_short(seen, spec, {"qa": 9}, 1)
+        self.assertEqual(seen["qa"]["steps"], 2)
         # 切断が 0 のクラスは覚えない(「足りなかった」の証拠が無い)
-        _note_cut_short(seen, spec, {"content": 0})
+        _note_cut_short(seen, spec, {"content": 0}, 1)
         self.assertNotIn("content", seen)
         # 別のレーンでの切断は置き換える(前のレーンの記録は今のレーンの用量を何も言わない)
         other = {"kwargs": {"backends": {"z": {"backend": "other",
                                                "kwargs": {"max_tokens": 512}}},
                             "routing_table": {}, "default": "z"}}
-        _note_cut_short(seen, other, {"qa": 3})
-        self.assertEqual(seen["qa"], {"limit": 512, "lane": _lane_identity(other, "qa")})
+        _note_cut_short(seen, other, {"qa": 3}, 1)
+        self.assertEqual(seen["qa"], {"steps": 1, "lane": _lane_identity(other, "qa")})
         # max_tokens を持たないレーンは記録しようがない
         self.assertIsNone(_lane_token_limit({"kwargs": {"backends": {"n": {}},
                                                         "routing_table": {}, "default": "n"}}, "qa"))
@@ -1952,15 +2000,14 @@ class TestGrowLoop(ScriptedCase):
             with open(led, "w") as fh:
                 for r in rows:
                     if r.get("event") == "checkpoint":
-                        r["cut_short"] = {"qa": {"limit": 3072, "lane": "deadbeef"}}
+                        r["cut_short"] = {"qa": {"steps": 1, "lane": "deadbeef"}}
                     fh.write(json.dumps(r) + chr(10))
             back = []
             self._grow({"a": _lane("a")}, generations=2, width=1, ledger_path=led,
                        resume_from=led, on_event=back.append)
             cps2 = [e for e in back if e.get("event") == "checkpoint"]
             self.assertTrue(cps2)
-            self.assertEqual(cps2[-1]["cut_short"],
-                             {"qa": {"limit": 3072, "lane": "deadbeef"}})
+            self.assertEqual(cps2[-1]["cut_short"], {"qa": {"steps": 1, "lane": "deadbeef"}})
 
     def test_the_loop_raises_the_dose_after_measuring_one_that_still_cut(self):
         # 上の 2 本は関数を直接呼んでいるので、`grow()` 側で記録する行を消しても緑のまま。
@@ -1996,9 +2043,8 @@ class TestGrowLoop(ScriptedCase):
             # (この Cutter がまさにそのモデルで、枠をいくら上げても length を名乗る)。
             self.assertEqual([g for g, lab in listed if g >= 2], [])
             cps = [e for e in events if e.get("event") == "checkpoint"]
-            self.assertEqual(cps[-1]["cut_short"]["qa"]["limit"], 6144)
-            self.assertEqual([c["cut_short"]["qa"]["limit"] for c in cps if c["gen"] == 0],
-                             [3072])
+            self.assertEqual(cps[-1]["cut_short"]["qa"]["steps"], 2)
+            self.assertEqual([c["cut_short"]["qa"]["steps"] for c in cps if c["gen"] == 0], [1])
         finally:
             backends_mod._BACKENDS.pop("cutter", None)
 

@@ -86,6 +86,20 @@ class TestMeshflowEscalation(unittest.TestCase):
         self.assertEqual(m.last_resolved_by, "strong")
         self.assertEqual(m.last_trace[0], {"tier": "flaky", "score": 0.0})
 
+    def test_a_failure_before_a_passing_tier_is_still_recorded(self):
+        # 記録をループの後ろでまとめて書くと、後の段が検証に通って早期 return した時に
+        # 前の段の障害が消える(部分的な劣化が過少計上になる)。落ちたその場で足す。
+        from gama.backends import member_failures_of
+
+        class Boom(ModelBackend):
+            available = True
+            def complete(self, prompt, tier, **kw):
+                raise RuntimeError("boom")
+        m = MeshflowBackend([("flaky", Boom()), ("strong", Fixed("GOOD"))], verify=good)
+        self.assertEqual(m.complete("q", ModelTier.LARGE), "GOOD")   # 早期 return する経路
+        self.assertEqual(len(m.last_failures), 1)
+        self.assertEqual(member_failures_of(m), 1)
+
     def test_all_tiers_failing_raises_instead_of_answering_empty(self):
         # 1 段落ちても登っていくのは正しい(上のテスト)。全段落ちた時に best-effort として
         # 空文字を返すのは別で、それは**測定の失敗**であって「答えが空」ではない。空で返すと

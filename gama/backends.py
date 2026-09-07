@@ -665,12 +665,11 @@ class EnsembleBackend(ModelBackend):
                 # 1 人落ちても掃き掃除は続ける(合議の値打ちはそこ)。ただし例外は捨てない ——
                 # 全員落ちた時に「空の答え」と「測定の失敗」を区別するのに要る。
                 failures.append(e)
+                # 落ちたその場で足す(meshflow と同じ約束)。後から一括で書くと、途中で
+                # 抜ける経路が増えた時にそこだけ記録が消える。
+                self.last_failures = list(self.last_failures or []) + [e]
                 cands.append("")
         self.last_candidates = cands
-        # **足す**(置き換えない)。外側の合成が同じ内側を 1 コールの中で 2 回呼ぶと、置き換えでは
-        # 2 回目の成功が 1 回目の部分障害を消し、台帳に member_failures=0 が残る。空にするのは
-        # 読む側と同じ walker(``clear_finish_reason``)の仕事で、それは 1 コールに 1 回走る。
-        self.last_failures = list(self.last_failures or []) + failures
         nonempty = [c for c in cands if c and c.strip()]
         if not nonempty:
             if failures:

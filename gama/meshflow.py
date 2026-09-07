@@ -181,17 +181,16 @@ class MeshflowBackend(ModelBackend):
             except Exception as e:
                 art = ""                                    # a failing tier -> empty draft, escalate
                 failures.append(e)                          # 捨てない: 全段落ちた時の判別に要る
+                # 記録は**落ちたその場で**足す。ループの後ろに置くと、後の段が検証に通って
+                # 早期 return した時に前の段の障害が消える(部分的な劣化が過少計上になる)。
+                # 空にするのは読む側と同じ walker(``clear_finish_reason``)の仕事。
+                self.last_failures = list(self.last_failures or []) + [e]
             cost += self.costs[i] if i < len(self.costs) else 1.0
             score = self._score(verify, art)
             attempts.append({"tier": label, "score": round(score, 3)})
             drafts.append(art)
             if score >= self.pass_score:                    # external verify satisfied -> stop
                 return self._finish(art, label, cost, attempts, be, human=False)
-
-        # 落ちた段は**足す**(置き換えない)。外側の合成が同じ meshflow を 1 コールの中で 2 回
-        # 呼ぶと、置き換えでは 2 回目の成功が 1 回目の部分障害を消す。空にするのは読む側と同じ
-        # walker(``clear_finish_reason``)の仕事。
-        self.last_failures = list(self.last_failures or []) + failures
 
         # 全段が落ちて草案が 1 つも無いなら、これは**測定の失敗**であって「答えが空」ではない。
         # そのまま best-effort として空文字を返すと、台帳には 0 点(=不正解)で入り、error は
