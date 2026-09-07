@@ -25,8 +25,8 @@ sys.path.insert(0, os.path.dirname(__file__))
 from gama.cli import main as cli_main
 from gama import backends as backends_mod
 from gama.grow import (Candidate, _challenger_key, _default_swap_viable, _prescribed,
-                       _structure_size, class_headroom, propose, search_gate, spec_hash,
-                       split_cases)
+                       _scope_room, _structure_size, class_headroom, propose, search_gate,
+                       spec_hash, split_cases)
 from gama.backends import ModelBackend
 from gama.benchmark import BenchCase
 from gama.cli import build_parser, main
@@ -1801,6 +1801,107 @@ class TestGrowLoop(ScriptedCase):
         self.assertEqual(scoped_cases(champ_big, cand_big, big, "qa"), 2.0)
         self.assertLess(_challenger_key(a, cand_big, scoped=2.0),
                         _challenger_key(b, cand, scoped=1.0))
+
+    def test_a_tie_goes_to_the_class_with_the_most_room_left(self):
+        # run SS gen0 の実測。処方が 3 本(integration / qa / research)並び、どれも search で
+        # champion と完全同点(差 0 問)になった。同点処理の最後がラベル順だったので confirm へ
+        # 上がったのは integration で、3 本のうち search 側の残りが一番少ないクラスだった。
+        # 数字はその走行の search 側の形をそのまま使う: research は case 数が一番多いのに
+        # 残りは qa より少ないので、「残り」で並べるのと「case の本数」で並べるのが**逆**になる
+        # (case 数で並べる実装でも緑になるテストにしないため)。
+        cases = (_cases(5, "integration", "in") + _cases(8, "qa", "qa")
+                 + _cases(9, "research", "re"))
+        got = {}
+        for c in cases:                       # integration 1.0 / qa 5.0 / research 2.0 を残す
+            left = {"integration": 1, "qa": 5, "research": 2}[c.task_type]
+            idx = int(c.case_id[2:])
+            got[c.case_id] = 0.0 if idx <= left else 1.0
+        champ = Measurement(score=0.0, success_rate=0.0, latency_s=1.0,
+                            n=len(cases), cases=len(cases), per_case=got)
+        room = class_headroom(champ, cases)
+        self.assertEqual(room, {"integration": 1.0, "qa": 5.0, "research": 2.0})
+        # 本数の順(research 9 > qa 8 > integration 5)と残りの順(qa > research > integration)は違う
+        self.assertGreater(len([c for c in cases if c.task_type == "research"]),
+                           len([c for c in cases if c.task_type == "qa"]))
+
+        def _cand(cls):
+            return (Candidate(f"tokens:{cls}(m24)x3072", "tokens",
+                              {"kwargs": {"backends": {}, "routing_table": {}}},
+                              remedy="tokens", treats="cut", scope=cls),
+                    Measurement(score=0.0, success_rate=0.0, latency_s=1.0, n=8, cases=8))
+
+        pool = [_cand("integration"), _cand("qa"), _cand("research")]
+        key = lambda t: _challenger_key(*t, prescribed=True, scoped=0.0,
+                                        room=_scope_room(t[0].scope, room))
+        self.assertEqual(min(pool, key=key)[0].scope, "qa")
+        # 伸びしろを渡さなければ完全同点はラベル順に戻り、残りの一番少ないクラスが選ばれる
+        # (この行が落ちる時は、上の結果を作っているのが room ではないということ)
+        flat = lambda t: _challenger_key(*t, prescribed=True, scoped=0.0)
+        self.assertEqual(min(pool, key=flat)[0].scope, "integration")
+
+    def test_room_sits_below_the_diagnosis_and_above_occam(self):
+        # 並び順の位置を固定する。room を上げ下げすると意味が変わる:
+        # 処方より上に置けば「診断が指した手」より残りの多いクラスが先になり、
+        # 構造の小ささより下に置けば room は同構造の候補の間でしか効かなくなる。
+        m = Measurement(score=0.0, success_rate=0.0, latency_s=1.0, n=8, cases=8)
+        small = Candidate("route:qa->b", "route",
+                          {"kwargs": {"backends": {}, "routing_table": {}}}, scope="qa")
+        big = Candidate("ensemble:research(a+b)", "ensemble",
+                        {"kwargs": {"backends": {"ens": {"backend": "ensemble"}},
+                                    "routing_table": {"research": "ens"}}},
+                        scope="research")
+        self.assertGreater(_structure_size(big.spec), _structure_size(small.spec))
+        # 処方 > room: 残りの多いクラスの非処方より、残りの少ないクラスの処方が先
+        self.assertLess(_challenger_key(small, m, prescribed=True, scoped=0.0, room=1.0),
+                        _challenger_key(big, m, prescribed=False, scoped=0.0, room=5.0))
+        # room > 構造の小ささ: 残りが多ければ、構造の大きい方が先に測られる
+        self.assertLess(_challenger_key(big, m, prescribed=True, scoped=0.0, room=5.0),
+                        _challenger_key(small, m, prescribed=True, scoped=0.0, room=1.0))
+        # room は差(scoped)と「scope 内が壊れているか」には勝てない
+        self.assertLess(_challenger_key(small, m, scoped=1.0, room=0.0),
+                        _challenger_key(big, m, scoped=0.0, room=5.0))
+        self.assertLess(_challenger_key(small, m, scoped=0.0, room=0.0, broken=False),
+                        _challenger_key(big, m, scoped=0.0, room=5.0, broken=True))
+        self.assertEqual(_scope_room("qa", {"qa": 1.0}), 1.0)
+
+    def test_room_for_a_move_with_no_scope_is_its_best_class_not_the_sum(self):
+        # 合計にすると scope 無しの手の room は定義上どの単独クラス以上になり、同点処理で
+        # 必ず勝つ。「ラベル順で飢えるクラスがある」を「scope 無しが常に先」に置き換えるだけに
+        # なるので、単独クラスと比べられる量(最大のクラス)で答える。
+        room = {"integration": 1.0, "qa": 5.0, "research": 2.0}
+        self.assertEqual(_scope_room(None, room), 5.0)
+        self.assertNotEqual(_scope_room(None, room), sum(room.values()))
+        self.assertEqual(_scope_room("qa", room), 5.0)
+        # その split に case の無いクラスは 0(伸びしろが在るとは言えない)
+        self.assertEqual(_scope_room("content", room), 0.0)
+        # per_case の無い古い checkpoint から再開すると class_headroom は空を返す。
+        # そこで順位を作らず、従来のラベル順に戻る
+        self.assertEqual(_scope_room(None, {}), 0.0)
+        self.assertEqual(_scope_room("qa", {}), 0.0)
+
+    def test_the_loop_spends_its_confirm_slot_on_the_roomier_class(self):
+        # 上の 3 本はキー関数を直接呼んでいるので、`grow()` 側で room を渡し忘れても緑のまま。
+        # 既定値 0.0 で静かにラベル順へ戻る形なので、glue を走行で押さえる。
+        # 配置: research は search に 3 問・全部未解決(残り 3.0)、qa は 1 問・未解決(残り 1.0)。
+        # content は lane b が落とすので、全クラスに効く `default->b` は差で負けて先に落ちる。
+        # 残った候補は search の差が全部 0 問の同点で、ラベル順なら route:qa->b が先。
+        Scripted.WINS = {"a": {"co1", "co2", "co3"}, "b": set()}
+        cases = (_cases(3, "qa", "qa") + _cases(6, "research", "re")
+                 + _cases(3, "content", "co"))
+        events = []
+        grow({"a": _lane("a"), "b": _lane("b")}, cases=cases, generations=1, width=10,
+             patience=5, min_margin=0.05, on_event=events.append)
+        listed = [e["label"] for e in events if e.get("event") == "candidate"]
+        gens = [e for e in events if e.get("event") == "generation"]
+        self.assertEqual(len(gens), 1)
+        # ラベル順で先に来る候補は確かに列に居た(= 落ちたのは順序の項のせい)
+        self.assertIn("route:qa->b", listed)
+        self.assertIn("route:research->b", listed)
+        self.assertLess("route:qa->b", "route:research->b")
+        self.assertEqual(gens[0]["challenger"], "route:research->b")
+        self.assertEqual(gens[0]["scope"], "research")
+        self.assertEqual(gens[0]["challenger_search_in_scope"], 0.0)
+        self.assertEqual(gens[0]["challenger_search_room"], 3.0)
 
     def test_the_challenge_gate_measures_the_same_cases_the_selection_did(self):
         # 選抜と門が別の量だと、絞った差で最良の候補を選んでおいて全体の点で落とす、という

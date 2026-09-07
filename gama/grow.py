@@ -1943,8 +1943,29 @@ def errors_in_scope(cand_m: "Measurement", cases: list, scope: Optional[str]) ->
     return len(set(cand_m.error_cases) & ids)
 
 
+def _scope_room(scope: Optional[str], headroom: dict) -> float:
+    """その手が触れるクラスに残っている伸びしろ(問)。``scope`` が ``None`` なら**最大のクラス**。
+
+    合計にしない理由: 合計は定義上どの単独クラスの残り以上になるので、scope 無しの手が
+    同点処理で**必ず勝つ**(残りが全部 0 の時だけ引き分け)。それでは「ラベル順で飢える
+    クラスがある」問題を「scope 無しが常に先」に置き換えるだけになる。単独クラスの残りと
+    比べられる量にするには、scope 無しの側も 1 クラス分の量で答える必要がある。
+
+    最大を採るのは、この項が答えている問いが「この手が一番効くクラスに、床(confirm 1 問)を
+    越えるだけの余地が残っているか」だから。scope 無しの手はどのクラスでも効きうるので、
+    その中で一番余地のあるクラスが代表になる。
+
+    ``headroom`` に無いクラス(その split に case が無い / per_case が復元できない古い
+    checkpoint)は 0。証拠が無いことを「余地が在る」の側に丸めない。
+    """
+    if scope is None:
+        return float(max(headroom.values(), default=0.0))
+    return float(headroom.get(scope, 0.0))
+
+
 def _challenger_key(cand: "Candidate", m: "Measurement", prescribed: bool = False,
-                    scoped: Optional[float] = None, broken: bool = False) -> tuple:
+                    scoped: Optional[float] = None, broken: bool = False,
+                    room: float = 0.0) -> tuple:
     """同点の候補をどう並べるか。**再現しない量を読まない**ことがこの関数の要件。
 
     点数(``m.score``)は読む —— 同じ spec を同じ case 集合で測れば同じ値になるので、
@@ -1957,7 +1978,28 @@ def _challenger_key(cand: "Candidate", m: "Measurement", prescribed: bool = Fals
     当のものなので、意図を保ったまま再現する。
     分けて名前を与えてあるのは、この性質を文字列検査でなく**振る舞いとして**試験できる
     ようにするため。並び順は「scope 内にエラーの無いものが先 → 差(``scoped``。無ければ
-    全体の点)の大きい順 → 処方が先 → 構造の小さい順 → ラベル順」。
+    全体の点)の大きい順 → 処方が先 → **触れるクラスに残っている伸びしろ(``room``)の
+    大きい順** → 構造の小さい順 → ラベル順」。
+
+    ``room`` を入れるのは、完全同点がラベル順で決まっていたため。同点はこの loop では珍しく
+    ない: クラス単位の手は触れないクラスの case を動かさないので、その手のクラスに search
+    case が少なければ差はきれいに 0 問になる。ラベル順は伸びしろと何の関係も無いので、
+    残りの少ないクラスに confirm の枠を配り続けることが起きる(実測は gama-runs/grow-ss.jsonl
+    の gen0。処方 3 本が全部同点になり、search 側の残りが一番少ないクラスが選ばれた)。
+
+    伸びしろは **search 側**で数える。confirm 側の方が case が倍あって精しいが、それで選抜を
+    並べると「confirm でたまたま低く出たクラス」へ confirm の枠を優先的に向けることになり、
+    平均への回帰を昇格の伸びとして拾う経路ができる。選抜が読んでよいのは search だけ、を
+    ここでも崩さない。
+
+    量は**率でなく問数**(絶対量)で取る。床が「confirm 丸 1 問」という絶対量だからで、
+    残り 20% でも case が 2 問しかないクラスは床に届きようがない。率で並べると、床を越え
+    られないクラスへ枠を回す向きに倒れる。case の多いクラスが有利にはなるが、champion が
+    そこを取り進めれば残りは減る(飽和判定が 1 問未満のクラスを外すのと同じ向き)。
+
+    ``champ_search`` の ``per_case`` が無い場合(この欄より前に書かれた checkpoint からの
+    再開)は ``class_headroom`` が空を返し、この項は全候補 0 になって従来のラベル順に戻る。
+    証拠が無い時に順位を作らない。
 
     ``prescribed`` は「チャンピオンの診断が指した処方」(``_prescribed``)。同点の中で先に
     confirm を測るのは処方: search はそのクラスをほぼ取り切っていて payoff を見せられず
@@ -1977,7 +2019,7 @@ def _challenger_key(cand: "Candidate", m: "Measurement", prescribed: bool = Fals
     # 次の項は「触れる case での差(問)」。渡されなければ(または比べる case が無ければ)
     # 従来どおり全体の点で並ぶ。
     lead = -m.score if scoped is None else -scoped
-    return (1 if broken else 0, lead, 0 if prescribed else 1,
+    return (1 if broken else 0, lead, 0 if prescribed else 1, -room,
             _structure_size(cand.spec), cand.label)
 
 
@@ -2544,13 +2586,20 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
             def _scoped(t):
                 return scoped_cases(champ_search, t[1], splits["search"], t[0].scope)
 
+            # 完全同点をラベル順で決めないための最後の実測項。チャンピオンが search で
+            # まだ取れていない問数をクラス別に出しておき、同点なら残りの多いクラスへ
+            # confirm の枠を回す(理由は _challenger_key の docstring)。confirm 側の
+            # 伸びしろは飽和判定が別に使うが、選抜はここでも search しか読まない。
+            search_room = class_headroom(champ_search, splits["search"])
+
             challenger, chal_search = min(
                 additive, key=lambda t: _challenger_key(
                     *t, prescribed=(_prescribed(t[0], symptoms, "no_code")
                                     or _prescribed(t[0], cut_symptoms, "cut")
                                     or _prescribed(t[0], preamble_symptoms, "preamble")),
                     scoped=_scoped(t),
-                    broken=bool(errors_in_scope(t[1], splits["search"], t[0].scope))))
+                    broken=bool(errors_in_scope(t[1], splits["search"], t[0].scope)),
+                    room=_scope_room(t[0].scope, search_room)))
             chal_scoped = scoped_cases(champ_search, chal_search, splits["search"],
                                        challenger.scope)
             # search で band を超えて負けた設計は、**このチャンピオンの下では決着済み**:
@@ -2579,6 +2628,10 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
                         # 二つが食い違う世代は「触っていないクラスの揺れ」が見えている世代。
                         "challenger_search_in_scope": (None if chal_scoped is None
                                                        else round(chal_scoped, 3)),
+                        # 同点処理に使った伸びしろ(search 側・問)。台帳だけで「どの枠を
+                        # どれだけ余地のあるクラスへ回したか」が後から読めるように。
+                        "challenger_search_room": round(
+                            _scope_room(challenger.scope, search_room), 3),
                         # 踏み石から上がった挑戦者か、この世代の新顔か。archive の点で挑戦する
                         # 設計はこの世代に search を測っていない、と台帳だけで読めるように。
                         "challenger_from": "archive" if chal_hash in archived_before else "new",
