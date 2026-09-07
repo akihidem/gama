@@ -658,7 +658,6 @@ class EnsembleBackend(ModelBackend):
 
     def complete(self, prompt: str, tier: ModelTier, **kwargs) -> str:
         cands, failures = [], []
-        self.last_failures = failures
         for m in self.members:
             try:
                 cands.append(m.complete(prompt, tier, **kwargs))
@@ -668,6 +667,10 @@ class EnsembleBackend(ModelBackend):
                 failures.append(e)
                 cands.append("")
         self.last_candidates = cands
+        # **足す**(置き換えない)。外側の合成が同じ内側を 1 コールの中で 2 回呼ぶと、置き換えでは
+        # 2 回目の成功が 1 回目の部分障害を消し、台帳に member_failures=0 が残る。空にするのは
+        # 読む側と同じ walker(``clear_finish_reason``)の仕事で、それは 1 コールに 1 回走る。
+        self.last_failures = list(self.last_failures or []) + failures
         nonempty = [c for c in cands if c and c.strip()]
         if not nonempty:
             if failures:

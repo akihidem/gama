@@ -119,6 +119,28 @@ class TestEnsemble(unittest.TestCase):
         self.assertEqual(rec["member_failures"], 2)
         self.assertEqual(member_failures_of(e), 2)
 
+    def test_the_same_composite_called_twice_keeps_both_calls_failures(self):
+        # 外側の合議が同じ内側を 1 コールの中で 2 回呼ぶ形。置き換えだと 2 回目の成功が
+        # 1 回目の部分障害を消し、台帳には member_failures=0 が残る。
+        class BoomOnce(ModelBackend):
+            available = True
+
+            def __init__(self):
+                self.calls = 0
+                self.last_usage = None
+
+            def complete(self, prompt, tier, **kw):
+                self.calls += 1
+                if self.calls == 1:
+                    raise RuntimeError("boom")
+                return "ok"
+
+        inner = EnsembleBackend([BoomOnce(), Fixed("ok")], strategy="first")
+        outer = EnsembleBackend([inner, inner], strategy="first")
+        clear_finish_reason(outer)
+        self.assertEqual(outer.complete("q", ModelTier.LARGE), "ok")
+        self.assertEqual(member_failures_of(outer), 1)
+
     def test_failures_are_cleared_by_the_same_walker_that_clears_finish_reason(self):
         # 読む側は木を全部見るので、今回呼ばれなかった枝に前回の失敗が残っていると
         # それを今回のものとして数える。消す側と読む側で walker を 1 つにする。

@@ -24,9 +24,9 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from gama.cli import main as cli_main
 from gama import backends as backends_mod
-from gama.grow import (Candidate, _challenger_key, _default_swap_viable, _prescribed,
-                       _scope_room, _structure_size, class_headroom, propose, search_gate,
-                       spec_hash, split_cases)
+from gama.grow import (Candidate, _challenger_key, _default_swap_viable, _lane_identity,
+                       _prescribed, _scope_room, _structure_size, class_headroom, propose,
+                       search_gate, spec_hash, split_cases)
 from gama.backends import ModelBackend
 from gama.benchmark import BenchCase
 from gama.cli import build_parser, main
@@ -485,6 +485,11 @@ class TestPropose(ScriptedCase):
         classes = ["integration", "qa"]
 
         def tokens(**kw):
+            # 記憶はレーンの同一性ごと(別モデルへ移ったら効かない)。テストは champ の
+            # そのクラスのレーンに紐づけて渡す。
+            if "cut_short" in kw:
+                kw["cut_short"] = {c: {"limit": n, "lane": _lane_identity(champ, c)}
+                                   for c, n in kw["cut_short"].items()}
             return [c.label for c in propose(champ, pool, classes, width=30, **kw)
                     if c.kind == "tokens"]
 
@@ -1860,11 +1865,32 @@ class TestGrowLoop(ScriptedCase):
             self.assertIn((0, "route:qa->big"), listed)
             cps = [e for e in events if e.get("event") == "checkpoint"]
             # それでも覚えているのは処方自身が試した 3072 だけ(8192 ではない)
-            self.assertEqual([c["cut_short"] for c in cps if c["gen"] == 0], [{"qa": 3072}])
+            self.assertEqual([c["cut_short"]["qa"]["limit"] for c in cps if c["gen"] == 0],
+                             [3072])
             # 結果として次の用量は 6144。段が消えていない
             self.assertIn((1, "tokens:qa(a)x6144"), listed)
         finally:
             backends_mod._BACKENDS.pop("cutter", None)
+
+    def test_a_class_that_moves_to_another_model_starts_the_ladder_over(self):
+        # 記憶がクラス名だけだと、モデル A で 4 倍まで試した履歴が、枠 1536 のモデル B に
+        # 替わった後も処方を止める(B では一度も試していないのに)。用量を除いたレーンの
+        # 同一性で紐づける。
+        from gama.grow import _budget_still_worth_trying, _lane_identity
+        a = {"kwargs": {"backends": {"a": {"backend": "one", "kwargs": {"max_tokens": 1536}}},
+                        "routing_table": {}, "default": "a"}}
+        b = {"kwargs": {"backends": {"b": {"backend": "two", "kwargs": {"max_tokens": 1536}}},
+                        "routing_table": {}, "default": "b"}}
+        self.assertNotEqual(_lane_identity(a, "qa"), _lane_identity(b, "qa"))
+        tried_on_a = {"qa": {"limit": 1536 * 4, "lane": _lane_identity(a, "qa")}}
+        self.assertFalse(_budget_still_worth_trying(a, "qa", tried_on_a))  # A では打ち切り
+        self.assertTrue(_budget_still_worth_trying(b, "qa", tried_on_a))   # B では未検証
+        # 用量が違うだけの同じレーンは同じ同一性(1536 と 3072 は同じ梯子の別の段)
+        a3072 = {"kwargs": {"backends": {"a": {"backend": "one",
+                                               "kwargs": {"max_tokens": 3072},
+                                               "_grow_base": "a"}},
+                            "routing_table": {}, "default": "a"}}
+        self.assertEqual(_lane_identity(a, "qa"), _lane_identity(a3072, "qa"))
 
     def test_an_insufficient_budget_is_remembered_per_class_from_the_lane_it_ran_on(self):
         # 記録するのは「その測定が実際に使っていたレーンの枠」で、ラベルの数字ではない。
@@ -1876,16 +1902,32 @@ class TestGrowLoop(ScriptedCase):
             "routing_table": {"qa": "big"}, "default": "small"}}
         self.assertEqual(_lane_token_limit(spec, "qa"), 3072)          # 表の行き先
         self.assertEqual(_lane_token_limit(spec, "research"), 1536)    # 既定レーン
+        # 合議レーンの用量は**一番小さい枠**。片方が上限でも「上限で切れた」とは記録しない
+        # (次に小さいレーンへ処方する時、一段で上限へ飛んで段が消える)。
+        mixed = {"kwargs": {"backends": {"ens": {"backend": "ensemble", "kwargs": {"members": [
+            {"kwargs": {"max_tokens": MAX_TOKENS_CAP}}, {"kwargs": {"max_tokens": 3072}}]}}},
+            "routing_table": {"qa": "ens"}, "default": "ens"}}
+        self.assertEqual(_lane_token_limit(mixed, "qa"), 3072)
+        self.assertNotEqual(_lane_token_limit(mixed, "qa"), MAX_TOKENS_CAP)
         seen = {}
         _note_cut_short(seen, spec, {"qa": 2, "research": 1})
-        self.assertEqual(seen, {"qa": 3072, "research": 1536})
-        # 大きい方だけ残る(小さい枠での切断は、大きい枠の反証にならない)
-        _note_cut_short(seen, {"kwargs": {"backends": {"s": {"kwargs": {"max_tokens": 512}}},
-                                          "routing_table": {}, "default": "s"}}, {"qa": 9})
-        self.assertEqual(seen["qa"], 3072)
+        self.assertEqual({c: v["limit"] for c, v in seen.items()},
+                         {"qa": 3072, "research": 1536})
+        self.assertEqual(seen["qa"]["lane"], _lane_identity(spec, "qa"))
+        # 同じレーンなら大きい方だけ残る(小さい枠での切断は、大きい枠の反証にならない)
+        _note_cut_short(seen, dict(spec, kwargs=dict(
+            spec["kwargs"], backends={"small": {"kwargs": {"max_tokens": 1536}},
+                                      "big": {"kwargs": {"max_tokens": 512}}})), {"qa": 9})
+        self.assertEqual(seen["qa"]["limit"], 3072)
         # 切断が 0 のクラスは覚えない(「足りなかった」の証拠が無い)
         _note_cut_short(seen, spec, {"content": 0})
         self.assertNotIn("content", seen)
+        # 別のレーンでの切断は置き換える(前のレーンの記録は今のレーンの用量を何も言わない)
+        other = {"kwargs": {"backends": {"z": {"backend": "other",
+                                               "kwargs": {"max_tokens": 512}}},
+                            "routing_table": {}, "default": "z"}}
+        _note_cut_short(seen, other, {"qa": 3})
+        self.assertEqual(seen["qa"], {"limit": 512, "lane": _lane_identity(other, "qa")})
         # max_tokens を持たないレーンは記録しようがない
         self.assertIsNone(_lane_token_limit({"kwargs": {"backends": {"n": {}},
                                                         "routing_table": {}, "default": "n"}}, "qa"))
@@ -1910,14 +1952,15 @@ class TestGrowLoop(ScriptedCase):
             with open(led, "w") as fh:
                 for r in rows:
                     if r.get("event") == "checkpoint":
-                        r["cut_short"] = {"qa": 3072}
+                        r["cut_short"] = {"qa": {"limit": 3072, "lane": "deadbeef"}}
                     fh.write(json.dumps(r) + chr(10))
             back = []
             self._grow({"a": _lane("a")}, generations=2, width=1, ledger_path=led,
                        resume_from=led, on_event=back.append)
             cps2 = [e for e in back if e.get("event") == "checkpoint"]
             self.assertTrue(cps2)
-            self.assertEqual(cps2[-1]["cut_short"], {"qa": 3072})
+            self.assertEqual(cps2[-1]["cut_short"],
+                             {"qa": {"limit": 3072, "lane": "deadbeef"}})
 
     def test_the_loop_raises_the_dose_after_measuring_one_that_still_cut(self):
         # 上の 2 本は関数を直接呼んでいるので、`grow()` 側で記録する行を消しても緑のまま。
@@ -1953,8 +1996,9 @@ class TestGrowLoop(ScriptedCase):
             # (この Cutter がまさにそのモデルで、枠をいくら上げても length を名乗る)。
             self.assertEqual([g for g, lab in listed if g >= 2], [])
             cps = [e for e in events if e.get("event") == "checkpoint"]
-            self.assertEqual(cps[-1]["cut_short"], {"qa": 6144})
-            self.assertEqual([c["cut_short"] for c in cps if c["gen"] == 0], [{"qa": 3072}])
+            self.assertEqual(cps[-1]["cut_short"]["qa"]["limit"], 6144)
+            self.assertEqual([c["cut_short"]["qa"]["limit"] for c in cps if c["gen"] == 0],
+                             [3072])
         finally:
             backends_mod._BACKENDS.pop("cutter", None)
 

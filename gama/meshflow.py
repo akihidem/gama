@@ -175,7 +175,6 @@ class MeshflowBackend(ModelBackend):
         sub = {k: v for k, v in kwargs.items() if k not in ("verify", "stakes")}
 
         attempts, drafts, cost, failures = [], [], 0.0, []
-        self.last_failures = failures
         for i, (label, be) in enumerate(self.tiers):        # cheap -> expensive
             try:
                 art = be.complete(prompt, tier, **sub)
@@ -188,6 +187,11 @@ class MeshflowBackend(ModelBackend):
             drafts.append(art)
             if score >= self.pass_score:                    # external verify satisfied -> stop
                 return self._finish(art, label, cost, attempts, be, human=False)
+
+        # 落ちた段は**足す**(置き換えない)。外側の合成が同じ meshflow を 1 コールの中で 2 回
+        # 呼ぶと、置き換えでは 2 回目の成功が 1 回目の部分障害を消す。空にするのは読む側と同じ
+        # walker(``clear_finish_reason``)の仕事。
+        self.last_failures = list(self.last_failures or []) + failures
 
         # 全段が落ちて草案が 1 つも無いなら、これは**測定の失敗**であって「答えが空」ではない。
         # そのまま best-effort として空文字を返すと、台帳には 0 点(=不正解)で入り、error は

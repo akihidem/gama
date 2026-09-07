@@ -264,6 +264,32 @@ def _checkpoint_row(gen: int, champion: dict, champ_search, champ_confirm,
             "served": served, "identity_blind": identity_blind}
 
 
+def _lane_identity(spec: dict, task_type: str) -> Optional[str]:
+    """そのクラスが通るレーンの「用量を除いた同一性」。無ければ ``None``。
+
+    ``max_tokens`` と ``_grow_base`` を落としてから内容ハッシュを取る。前者は今まさに刻んで
+    いる段そのもの(1536 と 3072 は同じレーンの別の用量)、後者は処方が書き足す由来の印で、
+    どちらもレーンの中身の違いではない。
+
+    これが要るのは、覚えている「この枠でも切れた」がクラス名だけの記憶だと、**別のモデルに
+    替わっても効き続ける**ため(codex 指摘)。モデル A で 6144 まで試した後に同じクラスが枠
+    1536 のモデル B へ移ると、B では一度も試していないのに処方が止まる。
+    """
+    lane = _resolved_lane(spec, task_type)
+    if not lane:
+        return None
+
+    def strip(node):
+        if isinstance(node, dict):
+            return {k: strip(v) for k, v in node.items()
+                    if k not in ("max_tokens", "_grow_base")}
+        if isinstance(node, list):
+            return [strip(v) for v in node]
+        return node
+
+    return spec_hash(strip(lane))
+
+
 def _budget_still_worth_trying(champion: dict, task_type: str,
                                cut_short: Optional[dict]) -> bool:
     """そのクラスに枠 2 倍の処方をもう一度出してよいか。**登り続けさせない**のが要件。
@@ -281,9 +307,24 @@ def _budget_still_worth_trying(champion: dict, task_type: str,
     チャンピオンの枠を基準にするので、処方が昇格して枠が上がれば上限も一緒に上がる
     (昇格は「この向きは効いた」という証拠で、その先をもう一度試す資格がある)。
     """
-    tried = (cut_short or {}).get(task_type) or 0
+    tried = _remembered_cut_short(champion, task_type, cut_short)
     limit = _lane_token_limit(champion, task_type) or 0
     return not (limit and tried >= limit * 4)
+
+
+def _remembered_cut_short(champion: dict, task_type: str,
+                          cut_short: Optional[dict]) -> int:
+    """このチャンピオンのそのクラスに**当てはまる**「この枠でも切れた」。無ければ 0。
+
+    記憶はレーンの同一性ごと。今そのクラスが通っているレーンと別のレーンで取った記録は、
+    このクラスの用量について何も言っていない。
+    """
+    got = (cut_short or {}).get(task_type)
+    if not isinstance(got, dict):
+        return 0
+    if got.get("lane") != _lane_identity(champion, task_type):
+        return 0
+    return int(got.get("limit") or 0)
 
 
 def _note_cut_short(seen: dict, spec: dict, cut_by_class: dict) -> dict:
@@ -299,19 +340,32 @@ def _note_cut_short(seen: dict, spec: dict, cut_by_class: dict) -> dict:
         if not n:
             continue
         limit = _lane_token_limit(spec, cls)
-        if limit and limit > seen.get(cls, 0):
-            seen[cls] = limit
+        if not limit:
+            continue
+        lane = _lane_identity(spec, cls)
+        prev = seen.get(cls)
+        # 同じレーンなら大きい方を残し、別のレーンなら置き換える(前のレーンの記録は、
+        # 今のレーンの用量について何も言っていない)。
+        if (isinstance(prev, dict) and prev.get("lane") == lane
+                and int(prev.get("limit") or 0) >= limit):
+            continue
+        seen[cls] = {"limit": limit, "lane": lane}
     return seen
 
 
 def _lane_token_limit(spec: dict, task_type: str) -> Optional[int]:
-    """そのクラスが実際に通るレーンの ``max_tokens`` のうち最大。見つからなければ ``None``。
+    """そのクラスが実際に通るレーンの ``max_tokens`` のうち**最小**。無ければ ``None``。
 
     「この枠でも切れた」を記録する時に要る。レーンの**名前**でなく中身から読むのは
     ``_scope_of`` と同じ理由で、名前が同じでも中身が違えば別の用量だから。
+
+    最大でなく最小を採るのは、切断を決めるのが**一番小さい枠**だから。合議の片方が既に
+    上限・もう片方が 3072 のレーンで切断が出た時、最大(=上限)を「この枠でも足りない」と
+    記録すると、次に小さいレーンへ処方する時に一段で上限へ飛び、段を刻むという要件が
+    消える。ラベルを付ける ``_raised_to`` が「実際に上がった枠」を書くのと同じ向き。
     """
     got = _max_tokens_all(_resolved_lane(spec, task_type))
-    return max(got) if got else None
+    return min(got) if got else None
 
 
 def _scope_of(champion: dict, spec: dict, classes: list) -> Optional[str]:
@@ -714,7 +768,8 @@ def propose(champion: dict, pool: dict[str, dict], classes: list[str],
         if task_type in cut and _budget_still_worth_trying(champion, task_type, cut_short):
             # ②'' 返答の枠を 2 倍にする。そのクラスで「この枠でも切れた」と実測済みの上限が
             # あれば、そこから上げる(無ければ従来どおりチャンピオンの枠の 2 倍)。
-            bigger = _with_more_tokens(cur_spec, at_least=(cut_short or {}).get(task_type))
+            bigger = _with_more_tokens(
+                cur_spec, at_least=_remembered_cut_short(champion, task_type, cut_short))
             if bigger is not None:
                 name = f"{cur}+tok"
                 got = _raised_to(cur_spec, bigger)
@@ -2488,8 +2543,8 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
     # 「その枠でも切れた」の記憶(クラス → 足りないと実測した max_tokens)。再開でも持ち越す:
     # 落とすと、再開した走行が一度捨てた用量をもう一度測り直す。古い checkpoint には無いキー
     # なので空で復元する(証拠が無いことを「足りている」の側に丸めない)。
-    cut_short: dict = {str(k): int(v) for k, v in (resume.get("cut_short") or {}).items()} \
-        if resume else {}
+    cut_short: dict = {str(k): dict(v) for k, v in (resume.get("cut_short") or {}).items()
+                       if isinstance(v, dict)} if resume else {}
     for gen in range(start_gen, generations):
         t0 = time.time()
         if trace is not None:
