@@ -86,6 +86,39 @@ class TestMeshflowEscalation(unittest.TestCase):
         self.assertEqual(m.last_resolved_by, "strong")
         self.assertEqual(m.last_trace[0], {"tier": "flaky", "score": 0.0})
 
+    def test_all_tiers_failing_raises_instead_of_answering_empty(self):
+        # 1 段落ちても登っていくのは正しい(上のテスト)。全段落ちた時に best-effort として
+        # 空文字を返すのは別で、それは**測定の失敗**であって「答えが空」ではない。空で返すと
+        # 台帳には 0 点(=不正解)で入り、error は 1 件も増えないので走行の門(error_rate)が
+        # 気づけない。EnsembleBackend と同じ約束にする(合成物は外から見ると答えたように見える)。
+        class Boom(ModelBackend):
+            available = True
+            def complete(self, prompt, tier, **kw):
+                raise RuntimeError("boom")
+        from gama.backends import MeasurementUnavailable
+
+        m = MeshflowBackend([("a", Boom()), ("b", Boom())], verify=good)
+        # 前の call の痕跡を残しておく: 例外で _finish を飛ばすと、拾った側が
+        # last_trace を「今回の記録」として読んでしまう
+        m.last_trace, m.last_resolved_by = [{"tier": "old", "score": 1.0}], "strong"
+        with self.assertRaises(MeasurementUnavailable) as cm:
+            m.complete("q", ModelTier.LARGE)
+        self.assertIn("meshflow", str(cm.exception))
+        self.assertIn("boom", str(cm.exception))
+        self.assertIn("2 of 2", str(cm.exception))
+        self.assertIsNotNone(cm.exception.__cause__)
+        # 落ちる前に、この call の痕跡へ書き換わっている
+        self.assertEqual([a["tier"] for a in m.last_trace], ["a", "b"])
+        self.assertIsNone(m.last_resolved_by)
+        self.assertEqual(len(m.last_failures), 2)
+
+    def test_tiers_that_answer_empty_without_failing_are_still_an_answer(self):
+        # 例外を出さずに空を返した段しか無い場合は、本当に空の答え。落とさない
+        # (落とすと「モデルが黙った」まで測定の失敗に化け、error_rate の門が誤爆する)。
+        m = MeshflowBackend([("a", Fixed("")), ("b", Fixed(""))], verify=good, mesh=False,
+                            stakes=0.0)
+        self.assertEqual(m.complete("q", ModelTier.LARGE), "")
+
 
 class TestMeshflowEdgeMesh(unittest.TestCase):
     def test_union_mesh_at_edge(self):

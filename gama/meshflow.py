@@ -21,7 +21,7 @@ import re
 import subprocess
 import sys
 
-from .backends import ModelBackend, synthesize
+from .backends import MeasurementUnavailable, ModelBackend, synthesize
 from .models import ModelTier
 
 NEEDS_HUMAN = "<<NEEDS_HUMAN>>"
@@ -156,6 +156,7 @@ class MeshflowBackend(ModelBackend):
         self.last_resolved_by = None    # tier label / "mesh" / "best-effort" / None(=human gate)
         self.last_cost = None           # summed tier cost up to resolution (price proxy)
         self.last_human_gate = False
+        self.last_failures: list = []   # 落ちた段の例外(部分的な劣化を下流から見えるように)
 
     def _score(self, verify, artifact) -> float:
         if verify is None:
@@ -173,18 +174,37 @@ class MeshflowBackend(ModelBackend):
         stakes = kwargs.get("stakes", self.stakes)
         sub = {k: v for k, v in kwargs.items() if k not in ("verify", "stakes")}
 
-        attempts, drafts, cost = [], [], 0.0
+        attempts, drafts, cost, failures = [], [], 0.0, []
+        self.last_failures = failures
         for i, (label, be) in enumerate(self.tiers):        # cheap -> expensive
             try:
                 art = be.complete(prompt, tier, **sub)
-            except Exception:
+            except Exception as e:
                 art = ""                                    # a failing tier -> empty draft, escalate
+                failures.append(e)                          # 捨てない: 全段落ちた時の判別に要る
             cost += self.costs[i] if i < len(self.costs) else 1.0
             score = self._score(verify, art)
             attempts.append({"tier": label, "score": round(score, 3)})
             drafts.append(art)
             if score >= self.pass_score:                    # external verify satisfied -> stop
                 return self._finish(art, label, cost, attempts, be, human=False)
+
+        # 全段が落ちて草案が 1 つも無いなら、これは**測定の失敗**であって「答えが空」ではない。
+        # そのまま best-effort として空文字を返すと、台帳には 0 点(=不正解)で入り、error は
+        # 1 件も増えないので走行の門(error_rate)が気づけない。合成物は外から見ると答えたように
+        # 見えるので、ここで名乗って落ちる(EnsembleBackend と同じ約束)。
+        # 例外を出さずに空を返した段しか無い場合は、本当に空の答えなので下へ流す。
+        if failures and not any(d and d.strip() for d in drafts):
+            # 落ちる前に、ここまでで確定している痕跡は書いておく。例外で _finish を飛ばすと
+            # last_trace / last_resolved_by / last_cost が**前の call の値のまま**残り、
+            # 例外を拾った呼び出し側がそれを今回の記録として読む(合成物の外側の属性を
+            # 今回のものと信じる、と同じ型の間違い)。
+            self.last_trace, self.last_cost = attempts, round(cost, 3)
+            self.last_resolved_by, self.last_human_gate, self.last_usage = None, False, None
+            raise MeasurementUnavailable(
+                f"meshflow: no tier could answer "
+                f"({len(failures)} of {len(self.tiers)} raised); first: "
+                f"{type(failures[0]).__name__}: {failures[0]}") from failures[0]
 
         # ② edge: no single tier passed -> mesh the tier drafts (complementary capability).
         if self.mesh and len(self.tiers) > 1:

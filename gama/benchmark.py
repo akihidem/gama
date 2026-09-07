@@ -1894,6 +1894,7 @@ def _run_one(name: str, backend, case: BenchCase, tier: ModelTier, rep: int,
     cost = round((tokens / 1000.0) * uc, 6) if (tokens and uc) else None
     output = output or ""
     from .backends import finish_reason_of as _finish_reason_of   # 遅延 import(循環を避ける)
+    from .backends import member_failures_of as _member_failures_of
     return {
         "backend": name, "task_type": case.task_type, "case_id": case.case_id, "rep": rep,
         "score": round(score, 4), "success": score >= 0.5, "latency_s": latency,
@@ -1905,6 +1906,10 @@ def _run_one(name: str, backend, case: BenchCase, tier: ModelTier, rep: int,
         # 木の中の誰かが言った理由(合議は自分では言わない)。外側だけ読むと、合議に振った
         # クラスの切断が構造的に見えなくなる(run Z の種: research 20 コールが全部 None)。
         "finish_reason": _finish_reason_of(backend),
+        # 合成物の中で落ちたメンバーの数。全滅は例外になるので error に出るが、**部分的な**
+        # 劣化(3 人中 2 人落ちて 1 人が答えた)は点だけ見ても分からない。台帳には「その合議
+        # 構成の点」として入るのに、実際に走ったのは単体モデル 1 本、が起きる。
+        "member_failures": _member_failures_of(backend),
     }
 
 

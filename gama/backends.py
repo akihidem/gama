@@ -592,6 +592,20 @@ def synthesize(aggregator, prompt: str, tier: ModelTier, candidates: list,
         return candidates[0] if candidates else ""
 
 
+class MeasurementUnavailable(RuntimeError):
+    """答えを持って帰れなかった call。**「モデルが間違えた」ではない。**
+
+    合成物(合議・meshflow)は中身が全部落ちても外からは答えたように見えるので、空文字を
+    返すと台帳には 0 点(=不正解)で入り、error は 1 件も増えない。測定側は最初からこの区別を
+    持っていて(``Measurement.error_cases`` は対応のある比較から外れる)、失われていたのは
+    区別ではなく**その情報が測定側に届く経路**だった。合成物はここで名乗って落ちる。
+
+    ``RuntimeError`` を継いでいるのは、掃引の ``except Exception`` が既にこれを拾って
+    1 行の error として記録するから。型を分けてあるのは、後から「基盤の失敗」と「その他の
+    error」を分けたくなった時に台帳の文字列を解析せずに済ませるため。
+    """
+
+
 class EnsembleBackend(ModelBackend):
     """Mixture-of-Agents — run several sub-backends on the SAME prompt and combine.
 
@@ -604,7 +618,13 @@ class EnsembleBackend(ModelBackend):
       - ``first``: first non-empty candidate.
     A single sub-backend may be repeated N times (homogeneous self-ensemble); pair it
     with a ``temperature``>0 backend for diversity. Members run sequentially; a member
-    that errors contributes an empty candidate (the sweep never aborts).
+    that errors contributes an empty candidate (the sweep never aborts) — but when a member
+    raised and **no** member produced a non-empty answer, this raises
+    ``MeasurementUnavailable`` instead of answering ``""``: a composite that cannot bring an
+    answer back is a broken measurement, not a wrong one, and only an exception makes the
+    caller's error counters and the grow loop's guard see it. Members that all answer ``""``
+    without raising are a real (empty) answer and still return ``""``. Which members failed
+    is left on ``last_failures``, so a partly degraded ensemble is visible too.
     """
 
     name = "ensemble"
@@ -620,17 +640,39 @@ class EnsembleBackend(ModelBackend):
         self.available = any(getattr(m, "available", False) for m in self.members)
         self.last_usage = None
         self.last_candidates: list | None = None
+        # 落ちたメンバーの例外。**部分的な劣化**を下流が見られるようにする: 3 人のうち 2 人が
+        # 落ちて 1 人が答えた合議は普通に答えを返すので、台帳には「その合議構成の点」として
+        # 入るが、実際に走ったのは単体モデル 1 本。走らなかった構成の数字が設計の証拠として
+        # 残るのは、全滅を空文字で返していたのと同じ型の欠陥。
+        self.last_failures: list = []
 
     def complete(self, prompt: str, tier: ModelTier, **kwargs) -> str:
-        cands = []
+        cands, failures = [], []
+        self.last_failures = failures
         for m in self.members:
             try:
                 cands.append(m.complete(prompt, tier, **kwargs))
-            except Exception:
+            except Exception as e:
+                # 1 人落ちても掃き掃除は続ける(合議の値打ちはそこ)。ただし例外は捨てない ——
+                # 全員落ちた時に「空の答え」と「測定の失敗」を区別するのに要る。
+                failures.append(e)
                 cands.append("")
         self.last_candidates = cands
         nonempty = [c for c in cands if c and c.strip()]
         if not nonempty:
+            if failures:
+                # 誰も答えを出せず、しかも落ちたメンバーが居る。これは**測定の失敗**であって
+                # 「モデルが間違えた」ではない。空文字を返すと台帳には 0 点(=不正解)として
+                # 入り、error は 1 件も増えないので走行の門(error_rate)も気づけない。実測
+                # (run AA): サーバが消えていた窓で research クラスの 114 call が chars=0 の
+                # 非エラーとして記録され、伸びしろが一番大きいクラスの点を黙って押し下げた。
+                # 合成物は「外から見ると答えたように見える」ので、ここで肯定形に倒す:
+                # 答えを持って帰れない時は名乗って落ちる。
+                raise MeasurementUnavailable(
+                    f"ensemble: no member could answer "
+                    f"({len(failures)} of {len(self.members)} raised); first: "
+                    f"{type(failures[0]).__name__}: {failures[0]}") from failures[0]
+            # 全員が例外を出さずに空を返したのなら、それは本当に「空の答え」。0 点でよい。
             return ""
         if self.strategy == "first":
             return nonempty[0]
@@ -710,6 +752,14 @@ def _backend_tree(backend):
             stack.extend(node)
 
 
+def member_failures_of(backend) -> int:
+    """木の中で落ちたメンバーの数。合成物は外から見ると答えたように見えるので、外側の属性
+    だけ読んでも「1 人でやった合議」を見分けられない。``finish_reason_of`` と同じ walker を
+    使い、包む型が増えても読み手を書き足さずに済むようにする。
+    """
+    return sum(len(getattr(b, "last_failures", None) or ()) for b in _backend_tree(backend))
+
+
 def finish_reason_of(backend):
     """この call で木の中の**誰か**が報告した停止理由。切断が 1 つでもあれば ``"length"``。
 
@@ -738,7 +788,8 @@ def finish_reason_of(backend):
 
 
 def clear_finish_reason(backend) -> None:
-    """``last_finish_reason`` を、この backend と**その中の全 backend** で None にする。
+    """``last_finish_reason`` と ``last_failures`` を、この backend と**その中の全 backend**
+    で空にする。
 
     合成 backend(GamaBackend / ToolBackend など)は内側の値を写すだけで自分では作らない。外側
     だけ消しても、内側が「今回は設定しなかった」(例外を握って素の返答を返す実装・毎回は
@@ -749,6 +800,11 @@ def clear_finish_reason(backend) -> None:
     for node in _backend_tree(backend):
         if hasattr(node, "last_finish_reason"):
             node.last_finish_reason = None
+        # 落ちたメンバーの記録も同じ歩き方で消す。読む側(``member_failures_of``)は木を全部
+        # 見るので、今回の call で呼ばれなかった枝に前回の失敗が残っていると、それを今回の
+        # ものとして数える。消す側と読む側で walker を 1 つにして構造で揃える。
+        if hasattr(node, "last_failures"):
+            node.last_failures = []
 
 
 def _parses(code: str) -> bool:

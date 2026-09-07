@@ -382,6 +382,27 @@ them. What *is* attributable, because it is arithmetic rather than a comparison,
 a lane that answers the same way twice contributes no re-measurement drift, so the bar a
 promotion has to clear falls to the split's resolution and stops moving between generations.
 
+Reading run AA's per-call trace to write this turned up something worse than noise, and it is
+why run AA's number above should be quoted with a caveat. Of its 3810 calls, 157 were recorded
+as errors — and **114 more came back with zero characters, no stop reason, and no error at
+all**. Every one of them was in `research`, the one class routed to an ensemble; 78 were the
+champion being measured on `confirm`. The cause was in `EnsembleBackend`: a member that raised
+contributed an empty candidate so the sweep would not abort, and when no member came back with
+anything the ensemble returned `""`. The bench scored that empty string as a wrong answer and
+left `error` at `None`.
+
+The part worth keeping is that **the machinery to handle this already existed**. A measurement
+records `error_cases` separately and the paired comparisons subtract them, precisely so that a
+dead backend's zeros do not enter a decision as evidence; the loop stops a run whose error rate
+passes 20%. None of it fired, because the composite turned an exception into a non-exception
+before any of it could see one. The distinction was never lost — the path by which the
+information reached the code that owned the distinction was. Composites now raise
+`MeasurementUnavailable` when a member failed and nothing came back, and they leave the failures
+on `last_failures` so a *partly* degraded ensemble (two of three members down, one answering)
+is visible too — that one still returns an answer, and the ledger would otherwise credit the
+score of a three-model design to a single model. Only 42 of the 114 fall outside the window
+where real errors were also being recorded, so this was not purely one outage.
+
 And the culprit is narrower than "ensembles are noisy". Run SS's own champion carries one:
 its second promotion routed `content` to `ens(m24+q7)`, two models voting. Its drift stayed
 0.00 all the same, because both members answer at temperature 0. What moves the floor is not
