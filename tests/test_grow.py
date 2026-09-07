@@ -3730,6 +3730,21 @@ class TestSearchIsAFilterNotARace(ScriptedCase):
             "cut_short": {"qa": {"steps": 2, "lane": lane_id}}})
         self.assertTrue(any("A `terse:qa` line is in the list above." in l
                             for l in with_terse), with_terse)
+        # チャンピオンが無い result では規則を当てられない。黙って落とすと読む側は診断が
+        # 消えたと読むので、記録に在ることだけ書いて「もう出さない」とは言わない。
+        no_champ = _prescription_lines({
+            "history": cut_rows, "prescriptions": prescription_ledger(cut_rows),
+            "cut_short": {"qa": {"steps": 2, "lane": lane_id}}})
+        self.assertTrue(any("cannot be read without the champion" in l for l in no_champ),
+                        no_champ)
+        self.assertFalse(any("not offered it again" in l for l in no_champ), no_champ)
+        # 印字する段数は述語が使った値。生の値だと、レーンが一致しない時に
+        # 「1 段で上限(2)」のような矛盾した文が出る余地が残る
+        for line in retired:
+            if "stopped after" in line:
+                n = int(line.split("stopped after ")[1].split(" ")[0])
+                self.assertGreaterEqual(n, 2)
+
         # 記録が無ければ何も足さない(古い result で行が増えない)
         self.assertFalse(any("stopped after" in l for l in _prescription_lines(
             {"history": cut_rows, "prescriptions": prescription_ledger(cut_rows)})))

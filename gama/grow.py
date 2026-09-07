@@ -3256,20 +3256,32 @@ def _prescription_lines(result: dict) -> list[str]:
                  for label, e in ledger.items()
                  if label.startswith("tokens:") and (e.get("listed") or 0) > 0}
     for cls, v in sorted((result.get("cut_short") or {}).items()):
-        if not isinstance(v, dict) or cls not in listed_in or not champion:
+        if not isinstance(v, dict) or cls not in listed_in:
             continue
-        if _budget_still_worth_trying(champion, cls, result.get("cut_short")):
-            continue
-        steps = int(v.get("steps") or 0)
         # 後継については「台帳に載っているか」だけを言う。順番(降りた後か)も、載っていない
         # 理由(作れなかったのか、並ばなかったのか)も、この記録からは出ない。
-        took_over = any(label.startswith(f"terse:{cls}(") for label in ledger)
-        lines.append(
-            f"  - the bigger-budget remedy for `{cls}` stopped after {steps} measured "
-            f"doubling(s) that still came back cut, which is this loop's limit "
-            f"({MAX_BUDGET_STEPS}); this champion is not offered it again."
-            + (f" A `terse:{cls}` line is in the list above."
-               if took_over else " No `terse:` line for that class is in the list above."))
+        took_over = (" A " + f"`terse:{cls}`" + " line is in the list above."
+                     if any(label.startswith(f"terse:{cls}(") for label in ledger)
+                     else " No `terse:` line for that class is in the list above.")
+        if champion:
+            # 印字する段数も**述語が使った値**にする。生の値を書くと、レーンが一致しない時に
+            # 「1 段で上限(2)に達した」のような、それ自体で矛盾した文が出る余地が残る。
+            steps = _remembered_cut_short(champion, cls, result.get("cut_short"))
+            if _budget_still_worth_trying(champion, cls, result.get("cut_short")):
+                continue
+            lines.append(
+                f"  - the bigger-budget remedy for `{cls}` stopped after {steps} measured "
+                f"doubling(s) that still came back cut, which is this loop's limit "
+                f"({MAX_BUDGET_STEPS}); this champion is not offered it again." + took_over)
+        elif int(v.get("steps") or 0) >= MAX_BUDGET_STEPS:
+            # チャンピオンが無い result(手組み・古い形)。規則は当てられないので、記録に
+            # 在ることだけ書いて「もう出さない」とは言わない。黙って落とすと、読む側は
+            # 診断そのものが消えたと読む。
+            lines.append(
+                f"  - the record says the bigger-budget remedy for `{cls}` was measured at "
+                f"{int(v['steps'])} doubling(s) and still came back cut. Whether it would be "
+                f"offered again cannot be read without the champion it was counted from."
+                + took_over)
     return lines
 
 
