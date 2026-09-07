@@ -604,6 +604,35 @@ class TestPropose(ScriptedCase):
         # ...and only for the symptom it treats
         self.assertTrue(_prescribed(first[0], {"content": 1}, "preamble"))
         self.assertFalse(_prescribed(first[0], {"content": 1}, "cut"))
+        # 枠の梯子を登り切った切断の**後継**でもある。登り切るまでは枠の処方が先で、
+        # terse は出ない(1 世代 1 手、同じクラスに 2 つ並べない)。
+        cs = {"content": {"steps": 1, "lane": _lane_identity(champ, "content")}}
+        self.assertEqual(terse(cut_by_class={"content": 4}, cut_short=cs), [])
+        cs2 = {"content": {"steps": 2, "lane": _lane_identity(champ, "content")}}
+        self.assertEqual(terse(cut_by_class={"content": 4}, cut_short=cs2),
+                         ["terse:content(a)"])
+        # 症状が切断の側なので、治すと名乗るのも切断
+        made = [c for c in propose(champ, pool, classes, width=30,
+                                   cut_by_class={"content": 4}, cut_short=cs2)
+                if c.kind == "terse"][0]
+        self.assertTrue(_prescribed(made, {"content": 1}, "cut"))
+        self.assertFalse(_prescribed(made, {"content": 1}, "preamble"))
+        # 前置きの症状も出ているなら、そちらを治すと名乗る(1 本しか作らない)
+        both = [c for c in propose(champ, pool, classes, width=30,
+                                   cut_by_class={"content": 4}, cut_short=cs2,
+                                   preamble_by_class={"content": 3})
+                if c.kind == "terse"]
+        self.assertEqual([c.label for c in both], ["terse:content(a)"])
+        self.assertTrue(_prescribed(both[0], {"content": 1}, "preamble"))
+
+        # 席が同じ種類に 2 つ出た時(前置きと切断)、座るのは**その席を取った候補**。
+        # 先頭を取る作りだと、並び替えの順と席の順がずれて取り違える。ここでは
+        # content(前置き 5)の席が先で、queue の先頭は qa(切断)になっている。
+        seats = propose(champ, pool, classes, width=1,
+                        preamble_by_class={"content": 5}, cut_by_class={"qa": 1},
+                        cut_short={"qa": {"steps": 2, "lane": _lane_identity(champ, "qa")}})
+        self.assertEqual([c.label for c in seats], ["terse:content(a)"])
+
         # a saturated class is not treated, and a lane that cannot take a system line has no
         # remedy of this kind
         self.assertEqual(terse(preamble_by_class={"content": 12}, additive_classes=["qa"]), [])

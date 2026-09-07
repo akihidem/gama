@@ -762,14 +762,27 @@ def propose(champion: dict, pool: dict[str, dict], classes: list[str],
                             "kwargs": {"inner": copy.deepcopy(cur_spec["kwargs"]["inner"]),
                                        "prefill": ToolBackend.PREFILL}}),
                 remedy=task_type, treats="no_code")))
-        if task_type in preamble:                           # ②' 「聞かれたものだけ返せ」
+        # ②' 「聞かれたものだけ返せ」。前置きの症状に対する処方であり、**枠の梯子を登り切った
+        # 切断**の後継でもある。後継が要るのは、枠を上げ切ったクラスに手が 1 つも無くなるから:
+        # 症状は毎世代出ているのに試すものが無い、という状態を残さない。
+        #
+        # 実測(走行 3 本・処方自身の測定に残った症状を、その世代に入るチャンピオンのそれと
+        # 比べる。比べられるのは 12 本): 枠 2 倍で症状が減ったのは 1 本だけ、**変わらないが
+        # 9 本、増えたのが 2 本**(4→5、5→6。枠を広げたぶん長く走って新しい上限に当たる)。
+        # 同じ数え方で `+prefill` は毎回 2→0、`terse` も毎回 2→0。切断の原因が「モデルが
+        # 止まらない」側にあるなら、効くのは枠ではなく指示の方になる。
+        _terse_treats = ("preamble" if task_type in preamble
+                         else "cut" if (task_type in cut and not _budget_still_worth_trying(
+                             champion, task_type, cut_short))
+                         else None)
+        if _terse_treats:
             terse = _with_system(cur_spec)
             if terse is not None:
                 name = f"{cur}+terse"
                 buckets["terse"].append((task_type, Candidate(
                     f"terse:{task_type}({base})", "terse",
                     _with_lane(champion, task_type, name, _rooted(terse, base, pool)),
-                    remedy=task_type, treats="preamble")))
+                    remedy=task_type, treats=_terse_treats)))
         if task_type in cut and _budget_still_worth_trying(champion, task_type, cut_short):
             # ②'' 返答の枠を 2 倍にする。そのクラスで「この枠でも切れた」と実測済みの上限が
             # あれば、そこから上げる(無ければ従来どおりチャンピオンの枠の 2 倍)。
@@ -900,11 +913,16 @@ def propose(champion: dict, pool: dict[str, dict], classes: list[str],
     # 治療 1 本で、「どの種類を試すか」の根拠ではない)。処方の席は下で、巡回の前に取る。
     symptoms = {c: n for c, n in (no_code_by_class or {}).items()
                 if isinstance(n, int) and not isinstance(n, bool) and n > 0}
-    # 処方は 2 種類ある: no_code → tool レーンの prefill、切断 → 枠を 2 倍。どちらも
-    # 「測定が名指しした治療」なので同じ扱いにする(種類の巡回を待たせない)。
+    # 処方は 3 種類ある: no_code → tool レーンの prefill、切断 → 枠を 2 倍(登り切ったら
+    # terse が後を継ぐ)、前置き → terse。どれも「測定が名指しした治療」なので同じ扱いにする
+    # (種類の巡回を待たせない)。
+    #
+    # ``terse`` を 2 回並べるのは、席が**症状ごと**に配られるから。切断の後継として鋳造した
+    # terse は ``treats="cut"`` なので、前置きの席では拾われない。``tokens`` と ``terse`` は
+    # 種類の巡回(order)に入っていないので、席が無い = その候補は一度も出ない。
     leads: list[tuple[tuple, str, "Candidate"]] = []
     for kind, sym, treats in (("tool", symptoms, "no_code"), ("tokens", cut, "cut"),
-                              ("terse", preamble, "preamble")):
+                              ("terse", preamble, "preamble"), ("terse", cut, "cut")):
         if not sym or not queues[kind]:
             continue
         rank = {c: (-n, c) for c, n in sym.items()}
@@ -930,7 +948,18 @@ def propose(champion: dict, pool: dict[str, dict], classes: list[str],
     for _, kind, _cand in leads:
         if new >= width:
             break
-        cand = queues[kind].pop(0)
+        # 席に座らせるのは**その席を取った候補**。先頭を取ると、同じ種類に別々の症状で
+        # 席が 2 つ出た時(terse の前置きと切断)に、並び替えの順と席の順がずれて
+        # 取り違える。取り出しは同一性で: Candidate は label と kind が同じなら値として
+        # 等しくなるので、``list.remove`` は別の物を消しうる(上の ``lead`` が id を使って
+        # いるのと同じ理由)。
+        for _i, _c in enumerate(queues[kind]):
+            if _c is _cand:
+                queues[kind].pop(_i)
+                break
+        else:
+            continue                           # 既に別の席で出ている
+        cand = _cand
         h = spec_hash(cand.spec)
         if h == champ_hash or h in exclude or h in emitted:
             continue
