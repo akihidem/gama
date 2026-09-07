@@ -625,6 +625,17 @@ class TestPropose(ScriptedCase):
         self.assertEqual([c.label for c in both], ["terse:content(a)"])
         self.assertTrue(_prescribed(both[0], {"content": 1}, "preamble"))
 
+        # 既に上限に達しているレーンは、履歴が無くても枠を上げられない。段数の条件だけで
+        # 判定すると「まだ試せる」のまま terse へも移れず、症状が毎世代出ているのに手が 0 本
+        # になる。見るのは「枠の手が実際に出せたか」。
+        maxed_lane = dict(lane, kwargs=dict(lane["kwargs"], max_tokens=MAX_TOKENS_CAP))
+        champ_maxed = canonical(seed_champion({"a": maxed_lane, "b": _lane("b")}, "a"))
+        made_at_cap = propose(champ_maxed, {"a": maxed_lane}, classes, width=30,
+                              cut_by_class={"content": 4})
+        self.assertEqual([c.kind for c in made_at_cap if c.kind == "tokens"], [])
+        self.assertEqual([c.label for c in made_at_cap if c.kind == "terse"],
+                         ["terse:content(a)"])
+
         # 席が同じ種類に 2 つ出た時(前置きと切断)、座るのは**その席を取った候補**。
         # 先頭を取る作りだと、並び替えの順と席の順がずれて取り違える。ここでは
         # content(前置き 5)の席が先で、queue の先頭は qa(切断)になっている。
@@ -3830,6 +3841,21 @@ class TestSaturatedClasses(ScriptedCase):
             "routing_table": {"qa": "b"}, "default": "a"}}
         self.assertFalse(_default_swap_viable(champ, ["qa", "research"],
                                               {"qa": 9.0, "research": 0.1}, 2.0))
+
+    def test_a_partly_unmeasured_class_keeps_the_default_swap(self):
+        # 伸びしろは測れた case からしか数えないので、「測れた分は満点・残りは全部エラー」の
+        # クラスは 0 として **載る**(欠損しない)。それを確定値と読むと既定の差し替えが
+        # 丸ごと消える。クラス単位の飽和と同じ扱いをここにも置く。
+        champ = canonical(seed_champion({"a": _lane("a"), "b": _lane("b")}, "a"))
+        headroom = {"qa": 0.0, "research": 0.0}
+        self.assertFalse(_default_swap_viable(champ, ["qa", "research"], headroom, 1.0))
+        self.assertTrue(_default_swap_viable(champ, ["qa", "research"], headroom, 1.0,
+                                             unmeasured={"qa"}))
+        # 既定の下に居ないクラスの測定不足は効かない
+        routed = canonical(seed_champion({"a": _lane("a"), "b": _lane("b")}, "a"))
+        routed["kwargs"]["routing_table"]["qa"] = "b"
+        self.assertFalse(_default_swap_viable(routed, ["qa", "research"], headroom, 1.0,
+                                              unmeasured={"qa"}))
 
     def test_unmeasurable_headroom_keeps_the_default_swap(self):
         champ = {"backend": "gama", "kwargs": {"backends": {"a": _lane("a")},

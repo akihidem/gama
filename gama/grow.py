@@ -771,21 +771,11 @@ def propose(champion: dict, pool: dict[str, dict], classes: list[str],
         # 9 本、増えたのが 2 本**(4→5、5→6。枠を広げたぶん長く走って新しい上限に当たる)。
         # 同じ数え方で `+prefill` は毎回 2→0、`terse` も毎回 2→0。切断の原因が「モデルが
         # 止まらない」側にあるなら、効くのは枠ではなく指示の方になる。
-        _terse_treats = ("preamble" if task_type in preamble
-                         else "cut" if (task_type in cut and not _budget_still_worth_trying(
-                             champion, task_type, cut_short))
-                         else None)
-        if _terse_treats:
-            terse = _with_system(cur_spec)
-            if terse is not None:
-                name = f"{cur}+terse"
-                buckets["terse"].append((task_type, Candidate(
-                    f"terse:{task_type}({base})", "terse",
-                    _with_lane(champion, task_type, name, _rooted(terse, base, pool)),
-                    remedy=task_type, treats=_terse_treats)))
+        # ②'' 返答の枠を 2 倍にする。そのクラスで「この段でも切れた」と実測済みなら、その次の
+        # 段から出す。先に鋳造するのは、terse がその**後継**だから: 枠の手が 1 本でも出せる
+        # うちは terse を出さない(1 世代 1 手)。
+        budget_offered = False
         if task_type in cut and _budget_still_worth_trying(champion, task_type, cut_short):
-            # ②'' 返答の枠を 2 倍にする。そのクラスで「この枠でも切れた」と実測済みの上限が
-            # あれば、そこから上げる(無ければ従来どおりチャンピオンの枠の 2 倍)。
             steps = _remembered_cut_short(champion, task_type, cut_short) + 1
             bigger = _with_more_tokens(cur_spec, times=steps)
             if bigger is not None:
@@ -795,6 +785,22 @@ def propose(champion: dict, pool: dict[str, dict], classes: list[str],
                     f"tokens:{task_type}({base})x{got}", "tokens",
                     _with_lane(champion, task_type, name, _rooted(bigger, base, pool)),
                     remedy=task_type, treats="cut", dose_steps=steps)))
+                budget_offered = True
+        # 見るのは「枠の手が実際に出せたか」で、梯子の段数ではない。**既に上限に達している
+        # レーン**は履歴が無くても枠を上げられず(``_with_more_tokens`` が None)、段数の条件
+        # だけで判定すると「まだ試せる」のまま terse へも移れない ── 症状が毎世代出ているのに
+        # 手が 0 本、が上限のクラスで起きる(codex 指摘)。
+        _terse_treats = ("preamble" if task_type in preamble
+                         else "cut" if (task_type in cut and not budget_offered)
+                         else None)
+        if _terse_treats:
+            terse = _with_system(cur_spec)
+            if terse is not None:
+                name = f"{cur}+terse"
+                buckets["terse"].append((task_type, Candidate(
+                    f"terse:{task_type}({base})", "terse",
+                    _with_lane(champion, task_type, name, _rooted(terse, base, pool)),
+                    remedy=task_type, treats=_terse_treats)))
         # ③ 2 モデルの合議。既定は synthesize —— majority は**自由文では機能しない**。逐語一致が
         # まず起きないので Counter が全部 1 になり、most_common が「最初に入れたメンバー」を返す。
         # 実測(graded 20 問): majority 0.705 に対し素の 3B 単体が 0.830、synthesize は 0.975
@@ -2005,7 +2011,7 @@ def class_headroom(m: "Measurement", cases: list) -> dict:
 
 
 def _default_swap_viable(champion: dict, classes: list, headroom: dict,
-                         gate_cases: float) -> bool:
+                         gate_cases: float, unmeasured: Optional[set] = None) -> bool:
     """既定レーンの差し替えが昇格しうるか。クラス単位の飽和では切れない唯一の変異。
 
     レーン変異は 1 クラスしか触らないので「そのクラスの伸びしろ < 門」で切れるが、既定の
@@ -2020,7 +2026,11 @@ def _default_swap_viable(champion: dict, classes: list, headroom: dict,
     under = [c for c in classes if _lane_for(champion, c) == default_lane]
     # 測れていないクラスが 1 つでも既定の下に在るなら、合計は下から押さえられない。
     # 欠損を 0 と読むと「測っていない」が「伸びしろ無し」に化ける。
-    if any(c not in headroom for c in under):
+    # ``unmeasured`` は「一部の case が測れなかったクラス」。伸びしろは測れた case からしか
+    # 数えないので、そういうクラスは ``headroom`` に**小さい値で載る**(欠損しない)。
+    # 「測れた分は満点・残りは全部エラー」のクラスは 0 として載り、既定の差し替えが丸ごと
+    # 消える(codex 指摘)。クラス単位の飽和で入れたのと同じ扱いをここにも置く。
+    if any(c not in headroom or c in (unmeasured or ()) for c in under):
         return True
     if sum(headroom[c] for c in under) < gate_cases:
         return False
@@ -2672,8 +2682,11 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
         cands = propose(champion, pool, classes, width=width, exclude=challenged | settled,
                         ensemble_strategy=ensemble_strategy, generation=gen,
                         additive_classes=[c for c in classes if c not in saturated],
-                        allow_default=_default_swap_viable(champion, classes, headroom,
-                                                           gate_cases),
+                        allow_default=_default_swap_viable(
+                            champion, classes, headroom, gate_cases,
+                            unmeasured={c for c in classes
+                                        if errors_in_scope(champ_confirm_now,
+                                                           splits["confirm"], c)}),
                         no_code_by_class=symptoms, cut_by_class=cut_symptoms,
                         preamble_by_class=preamble_symptoms, cut_short=cut_short,
                         archived=archived_before)
