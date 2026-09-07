@@ -3696,11 +3696,18 @@ class TestSearchIsAFilterNotARace(ScriptedCase):
         cut_rows = [{"gen": 0, "cut_symptoms": {"qa": 2}, "prescribed": ["tokens:qa(x)x3072"],
                      "challenger": "tokens:qa(x)x3072", "challenger_prescribed": True,
                      "challenger_confirm": 0.7, "verdict": "reject"}]
+        # 「もう出さない」は鋳造側と同じ述語で決まるので、記録のレーンが今のチャンピオンの
+        # レーンと一致していないと当たらない。テストも本物のチャンピオンから同一性を取る。
+        champ_r = canonical(seed_champion({"a": {"backend": "ssh-openai",
+                                                 "kwargs": {"ssh_host": "h",
+                                                            "max_tokens": 1536}}}, "a"))
+        lane_id = _lane_identity(champ_r, "qa")
         retired = _prescription_lines({
             "history": cut_rows, "prescriptions": prescription_ledger(cut_rows),
-            "cut_short": {"qa": {"steps": 2, "lane": "abc"},
-                          "content": {"steps": 1, "lane": "def"},
-                          "research": {"steps": 4, "lane": "ghi"}}})
+            "champion": champ_r,
+            "cut_short": {"qa": {"steps": 2, "lane": lane_id},
+                          "content": {"steps": 1, "lane": lane_id},
+                          "research": {"steps": 4, "lane": lane_id}}})
         self.assertTrue(any("the bigger-budget remedy for `qa` stopped after 2 measured" in l
                             for l in retired), retired)
         # まだ 1 段しか試していないクラスは降りていない
@@ -3710,20 +3717,29 @@ class TestSearchIsAFilterNotARace(ScriptedCase):
         # 段数は記録の値をそのまま書く(閾値を書き写さない)
         deep = _prescription_lines({
             "history": cut_rows, "prescriptions": prescription_ledger(cut_rows),
-            "cut_short": {"qa": {"steps": 5, "lane": "abc"}}})
+            "champion": champ_r,
+            "cut_short": {"qa": {"steps": 5, "lane": lane_id}}})
         self.assertTrue(any("stopped after 5 measured doubling(s)" in l for l in deep), deep)
         # 後継が並んだかどうかも記録から言う
-        self.assertTrue(any("No `terse:` line could be built" in l for l in retired), retired)
+        self.assertTrue(any("No `terse:` line for that class" in l for l in retired), retired)
         with_terse = _prescription_lines({
             "history": cut_rows,
             "prescriptions": {**prescription_ledger(cut_rows),
                               "terse:qa(x)": {"listed": 1, "challenged": 0, "promoted": 0}},
-            "cut_short": {"qa": {"steps": 2, "lane": "abc"}}})
-        self.assertTrue(any("A `terse:qa` line was listed after that." in l
+            "champion": champ_r,
+            "cut_short": {"qa": {"steps": 2, "lane": lane_id}}})
+        self.assertTrue(any("A `terse:qa` line is in the list above." in l
                             for l in with_terse), with_terse)
         # 記録が無ければ何も足さない(古い result で行が増えない)
-        self.assertFalse(any("retired" in l for l in _prescription_lines(
+        self.assertFalse(any("stopped after" in l for l in _prescription_lines(
             {"history": cut_rows, "prescriptions": prescription_ledger(cut_rows)})))
+        # 別のレーンで取った記録は当たらない(昇格でレーンが替われば枠の手はまた出る)。
+        # ここで「もう出さない」と書くと嘘になる。
+        other_lane = _prescription_lines({
+            "history": cut_rows, "prescriptions": prescription_ledger(cut_rows),
+            "champion": champ_r,
+            "cut_short": {"qa": {"steps": 2, "lane": "some-other-lane"}}})
+        self.assertFalse(any("stopped after" in l for l in other_lane), other_lane)
 
         # symptoms but nothing ever listed (the lane became an ensemble: no +prefill lands)
         only = [{"gen": 0, "symptoms": {"research": 6}, "prescribed": [], "challenger": "x",

@@ -3246,25 +3246,30 @@ def _prescription_lines(result: dict) -> list[str]:
                      f"promoted {e.get('promoted', 0)}")
     # 枠の梯子を降りたクラスは、その理由まで書く。書かないと、処方が途中から消えた台帳を
     # 読む側が「診断が消えた」と読む(症状は毎世代出ていたのに)。
-    # 書くのは記録から出る数だけ。段数は ``cut_short`` にある値をそのまま、止める規則は
-    # 鋳造側と同じ定数を読む(recipe に閾値を書き写すと、片方だけ直った時に説明が嘘になる)。
+    # 書くのは記録から出ることだけ。「もう出さない」の判定は**鋳造側と同じ述語**を呼ぶ:
+    # 閾値だけ共有しても、比べている左辺(生の段数 / チャンピオンのレーンで割り引いた段数)が
+    # 違えば説明はずれる。昇格でレーンが替われば記憶は当たらなくなり、次の世代はまた枠の手を
+    # 出す ── その時 recipe が「もう出さない」と書いていたら嘘になる。
     # 一度も並ばなかった手を「引っ込めた」と書かないよう、台帳に載っているクラスに限る。
+    champion = result.get("champion")
     listed_in = {label.split(":", 1)[1].split("(")[0]
                  for label, e in ledger.items()
                  if label.startswith("tokens:") and (e.get("listed") or 0) > 0}
     for cls, v in sorted((result.get("cut_short") or {}).items()):
-        if not isinstance(v, dict) or cls not in listed_in:
+        if not isinstance(v, dict) or cls not in listed_in or not champion:
+            continue
+        if _budget_still_worth_trying(champion, cls, result.get("cut_short")):
             continue
         steps = int(v.get("steps") or 0)
-        if steps < MAX_BUDGET_STEPS:
-            continue
+        # 後継については「台帳に載っているか」だけを言う。順番(降りた後か)も、載っていない
+        # 理由(作れなかったのか、並ばなかったのか)も、この記録からは出ない。
         took_over = any(label.startswith(f"terse:{cls}(") for label in ledger)
         lines.append(
             f"  - the bigger-budget remedy for `{cls}` stopped after {steps} measured "
             f"doubling(s) that still came back cut, which is this loop's limit "
-            f"({MAX_BUDGET_STEPS}); it is not offered there again."
-            + (f" A `terse:{cls}` line was listed after that."
-               if took_over else " No `terse:` line could be built for that lane."))
+            f"({MAX_BUDGET_STEPS}); this champion is not offered it again."
+            + (f" A `terse:{cls}` line is in the list above."
+               if took_over else " No `terse:` line for that class is in the list above."))
     return lines
 
 
