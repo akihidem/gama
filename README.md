@@ -600,10 +600,27 @@ So truncation is a per-class symptom with a per-class remedy, and the loop now r
 it reads code-less tool replies. `Measurement.cut_by_class` counts the records that were cut
 *and* missed full marks — a cut that still scores 1.0 is not a symptom and does not earn a seat —
 and `propose` mints one candidate for a symptomatic class: every `max_tokens` in that class's
-lane, at any depth, doubled (capped at 8192, which ends the escalation rather than letting it
-run every generation). It is minted only where the symptom is, because a bigger budget costs
-latency and calls everywhere and can only pay where replies are being cut. It takes a
-prescription's seat, ahead of the kind rotation, and the gates decide it like any other mutation.
+lane, at any depth, doubled (capped at 8192). It is minted only where the symptom is, because a
+bigger budget costs latency and calls everywhere and can only pay where replies are being cut. It
+takes a prescription's seat, ahead of the kind rotation, and the gates decide it like any other
+mutation.
+
+Then the ledgers were asked whether the remedy actually removes the symptom it treats, by
+comparing the cuts left in a prescription's own measurement against the champion's in the
+generation it entered. Across three runs, twelve budget prescriptions can be compared that way:
+**the symptom was smaller in one, unchanged in nine, and larger in two** (4→5 and 5→6 — a bigger
+budget lets a reply run longer and meet the new limit). Counted the same way, `+prefill` went 2→0
+every time it was measured, and so did `terse`. Run SS's `edge-int-digitsum` is the shape of it:
+at 1536 the reply stopped at 1577 tokens, at 3072 it stopped at 3113. The reply grows to fill
+whatever it is given.
+
+So the budget escalates by *steps* rather than repeating a dose already measured to be too small,
+and it stops after two of them (`MAX_BUDGET_STEPS`). A reply still cut at four times the budget is
+not one notch short; something else is deciding its length. The step count is remembered against
+the lane it was counted from, so a class that moves to another model starts over. When no budget
+move can be offered — the ladder is spent, the lane is already at the cap, or the one design left
+was already decided on `confirm` — the `terse:` line below takes over as that class's remedy, and
+the recipe says so rather than letting the prescription quietly disappear from the ledger.
 
 Diagnosis and treatment are matched as a pair, not by class: with only truncation showing, a
 `+prefill` for that class is not a prescription and does not take the seat. Getting that wrong
@@ -618,7 +635,7 @@ sentence that meets your criteria:" and then gave the answer in bold, on a promp
 120 research, 0 of 68 integration. `content` is also the lowest-scoring class in that pool
 (0.387). The model is not failing to write the sentence; it is failing to hand it over alone.
 
-That is a third symptom with a third remedy, and it is neither a bigger budget nor a tool: it is
+That is a third symptom, and its remedy is neither a bigger budget nor a tool: it is
 one system line on the lane — "Reply with only what was asked for: no preamble, no sign-off, no
 commentary about the answer". `SshOpenAIBackend` takes a `system=` kwarg, `Measurement` counts
 `preamble_by_class` (replies whose first characters are a conversational opener *and* which
