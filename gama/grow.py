@@ -310,7 +310,7 @@ def _budget_still_worth_trying(champion: dict, task_type: str,
     チャンピオンの枠を基準にするので、処方が昇格して枠が上がれば上限も一緒に上がる
     (昇格は「この向きは効いた」という証拠で、その先をもう一度試す資格がある)。
     """
-    return _remembered_cut_short(champion, task_type, cut_short) < 2
+    return _remembered_cut_short(champion, task_type, cut_short) < MAX_BUDGET_STEPS
 
 
 def _remembered_cut_short(champion: dict, task_type: str,
@@ -439,6 +439,10 @@ class Candidate:
 
 
 MAX_TOKENS_CAP = 8192
+
+# 枠を上げる処方を何段まで試すか。1 段 = 2 倍。ここを 2 箇所に書くと、鋳造の規則と recipe の
+# 説明が静かにずれる(片方だけ直した時に、報告が「まだ試せる」と言いながら手が出ない、が起きる)。
+MAX_BUDGET_STEPS = 2
 
 # 「会話の前置き」を見る正規表現。返答の**先頭**だけを見る: 本文の途中の "here is" は普通の
 # 文章で、前置きの症状ではない。判定を緩めると、答えを持っていないだけの返答まで症状に数え、
@@ -3242,14 +3246,25 @@ def _prescription_lines(result: dict) -> list[str]:
                      f"promoted {e.get('promoted', 0)}")
     # 枠の梯子を降りたクラスは、その理由まで書く。書かないと、処方が途中から消えた台帳を
     # 読む側が「診断が消えた」と読む(症状は毎世代出ていたのに)。
-    stopped = sorted(c for c, v in (result.get("cut_short") or {}).items()
-                     if isinstance(v, dict) and int(v.get("steps") or 0) >= 2)
-    if stopped:
+    # 書くのは記録から出る数だけ。段数は ``cut_short`` にある値をそのまま、止める規則は
+    # 鋳造側と同じ定数を読む(recipe に閾値を書き写すと、片方だけ直った時に説明が嘘になる)。
+    # 一度も並ばなかった手を「引っ込めた」と書かないよう、台帳に載っているクラスに限る。
+    listed_in = {label.split(":", 1)[1].split("(")[0]
+                 for label, e in ledger.items()
+                 if label.startswith("tokens:") and (e.get("listed") or 0) > 0}
+    for cls, v in sorted((result.get("cut_short") or {}).items()):
+        if not isinstance(v, dict) or cls not in listed_in:
+            continue
+        steps = int(v.get("steps") or 0)
+        if steps < MAX_BUDGET_STEPS:
+            continue
+        took_over = any(label.startswith(f"terse:{cls}(") for label in ledger)
         lines.append(
-            "  - the bigger-budget remedy was retired in "
-            + ", ".join(f"`{c}`" for c in stopped)
-            + ": two doublings were measured and the replies were still cut, so the budget was "
-              "not the lever there. A `terse:` system line takes over as the remedy.")
+            f"  - the bigger-budget remedy for `{cls}` stopped after {steps} measured "
+            f"doubling(s) that still came back cut, which is this loop's limit "
+            f"({MAX_BUDGET_STEPS}); it is not offered there again."
+            + (f" A `terse:{cls}` line was listed after that."
+               if took_over else " No `terse:` line could be built for that lane."))
     return lines
 
 

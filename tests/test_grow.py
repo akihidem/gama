@@ -2105,8 +2105,8 @@ class TestGrowLoop(ScriptedCase):
         try:
             lane = {"backend": "cutter", "kwargs": {"tag": "a", "max_tokens": 1536}}
             events = []
-            grow({"a": lane}, cases=_cases(4), generations=4, width=1, patience=9,
-                 min_margin=0.05, on_event=events.append)
+            res = grow({"a": lane}, cases=_cases(4), generations=4, width=1, patience=9,
+                       min_margin=0.05, on_event=events.append)
             listed = [(e["gen"], e["label"]) for e in events
                       if e.get("event") == "candidate" and e["label"].startswith("tokens:")]
             self.assertIn((0, "tokens:qa(a)x3072"), listed)
@@ -2125,6 +2125,13 @@ class TestGrowLoop(ScriptedCase):
             cps = [e for e in events if e.get("event") == "checkpoint"]
             self.assertEqual(cps[-1]["cut_short"]["qa"]["steps"], 2)
             self.assertEqual([c["cut_short"]["qa"]["steps"] for c in cps if c["gen"] == 0], [1])
+            # recipe が読むのは走行が返す形そのもの。手で組んだ payload だけを整形関数に
+            # 流すと、鍵の名前が変わっても両方緑のまま黙る(この repo で繰り返し出ている型)。
+            from gama.grow import _prescription_lines
+            self.assertEqual(res["cut_short"]["qa"]["steps"], 2)
+            said = _prescription_lines(res)
+            self.assertTrue(any("the bigger-budget remedy for `qa` stopped after 2 measured" in l
+                                for l in said), said)
         finally:
             backends_mod._BACKENDS.pop("cutter", None)
 
@@ -3692,11 +3699,28 @@ class TestSearchIsAFilterNotARace(ScriptedCase):
         retired = _prescription_lines({
             "history": cut_rows, "prescriptions": prescription_ledger(cut_rows),
             "cut_short": {"qa": {"steps": 2, "lane": "abc"},
-                          "content": {"steps": 1, "lane": "def"}}})
-        self.assertTrue(any("the bigger-budget remedy was retired in `qa`" in l
+                          "content": {"steps": 1, "lane": "def"},
+                          "research": {"steps": 4, "lane": "ghi"}}})
+        self.assertTrue(any("the bigger-budget remedy for `qa` stopped after 2 measured" in l
                             for l in retired), retired)
         # まだ 1 段しか試していないクラスは降りていない
         self.assertFalse(any("`content`" in l for l in retired), retired)
+        # 一度も並ばなかったクラスは「引っ込めた」と書かない(処方の台帳と突き合わせる)
+        self.assertFalse(any("`research`" in l for l in retired), retired)
+        # 段数は記録の値をそのまま書く(閾値を書き写さない)
+        deep = _prescription_lines({
+            "history": cut_rows, "prescriptions": prescription_ledger(cut_rows),
+            "cut_short": {"qa": {"steps": 5, "lane": "abc"}}})
+        self.assertTrue(any("stopped after 5 measured doubling(s)" in l for l in deep), deep)
+        # 後継が並んだかどうかも記録から言う
+        self.assertTrue(any("No `terse:` line could be built" in l for l in retired), retired)
+        with_terse = _prescription_lines({
+            "history": cut_rows,
+            "prescriptions": {**prescription_ledger(cut_rows),
+                              "terse:qa(x)": {"listed": 1, "challenged": 0, "promoted": 0}},
+            "cut_short": {"qa": {"steps": 2, "lane": "abc"}}})
+        self.assertTrue(any("A `terse:qa` line was listed after that." in l
+                            for l in with_terse), with_terse)
         # 記録が無ければ何も足さない(古い result で行が増えない)
         self.assertFalse(any("retired" in l for l in _prescription_lines(
             {"history": cut_rows, "prescriptions": prescription_ledger(cut_rows)})))
