@@ -3684,6 +3684,23 @@ class TestSearchIsAFilterNotARace(ScriptedCase):
                       "0 time(s), promoted 0", lines)
         self.assertIn("  - `tool:qa(x)+prefill`: listed in 2 generation(s), confirm-measured "
                       "1 time(s), promoted 1", lines)
+        # 枠の梯子を降りたクラスは理由まで書く。書かないと、処方が途中から消えた台帳を
+        # 読む側が「診断が消えた」と読む(症状は毎世代出ていたのに)。
+        cut_rows = [{"gen": 0, "cut_symptoms": {"qa": 2}, "prescribed": ["tokens:qa(x)x3072"],
+                     "challenger": "tokens:qa(x)x3072", "challenger_prescribed": True,
+                     "challenger_confirm": 0.7, "verdict": "reject"}]
+        retired = _prescription_lines({
+            "history": cut_rows, "prescriptions": prescription_ledger(cut_rows),
+            "cut_short": {"qa": {"steps": 2, "lane": "abc"},
+                          "content": {"steps": 1, "lane": "def"}}})
+        self.assertTrue(any("the bigger-budget remedy was retired in `qa`" in l
+                            for l in retired), retired)
+        # まだ 1 段しか試していないクラスは降りていない
+        self.assertFalse(any("`content`" in l for l in retired), retired)
+        # 記録が無ければ何も足さない(古い result で行が増えない)
+        self.assertFalse(any("retired" in l for l in _prescription_lines(
+            {"history": cut_rows, "prescriptions": prescription_ledger(cut_rows)})))
+
         # symptoms but nothing ever listed (the lane became an ensemble: no +prefill lands)
         only = [{"gen": 0, "symptoms": {"research": 6}, "prescribed": [], "challenger": "x",
                  "challenger_prescribed": False, "challenger_confirm": 0.5, "verdict": "reject"}]

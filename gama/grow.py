@@ -3124,6 +3124,10 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
         # claim と同じく result に置く(読む人が最初に開くのは result の JSON)。recipe 側は欄が
         # 無ければ世代行から数え直すので、欠けても消えない
         "prescriptions": prescription_ledger(history),
+        # 枠の梯子がどこで止まったか(クラス → 段数とレーン)。recipe が「なぜその処方が
+        # 途中から出なくなったのか」を言えるようにする。台帳を読めば分かる、では足りない:
+        # 手が消える理由が書かれていないと、読む側は「診断が消えた」と読む。
+        "cut_short": dict(sorted(cut_short.items())),
         # call ごとの記録の要約(ファイルから数え直す)。trace の無い走行は None
         "trace": trace.summary() if trace is not None else None,
         # 昇格した手の対応のある証拠。平均差だけ見ていると「confirm では伸びたが sealed では
@@ -3236,6 +3240,16 @@ def _prescription_lines(result: dict) -> list[str]:
         lines.append(f"  - `{label}`: listed in {e.get('listed', 0)} generation(s), "
                      f"confirm-measured {e.get('challenged', 0)} time(s), "
                      f"promoted {e.get('promoted', 0)}")
+    # 枠の梯子を降りたクラスは、その理由まで書く。書かないと、処方が途中から消えた台帳を
+    # 読む側が「診断が消えた」と読む(症状は毎世代出ていたのに)。
+    stopped = sorted(c for c, v in (result.get("cut_short") or {}).items()
+                     if isinstance(v, dict) and int(v.get("steps") or 0) >= 2)
+    if stopped:
+        lines.append(
+            "  - the bigger-budget remedy was retired in "
+            + ", ".join(f"`{c}`" for c in stopped)
+            + ": two doublings were measured and the replies were still cut, so the budget was "
+              "not the lever there. A `terse:` system line takes over as the remedy.")
     return lines
 
 
