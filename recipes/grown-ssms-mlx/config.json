@@ -1,0 +1,403 @@
+{
+  "_comment": "GROWN by `gama grow` — champion 23e8667d5440. Numbers below are from a sealed split never used for any decision.",
+  "system": {
+    "backend": "gama",
+    "kwargs": {
+      "backends": {
+        "ens(m24+q7)": {
+          "backend": "ensemble",
+          "_grow_base": "m24",
+          "kwargs": {
+            "members": [
+              {
+                "backend": "ssh-openai",
+                "kwargs": {
+                  "ssh_host": "user@mac-studio",
+                  "port": 8080,
+                  "path": "/v1/chat/completions",
+                  "model_by_tier": {
+                    "small": "mlx-community/Mistral-Small-24B-Instruct-2501-4bit",
+                    "medium": "mlx-community/Mistral-Small-24B-Instruct-2501-4bit",
+                    "large": "mlx-community/Mistral-Small-24B-Instruct-2501-4bit"
+                  },
+                  "max_tokens": 1536,
+                  "temperature": 0.0,
+                  "ssh_opts": [
+                    "-o",
+                    "BatchMode=yes",
+                    "-o",
+                    "ConnectTimeout=15",
+                    "-o",
+                    "ControlMaster=auto",
+                    "-o",
+                    "ControlPath=/tmp/gama-ssh-%r@%h:%p",
+                    "-o",
+                    "ControlPersist=10m"
+                  ]
+                }
+              },
+              {
+                "backend": "ssh-openai",
+                "kwargs": {
+                  "ssh_host": "user@mac-studio",
+                  "port": 8082,
+                  "path": "/v1/chat/completions",
+                  "model_by_tier": {
+                    "small": "mlx-community/Qwen2.5-7B-Instruct-4bit",
+                    "medium": "mlx-community/Qwen2.5-7B-Instruct-4bit",
+                    "large": "mlx-community/Qwen2.5-7B-Instruct-4bit"
+                  },
+                  "max_tokens": 1536,
+                  "temperature": 0.0,
+                  "ssh_opts": [
+                    "-o",
+                    "BatchMode=yes",
+                    "-o",
+                    "ConnectTimeout=15",
+                    "-o",
+                    "ControlMaster=auto",
+                    "-o",
+                    "ControlPath=/tmp/gama-ssh-%r@%h:%p",
+                    "-o",
+                    "ControlPersist=10m"
+                  ]
+                }
+              }
+            ],
+            "strategy": "synthesize",
+            "aggregator": {
+              "backend": "ssh-openai",
+              "kwargs": {
+                "ssh_host": "user@mac-studio",
+                "port": 8082,
+                "path": "/v1/chat/completions",
+                "model_by_tier": {
+                  "small": "mlx-community/Qwen2.5-7B-Instruct-4bit",
+                  "medium": "mlx-community/Qwen2.5-7B-Instruct-4bit",
+                  "large": "mlx-community/Qwen2.5-7B-Instruct-4bit"
+                },
+                "max_tokens": 1536,
+                "temperature": 0.0,
+                "ssh_opts": [
+                  "-o",
+                  "BatchMode=yes",
+                  "-o",
+                  "ConnectTimeout=15",
+                  "-o",
+                  "ControlMaster=auto",
+                  "-o",
+                  "ControlPath=/tmp/gama-ssh-%r@%h:%p",
+                  "-o",
+                  "ControlPersist=10m"
+                ]
+              }
+            }
+          }
+        },
+        "m24": {
+          "backend": "ssh-openai",
+          "kwargs": {
+            "ssh_host": "user@mac-studio",
+            "port": 8080,
+            "path": "/v1/chat/completions",
+            "model_by_tier": {
+              "small": "mlx-community/Mistral-Small-24B-Instruct-2501-4bit",
+              "medium": "mlx-community/Mistral-Small-24B-Instruct-2501-4bit",
+              "large": "mlx-community/Mistral-Small-24B-Instruct-2501-4bit"
+            },
+            "max_tokens": 1536,
+            "temperature": 0.0,
+            "ssh_opts": [
+              "-o",
+              "BatchMode=yes",
+              "-o",
+              "ConnectTimeout=15",
+              "-o",
+              "ControlMaster=auto",
+              "-o",
+              "ControlPath=/tmp/gama-ssh-%r@%h:%p",
+              "-o",
+              "ControlPersist=10m"
+            ]
+          }
+        },
+        "tool(m24)": {
+          "backend": "tool",
+          "_grow_base": "m24",
+          "kwargs": {
+            "inner": {
+              "backend": "ssh-openai",
+              "kwargs": {
+                "ssh_host": "user@mac-studio",
+                "port": 8080,
+                "path": "/v1/chat/completions",
+                "model_by_tier": {
+                  "small": "mlx-community/Mistral-Small-24B-Instruct-2501-4bit",
+                  "medium": "mlx-community/Mistral-Small-24B-Instruct-2501-4bit",
+                  "large": "mlx-community/Mistral-Small-24B-Instruct-2501-4bit"
+                },
+                "max_tokens": 1536,
+                "temperature": 0.0,
+                "ssh_opts": [
+                  "-o",
+                  "BatchMode=yes",
+                  "-o",
+                  "ConnectTimeout=15",
+                  "-o",
+                  "ControlMaster=auto",
+                  "-o",
+                  "ControlPath=/tmp/gama-ssh-%r@%h:%p",
+                  "-o",
+                  "ControlPersist=10m"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "routing_table": {
+        "content": "ens(m24+q7)",
+        "qa": "tool(m24)"
+      },
+      "default": "m24"
+    }
+  },
+  "grow": {
+    "seed_hash": "69c8c14de064",
+    "promotions": 2,
+    "generations_run": 5,
+    "params": {
+      "suites": [
+        "wide",
+        "graded",
+        "steep",
+        "qadeep",
+        "researchdeep",
+        "crux",
+        "edge"
+      ],
+      "ratio": [
+        1,
+        2,
+        2
+      ],
+      "tier": "large",
+      "repeats": 2,
+      "width": 4,
+      "generations": 5,
+      "patience": 5,
+      "min_margin": 0.0154,
+      "min_margin_source": "auto(one confirm case)",
+      "ensemble_strategy": "synthesize",
+      "max_paired_p": null,
+      "code": {
+        "version": "0.1.0",
+        "commit": "9baf076",
+        "dirty": false,
+        "source": "4cdd0fce8c8ed3f3"
+      }
+    },
+    "splits": {
+      "search": [
+        "crux-code-paths",
+        "edge-code-nextperm",
+        "g-code-divide",
+        "steep-code-roman",
+        "wide-code-rotate",
+        "edge-content-longwords",
+        "g-content-sun-moon",
+        "wide-content-acrostic",
+        "wide-content-sevenwords",
+        "crux-int-dijkstra",
+        "edge-int-digitsum",
+        "g-tool-jsonlist3",
+        "wide-tool-call",
+        "wide-tool-json-squares",
+        "crux-qa-multiples",
+        "edge-qa-remainder",
+        "qad-compute-base7",
+        "qad-compute-gcd",
+        "qad-recall-language",
+        "qad-recall-water",
+        "wide-qa-binary",
+        "wide-qa-pow2",
+        "crux-research-derange",
+        "edge-research-dice",
+        "g-research-banana",
+        "rd-compute-atleastone",
+        "rd-compute-oddsum",
+        "rd-reason-cause",
+        "rd-reason-referent",
+        "wide-research-ages",
+        "wide-research-knave"
+      ],
+      "confirm": [
+        "crux-code-editdist",
+        "edge-code-balanced",
+        "edge-code-lis",
+        "edge-code-rle",
+        "edge-code-wildcard",
+        "g-code-range",
+        "steep-code-csv",
+        "steep-code-topo",
+        "wide-code-balanced",
+        "wide-code-flatten",
+        "wide-code-topword",
+        "crux-content-triples",
+        "edge-content-toads",
+        "g-content-b5",
+        "g-content-three-words",
+        "steep-content-every-third",
+        "steep-content-ordered",
+        "wide-content-bullets",
+        "wide-content-reverse",
+        "wide-content-weekdays",
+        "crux-int-base",
+        "crux-int-sundays",
+        "edge-int-binary",
+        "edge-int-factors",
+        "g-tool-csv2",
+        "g-tool-kv4",
+        "steep-tool-computed",
+        "steep-tool-sorted",
+        "wide-tool-json-list",
+        "wide-tool-json-null",
+        "wide-tool-kv",
+        "crux-qa-digitsum",
+        "crux-qa-nthprime",
+        "edge-qa-filtered",
+        "g-qa-bases",
+        "g-qa-gcdlcm",
+        "qad-compute-choose",
+        "qad-compute-digits",
+        "qad-compute-modpow",
+        "qad-recall-continent",
+        "qad-recall-opposite",
+        "qad-recall-shape",
+        "steep-qa-modpow",
+        "steep-qa-primesum",
+        "wide-qa-divisors",
+        "wide-qa-lcm",
+        "wide-qa-seconds",
+        "crux-research-amicable",
+        "crux-research-josephus",
+        "edge-research-bayes",
+        "edge-research-houses",
+        "edge-research-stairs",
+        "g-research-geometric",
+        "g-research-primes",
+        "rd-compute-banana",
+        "rd-compute-handshakes",
+        "rd-compute-primeseq",
+        "rd-reason-category",
+        "rd-reason-negation",
+        "rd-reason-order",
+        "steep-research-lcm",
+        "steep-research-schedule",
+        "wide-research-choose",
+        "wide-research-digitsum",
+        "wide-research-tallest"
+      ],
+      "sealed": [
+        "crux-code-josephus",
+        "edge-code-covered",
+        "edge-code-mincoins",
+        "edge-code-rpn",
+        "g-code-chunk",
+        "g-code-title",
+        "steep-code-lru",
+        "wide-code-anagram",
+        "wide-code-bsearch",
+        "wide-code-roman",
+        "wide-code-twosum",
+        "edge-content-alpha",
+        "edge-content-tpond",
+        "g-content-lines",
+        "steep-content-acrostic",
+        "steep-content-lipogram3",
+        "wide-content-alliteration",
+        "wide-content-lipogram",
+        "wide-content-toad",
+        "crux-int-daycount",
+        "crux-int-transform",
+        "edge-int-caesar",
+        "edge-int-initials",
+        "g-tool-json4",
+        "steep-tool-checksum",
+        "steep-tool-escaped",
+        "wide-tool-csv",
+        "wide-tool-json-nested",
+        "wide-tool-json-user",
+        "crux-qa-modpow",
+        "edge-qa-clock",
+        "edge-qa-ones",
+        "g-qa-div60",
+        "g-qa-powers",
+        "qad-compute-count",
+        "qad-compute-divisorsum",
+        "qad-compute-negative",
+        "qad-recall-gold",
+        "qad-recall-planet",
+        "qad-recall-sides",
+        "steep-qa-modpow2",
+        "steep-qa-trailzeros",
+        "wide-qa-gcd",
+        "wide-qa-modpow",
+        "wide-qa-sum50",
+        "crux-research-collatz",
+        "edge-research-ages",
+        "edge-research-birthday",
+        "edge-research-liars",
+        "edge-research-twopair",
+        "g-research-order",
+        "rd-compute-angles",
+        "rd-compute-diagonals",
+        "rd-compute-palindromes",
+        "rd-reason-analogy",
+        "rd-reason-contradiction",
+        "rd-reason-oddoneout",
+        "steep-research-anagrams",
+        "steep-research-prob",
+        "wide-research-arrangements",
+        "wide-research-dice",
+        "wide-research-seq"
+      ]
+    },
+    "sealed": {
+      "seed": {
+        "score": 0.6288,
+        "success_rate": 0.6452,
+        "latency_s": 10.6537,
+        "n": 124,
+        "cases": 62,
+        "errors": 0,
+        "error_rate": 0.0,
+        "tool_calls": 0,
+        "tool_ran": 0,
+        "tool_no_code": 0,
+        "tool_empty_out": 0,
+        "tool_no_code_by_class": {},
+        "cut_by_class": {},
+        "preamble_by_class": {},
+        "sem": 0.0
+      },
+      "champion": {
+        "score": 0.7134,
+        "success_rate": 0.7258,
+        "latency_s": 12.5526,
+        "n": 124,
+        "cases": 62,
+        "errors": 0,
+        "error_rate": 0.0,
+        "tool_calls": 32,
+        "tool_ran": 32,
+        "tool_no_code": 0,
+        "tool_empty_out": 0,
+        "tool_no_code_by_class": {},
+        "cut_by_class": {},
+        "preamble_by_class": {},
+        "sem": 0.0
+      }
+    }
+  }
+}

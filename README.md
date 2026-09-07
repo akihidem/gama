@@ -291,8 +291,11 @@ That comparison is the whole argument for running the loop rather than copying a
 |---|---|
 | WSL2 CPU, `llama3.2:3b` | `qa → tool`, `research → mesh(3b→coder7b)` |
 | AWS L4, `Kimi-48B` | `qa → ensemble(temperatures)`, `research → tool` (run R; the recipe now ships run W's `qa → tool`, `research → ensemble`) |
+| Mac Studio, MLX `Mistral-24B` + `Qwen-7B` | `qa → tool`, `content → ensemble(two models)` (run SS, the one run whose sealed split said improved from a bare seed) |
 
-Both classes changed hands. See [`recipes/grown-aws-kimi48b`](recipes/grown-aws-kimi48b), which
+Both classes changed hands. The third box agrees with the first about `qa` and disagrees with
+both about the second class it moved, and its ensemble is two different models rather than one
+model at two temperatures. See [`recipes/grown-ssms-mlx`](recipes/grown-ssms-mlx). See [`recipes/grown-aws-kimi48b`](recipes/grown-aws-kimi48b), which
 also records why `tool:qa` fell from 1.25 cases to zero: the `qa` class stopped being purely
 arithmetic. A tool lane helps arithmetic; a routing table routes classes; **a benchmark whose
 class does not contain what the class is will bless the wrong granularity of decision.**
@@ -349,6 +352,41 @@ with a saturated-nothing suite it demonstrably did. On a 48B, seven runs of prom
 ledger on that box that reached a final row, the discarded one included) did not produce a
 champion its held-out cases could tell apart from where it started; the eighth did, after harder
 cases (`crux`) were added and the seed was already grown.
+
+#### The one run where the champion did not move when re-measured
+
+Two runs finished after the count above, on two different machines, and they came back on
+opposite sides of the band.
+
+| run | box, lanes | sealed | verdict |
+|---|---|---|---|
+| AA | AWS L4, `Kimi-48B` cold + hot (one lane at temperature 0.8) | 0.8091 → 0.7930 | NOT SEPARABLE (−1.00 cases) |
+| SS | Mac Studio, MLX `Mistral-Small-24B-4bit` + `Qwen2.5-7B-4bit`, **both at temperature 0** | 0.6288 → 0.7134 | **IMPROVED (+5.25 cases in `content`, `qa`)** |
+
+Run SS is the first sealed **improved** from a bare seed on a model this size. What makes it
+worth reading is not the verdict but one column of its ledger: **the champion's re-measurement
+moved 0.00 cases in every one of the five generations**. Both promotions were gated on a number
+that came back identical when the next generation measured the same champion on the same
+confirm cases again (+6.25 → +6.25 → +6.25, and +1.33 → +1.33 → +1.33). With no drift to
+absorb, the promote floor was pure resolution, one whole confirm case, in 5 of 5 generations.
+
+That lines up with what run Z found by splitting the drift per class: its champion, measured
+six times on the same 73 confirm cases, moved 0.00 in `code_implementation`, `content`,
+`integration` and `qa` every time, and **all** of the movement was in `research`, the one class
+routed to an ensemble with a temperature-0.8 member. Take that member away and the drift term
+is not small, it is zero.
+
+Do not read this as "determinism causes improvement". Run SS changed the box, the models, the
+quantization and the temperatures at once, so the verdict cannot be attributed to any one of
+them. What *is* attributable, because it is arithmetic rather than a comparison, is the floor:
+a lane that answers the same way twice contributes no re-measurement drift, so the bar a
+promotion has to clear falls to the split's resolution and stops moving between generations.
+
+And the culprit is narrower than "ensembles are noisy". Run SS's own champion carries one:
+its second promotion routed `content` to `ens(m24+q7)`, two models voting. Its drift stayed
+0.00 all the same, because both members answer at temperature 0. What moves the floor is not
+the ensemble, it is a member inside one that is free to answer differently the second time.
+
 
 #### Where the headroom actually is
 
