@@ -245,6 +245,53 @@ def _resolved_lane(spec: dict, task_type: str) -> dict:
     return (kw.get("backends") or {}).get(lane) or {}
 
 
+def _checkpoint_row(gen: int, champion: dict, champ_search, champ_confirm,
+                    challenged, settled, archive: dict, stale: int, cut_short: dict,
+                    served: dict, identity_blind: bool) -> dict:
+    """再開に要る状態を 1 行にする。**作る場所を 1 つにする**のがこの関数の要件。
+
+    以前は同じ dict を 3 箇所(再開直後・世代の早い出口・世代の末尾)で手で書いていて、
+    状態を 1 つ足すと足し忘れた側から静かに壊れた。実際 ``cut_short`` を足した時に 2 箇所
+    しか直っておらず、その経路を通った走行だけが記憶を失う形になっていた
+    (「修正は見ている呼び出し箇所にだけ足され、足し忘れた側から穴」の 4 例目)。
+    """
+    return {"event": "checkpoint", "gen": gen, "champion": champion,
+            "champion_search": _state(champ_search),
+            "champion_confirm": _state(champ_confirm),
+            "challenged": sorted(challenged), "settled": sorted(settled),
+            "archive": archive, "stale": stale,
+            "cut_short": dict(sorted(cut_short.items())),
+            "served": served, "identity_blind": identity_blind}
+
+
+def _note_cut_short(seen: dict, spec: dict, cut_by_class: dict) -> dict:
+    """「この枠でも切れた」を覚える。``seen`` はクラス → 足りないと実測した ``max_tokens``。
+
+    枠 2 倍の処方はチャンピオンの枠からしか上げないので、一度測って切断が消えなかった用量が
+    次の世代でもう一度出てくる(run SS: 3072 が gen0・gen2・gen4 の 3 世代で提案され、
+    ``edge-int-digitsum`` は毎回その 3072 で切れていた)。記録するのは**その測定が実際に
+    使っていたレーンの枠**で、ラベルの数字ではない。ラベルは「今回上がった枠」を書くもので、
+    そのクラスが通る枠と一致するとは限らない。
+    """
+    for cls, n in (cut_by_class or {}).items():
+        if not n:
+            continue
+        limit = _lane_token_limit(spec, cls)
+        if limit and limit > seen.get(cls, 0):
+            seen[cls] = limit
+    return seen
+
+
+def _lane_token_limit(spec: dict, task_type: str) -> Optional[int]:
+    """そのクラスが実際に通るレーンの ``max_tokens`` のうち最大。見つからなければ ``None``。
+
+    「この枠でも切れた」を記録する時に要る。レーンの**名前**でなく中身から読むのは
+    ``_scope_of`` と同じ理由で、名前が同じでも中身が違えば別の用量だから。
+    """
+    got = _max_tokens_all(_resolved_lane(spec, task_type))
+    return max(got) if got else None
+
+
 def _scope_of(champion: dict, spec: dict, classes: list) -> Optional[str]:
     """その手が**実際に**触るクラス。1 つに定まらなければ ``None``(= 絞らない)。
 
@@ -419,9 +466,16 @@ def _raised_to(before, after) -> Optional[int]:
     return max(grew) if grew else None
 
 
-def _with_more_tokens(spec, cap: int = MAX_TOKENS_CAP):
+def _with_more_tokens(spec, cap: int = MAX_TOKENS_CAP, at_least: Optional[int] = None):
     """レーンの中の ``max_tokens`` を全部 2 倍(上限で頭打ち)にした写しを返す。上げられる枠が
     1 つも無ければ ``None``。
+
+    ``at_least`` は「この値では**足りないと実測した**」枠。渡されると、2 倍とその倍のうち
+    大きい方まで上げる。2 倍だけだと、既に測って切断が消えなかった用量を出し直すことになる:
+    run SS gen0 の ``tokens:integration(m24)x3072`` は 1536 から 3072 へ確かに伸びていて
+    (``edge-int-digitsum`` の返答が 1577 → 3113 token)、**それでもまだ切れていた**。同じ症状の
+    まま gen2・gen4 でもう一度 3072 が提案され、3 世代ぶんの枠がその用量に使われている。
+    足りないと分かっている量を出発点にする。
 
     ``max_tokens`` という鍵は backend spec では常に「1 回の生成の上限」を意味する前提で、
     どの深さにあっても同じ意味として扱う(spec の形はこの repo が決めている)。
@@ -443,7 +497,11 @@ def _with_more_tokens(spec, cap: int = MAX_TOKENS_CAP):
                     # 上限済みなら候補ごと捨てる形にすると、内側が既に大きいだけで**外側の
                     # 明らかに足りない枠**まで治療不能になる(codex 指摘)。2 倍が上限を超える
                     # 枠は上限まで上げる: 「まだ上限に届いていないのに上げない」帯を作らない。
-                    out[k] = min(v * 2, cap)
+                    want = v * 2
+                    if at_least:
+                        # 足りないと実測した枠より上へ。2 倍が既にそれを超えていれば 2 倍のまま
+                        want = max(want, at_least * 2)
+                    out[k] = min(want, cap)
                     raised[0] = raised[0] or out[k] != v
                 else:
                     out[k] = walk(v)
@@ -511,8 +569,12 @@ def propose(champion: dict, pool: dict[str, dict], classes: list[str],
             no_code_by_class: Optional[dict] = None,
             cut_by_class: Optional[dict] = None,
             preamble_by_class: Optional[dict] = None,
+            cut_short: Optional[dict] = None,
             archived: Optional[set[str]] = None) -> list[Candidate]:
     """チャンピオンから 1 手だけ動かした候補を、種類を混ぜて**新顔** ``width`` 本返す。
+
+    ``cut_short`` は「クラス → その枠でも切断が残ると実測した ``max_tokens``」。枠 2 倍の処方は
+    ここを下限にして上げる(同じ用量を出し直さないため。``_with_more_tokens`` を見よ)。
 
     ``archived`` は search で測定済みの設計のハッシュ集合。測定済みは ``width`` の席を消費せず、
     除外されていない限り**全部**返す(呼び側は archive の点をそのまま使うのでコール 0)。
@@ -628,7 +690,9 @@ def propose(champion: dict, pool: dict[str, dict], classes: list[str],
                     _with_lane(champion, task_type, name, _rooted(terse, base, pool)),
                     remedy=task_type, treats="preamble")))
         if task_type in cut:                                # ②'' 返答の枠を 2 倍にする
-            bigger = _with_more_tokens(cur_spec)
+            # そのクラスで「この枠でも切れた」と実測済みの上限があれば、そこから上げる
+            # (無ければ従来どおりチャンピオンの枠の 2 倍)。
+            bigger = _with_more_tokens(cur_spec, at_least=(cut_short or {}).get(task_type))
             if bigger is not None:
                 name = f"{cur}+tok"
                 got = _raised_to(cur_spec, bigger)
@@ -2386,11 +2450,8 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
     # を repeats 2 = 120 コール、gemma4 で約 20 分)にセッションごと落ちて、台帳 0 行で全損した。
     # resume の守備範囲は、いちばん長い空白から埋める。
     if not resume:
-        emit({"event": "checkpoint", "gen": -1, "champion": champion,
-              "champion_search": _state(champ_search),
-              "champion_confirm": _state(champ_confirm),
-              "challenged": [], "settled": [], "archive": {}, "stale": 0,
-              "served": served_map(), "identity_blind": resumed_blind})
+        emit(_checkpoint_row(-1, champion, champ_search, champ_confirm,
+                             [], [], {}, 0, {}, served_map(), resumed_blind))
 
     stale = resume["stale"] if resume else 0
     # confirm で決着がついた設計(勝っても負けても二度は問わない)
@@ -2402,6 +2463,11 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
     # challenged の方は昇格で空にしない: confirm の基準は昇格で**上がる一方**なので、旧に confirm で
     # 負けた設計は新にはなお負けている(search の基準が帯ぶん下がりうるのと逆向きの非対称)。
     settled: set = set(resume.get("settled", [])) if resume else set()
+    # 「その枠でも切れた」の記憶(クラス → 足りないと実測した max_tokens)。再開でも持ち越す:
+    # 落とすと、再開した走行が一度捨てた用量をもう一度測り直す。古い checkpoint には無いキー
+    # なので空で復元する(証拠が無いことを「足りている」の側に丸めない)。
+    cut_short: dict = {str(k): int(v) for k, v in (resume.get("cut_short") or {}).items()} \
+        if resume else {}
     for gen in range(start_gen, generations):
         t0 = time.time()
         if trace is not None:
@@ -2471,6 +2537,9 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
                 cut_symptoms[c] = cut_symptoms.get(c, 0) + n
             for c, n in (m.preamble_by_class or {}).items():
                 preamble_symptoms[c] = preamble_symptoms.get(c, 0) + n
+        # 「その枠でも切れた」を走行を通して覚える。処方は 2 倍しか上げないので、これが無いと
+        # 一度測って足りないと分かった用量を次の世代でもう一度出すことになる(run SS 実測)。
+        _note_cut_short(cut_short, champion, cut_symptoms)
         # 測定済み(archive)は幅の外で全部戻ってくる: search の点は設計に付くものでチャンピオンが
         # 替わっても動かないので、帯の内側に残った設計はコール 0 で毎世代挑戦者の候補になる。
         # 世代の初めに写しを取るのは、この世代に測った新顔と、前から archive に居た踏み石を
@@ -2482,19 +2551,17 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
                         allow_default=_default_swap_viable(champion, classes, headroom,
                                                            gate_cases),
                         no_code_by_class=symptoms, cut_by_class=cut_symptoms,
-                        preamble_by_class=preamble_symptoms, archived=archived_before)
+                        preamble_by_class=preamble_symptoms, cut_short=cut_short,
+                        archived=archived_before)
         if not cands:
             # ここまでに champion を confirm で測っている。止まるからといって捨てると、
             # 最終結果も再開状態も「測る前の値」のまま残る。checkpoint も**実際に出す**
             # (load_checkpoint が読むのは checkpoint イベントだけなので、変数を更新した
             # だけでは再開したときに古い値へ戻る)。
             champ_confirm = champ_confirm_now
-            emit({"event": "checkpoint", "gen": gen, "champion": champion,
-                  "champion_search": _state(champ_search),
-                  "champion_confirm": _state(champ_confirm),
-                  "challenged": sorted(challenged), "settled": sorted(settled),
-                  "archive": archive, "stale": stale,
-                  "served": served_map(), "identity_blind": resumed_blind})
+            emit(_checkpoint_row(gen, champion, champ_search, champ_confirm,
+                                 challenged, settled, archive, stale, cut_short,
+                                 served_map(), resumed_blind))
             emit({"event": "stop", "gen": gen, "reason": "no-new-candidates"})
             break
 
@@ -2521,6 +2588,9 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
                 # 残り全部で黙って効かなくなる(per_case を落として機能が死ぬのはこれで 4 例目。
                 # 台帳の行だけが痩せていればよく、決定に使うものは痩せさせない)。
                 archive[h] = {"label": c.label, "kind": c.kind, "search": _state(m)}
+                # 処方が「効いたが足りなかった」ことが分かるのはここだけ。次の世代の用量は
+                # この実測を下限にする。
+                _note_cut_short(cut_short, c.spec, m.cut_by_class)
                 measured += 1
                 emit({"event": "candidate", "gen": gen, "label": c.label, "kind": c.kind,
                       "hash": h, "search": _meas(m)})
@@ -2797,12 +2867,9 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
         # 世代ごとの checkpoint。実走は数時間かかり、実際に OOM で 43 問 x 4 候補を測り終えた
         # 直後に落ちて全部消えた。台帳に判定は残っていたのに再開できなかったのは、**再開に要る
         # 状態(チャンピオンの spec・決着済み・archive)を残していなかった**ため。
-        emit({"event": "checkpoint", "gen": gen, "champion": champion,
-              "champion_search": _state(champ_search),
-              "champion_confirm": _state(champ_confirm),
-              "challenged": sorted(challenged), "settled": sorted(settled),
-              "archive": archive, "stale": stale,
-              "served": served_map(), "identity_blind": resumed_blind})
+        emit(_checkpoint_row(gen, champion, champ_search, champ_confirm,
+                             challenged, settled, archive, stale, cut_short,
+                             served_map(), resumed_blind))
         if stale >= patience:
             emit({"event": "stop", "gen": gen, "reason": f"no-promotion-for-{patience}-gens"})
             break

@@ -523,6 +523,24 @@ class TestPropose(ScriptedCase):
         self.assertEqual([c.kind for c in propose(champ_maxed, {"a": maxed}, classes, width=30,
                                                   cut_by_class={"qa": 2})
                           if c.kind == "tokens"], [], "the cap stops the escalation")
+        # 「その枠でも切れた」と実測した用量からは、その 2 倍へ上がる。同じ用量を出し直さない:
+        # run SS では 3072 が gen0/gen2/gen4 の 3 世代で提案され、edge-int-digitsum は毎回その
+        # 3072 で切れていた(1536 -> 3072 に伸びてはいた。効いたが足りなかった)。
+        self.assertEqual(tokens(cut_by_class={"integration": 4},
+                                cut_short={"integration": 3072}),
+                         ["tokens:integration(a)x6144"])
+        # 2 倍が既にその上なら 2 倍のまま(下限であって固定値ではない)
+        self.assertEqual(tokens(cut_by_class={"integration": 4},
+                                cut_short={"integration": 512}),
+                         ["tokens:integration(a)x3072"])
+        # 別のクラスの実測は効かない(処方はクラス単位)
+        self.assertEqual(tokens(cut_by_class={"integration": 4}, cut_short={"qa": 3072}),
+                         ["tokens:integration(a)x3072"])
+        # 上限は下限より強い
+        self.assertEqual(tokens(cut_by_class={"integration": 4},
+                                cut_short={"integration": MAX_TOKENS_CAP}),
+                         [f"tokens:integration(a)x{MAX_TOKENS_CAP}"])
+
         # an archived tokens prescription comes back outside the width, like every other kind
         made = propose(champ, pool, classes, width=30, cut_by_class={"integration": 4})
         tok = [c for c in made if c.kind == "tokens"][0]
@@ -1801,6 +1819,95 @@ class TestGrowLoop(ScriptedCase):
         self.assertEqual(scoped_cases(champ_big, cand_big, big, "qa"), 2.0)
         self.assertLess(_challenger_key(a, cand_big, scoped=2.0),
                         _challenger_key(b, cand, scoped=1.0))
+
+    def test_an_insufficient_budget_is_remembered_per_class_from_the_lane_it_ran_on(self):
+        # 記録するのは「その測定が実際に使っていたレーンの枠」で、ラベルの数字ではない。
+        # ラベルは「今回上がった枠」を書くもので、そのクラスが通る枠と一致するとは限らない。
+        from gama.grow import _lane_token_limit, _note_cut_short
+        spec = {"kwargs": {
+            "backends": {"small": {"kwargs": {"max_tokens": 1536}},
+                         "big": {"kwargs": {"max_tokens": 3072}}},
+            "routing_table": {"qa": "big"}, "default": "small"}}
+        self.assertEqual(_lane_token_limit(spec, "qa"), 3072)          # 表の行き先
+        self.assertEqual(_lane_token_limit(spec, "research"), 1536)    # 既定レーン
+        seen = {}
+        _note_cut_short(seen, spec, {"qa": 2, "research": 1})
+        self.assertEqual(seen, {"qa": 3072, "research": 1536})
+        # 大きい方だけ残る(小さい枠での切断は、大きい枠の反証にならない)
+        _note_cut_short(seen, {"kwargs": {"backends": {"s": {"kwargs": {"max_tokens": 512}}},
+                                          "routing_table": {}, "default": "s"}}, {"qa": 9})
+        self.assertEqual(seen["qa"], 3072)
+        # 切断が 0 のクラスは覚えない(「足りなかった」の証拠が無い)
+        _note_cut_short(seen, spec, {"content": 0})
+        self.assertNotIn("content", seen)
+        # max_tokens を持たないレーンは記録しようがない
+        self.assertIsNone(_lane_token_limit({"kwargs": {"backends": {"n": {}},
+                                                        "routing_table": {}, "default": "n"}}, "qa"))
+
+    def test_the_insufficient_budget_survives_a_resume(self):
+        # 落とすと、再開した走行が一度捨てた用量をもう一度測り直す(per_case を checkpoint から
+        # 落として機能が黙って死んだのと同じ型)。checkpoint に載り、resume が読むこと。
+        events = []
+        self._grow({"a": _lane("a")}, generations=1, width=1, on_event=events.append)
+        cps = [e for e in events if e.get("event") == "checkpoint"]
+        self.assertTrue(cps)
+        for cp in cps:
+            self.assertIn("cut_short", cp)
+        # 台帳を書いて、そこから再開する(再開の入口は台帳の最後の checkpoint を読む)
+        import json
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            led = os.path.join(d, "g.jsonl")
+            self._grow({"a": _lane("a")}, generations=1, width=1, ledger_path=led)
+            rows = [json.loads(l) for l in open(led) if l.strip()]
+            # 走行が覚えた値を書き込んでから再開: 戻ってこなければ記憶は落ちている
+            with open(led, "w") as fh:
+                for r in rows:
+                    if r.get("event") == "checkpoint":
+                        r["cut_short"] = {"qa": 3072}
+                    fh.write(json.dumps(r) + chr(10))
+            back = []
+            self._grow({"a": _lane("a")}, generations=2, width=1, ledger_path=led,
+                       resume_from=led, on_event=back.append)
+            cps2 = [e for e in back if e.get("event") == "checkpoint"]
+            self.assertTrue(cps2)
+            self.assertEqual(cps2[-1]["cut_short"], {"qa": 3072})
+
+    def test_the_loop_raises_the_dose_after_measuring_one_that_still_cut(self):
+        # 上の 2 本は関数を直接呼んでいるので、`grow()` 側で記録する行を消しても緑のまま。
+        # 走行で押さえる: gen0 で 3072 を測り、それでもまだ切れていたら gen1 は 6144 を出す。
+        class Cutter(ModelBackend):
+            """常に途中で切れて不正解になるレーン(枠をいくら上げても足りない)。"""
+            name = "cutter"
+            available = True
+
+            def __init__(self, tag="a", max_tokens=1536):
+                self.tag, self.max_tokens = tag, max_tokens
+                self.last_usage = None
+                self.last_finish_reason = None
+
+            def complete(self, prompt, tier, **kw):
+                self.last_finish_reason = "length"      # 枠で切れた、と名乗る
+                return "BAD"
+
+        backends_mod._BACKENDS["cutter"] = Cutter
+        try:
+            lane = {"backend": "cutter", "kwargs": {"tag": "a", "max_tokens": 1536}}
+            events = []
+            grow({"a": lane}, cases=_cases(4), generations=2, width=1, patience=5,
+                 min_margin=0.05, on_event=events.append)
+            listed = [(e["gen"], e["label"]) for e in events
+                      if e.get("event") == "candidate" and e["label"].startswith("tokens:")]
+            self.assertIn((0, "tokens:qa(a)x3072"), listed)
+            # gen0 の 3072 が切断を止められなかったことを走行が覚えている
+            self.assertIn((1, "tokens:qa(a)x6144"), listed)
+            self.assertNotIn((1, "tokens:qa(a)x3072"), listed)
+            cps = [e for e in events if e.get("event") == "checkpoint"]
+            # gen1 の 6144 でもまだ切れたので、記憶はそこまで上がっている
+            self.assertEqual(cps[-1]["cut_short"], {"qa": 6144})
+            self.assertEqual([c["cut_short"] for c in cps if c["gen"] == 0], [{"qa": 3072}])
+        finally:
+            backends_mod._BACKENDS.pop("cutter", None)
 
     def test_a_tie_goes_to_the_class_with_the_most_room_left(self):
         # run SS gen0 の実測。処方が 3 本(integration / qa / research)並び、どれも search で
