@@ -617,13 +617,34 @@ class TestPropose(ScriptedCase):
                 if c.kind == "terse"][0]
         self.assertTrue(_prescribed(made, {"content": 1}, "cut"))
         self.assertFalse(_prescribed(made, {"content": 1}, "preamble"))
-        # 前置きの症状も出ているなら、そちらを治すと名乗る(1 本しか作らない)
-        both = [c for c in propose(champ, pool, classes, width=30,
-                                   cut_by_class={"content": 4}, cut_short=cs2,
-                                   preamble_by_class={"content": 3})
-                if c.kind == "terse"]
-        self.assertEqual([c.label for c in both], ["terse:content(a)"])
-        self.assertTrue(_prescribed(both[0], {"content": 1}, "preamble"))
+        # 両方の症状が出ていても作るのは 1 本。名乗るのは**重い方**で、席の順位はその件数で
+        # 決まる。軽い方を名乗ると、症状が増えたせいで他クラスの軽い症状より後ろへ回る。
+        def _terse_one(**kw):
+            kw.setdefault("cut_short", cs2)
+            got = [c for c in propose(champ, pool, classes, width=30, **kw)
+                   if c.kind == "terse"]
+            self.assertEqual([c.label for c in got], ["terse:content(a)"])
+            return got[0]
+
+        heavy_cut = _terse_one(cut_by_class={"content": 4}, preamble_by_class={"content": 3})
+        self.assertTrue(_prescribed(heavy_cut, {"content": 1}, "cut"))
+        heavy_pre = _terse_one(cut_by_class={"content": 2}, preamble_by_class={"content": 9})
+        self.assertTrue(_prescribed(heavy_pre, {"content": 1}, "preamble"))
+        # 枠の手がまだ出せるなら、切断は数に入れない(terse は後継であって並走ではない)
+        still = _terse_one(cut_by_class={"content": 40}, preamble_by_class={"content": 1},
+                           cut_short={})
+        self.assertTrue(_prescribed(still, {"content": 1}, "preamble"))
+
+        # 除外済み(confirm で決着した)枠の候補は「出せた」に数えない。数えると、症状が
+        # 残っているのに毎世代その 1 本を鋳造しては消え、terse に移れないまま処方 0 本が続く。
+        from gama.grow import _with_more_tokens, _rooted, _with_lane
+        blocked = spec_hash(_with_lane(champ, "content", "a+tok",
+                                       _rooted(_with_more_tokens(lane, times=1), "a", pool)))
+        after = [c for c in propose(champ, pool, classes, width=30,
+                                    cut_by_class={"content": 4}, exclude={blocked})
+                 if c.kind in ("tokens", "terse")]
+        self.assertEqual([(c.kind, c.label) for c in after],
+                         [("terse", "terse:content(a)")])
 
         # 既に上限に達しているレーンは、履歴が無くても枠を上げられない。段数の条件だけで
         # 判定すると「まだ試せる」のまま terse へも移れず、症状が毎世代出ているのに手が 0 本

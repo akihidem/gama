@@ -785,14 +785,22 @@ def propose(champion: dict, pool: dict[str, dict], classes: list[str],
                     f"tokens:{task_type}({base})x{got}", "tokens",
                     _with_lane(champion, task_type, name, _rooted(bigger, base, pool)),
                     remedy=task_type, treats="cut", dose_steps=steps)))
-                budget_offered = True
+                # 「出せた」は**この世代に実際に出る**という意味。除外済み(confirm で決着した)
+                # 設計を数えると、症状が残っているのに毎世代その 1 本を鋳造しては消え、terse に
+                # 移れないまま処方 0 本が続く(codex 指摘)。search に切断が出なかった候補は
+                # 段数も進まないので、この経路は自然には抜けられない。
+                budget_offered = spec_hash(buckets["tokens"][-1][1].spec) not in (exclude or ())
         # 見るのは「枠の手が実際に出せたか」で、梯子の段数ではない。**既に上限に達している
         # レーン**は履歴が無くても枠を上げられず(``_with_more_tokens`` が None)、段数の条件
         # だけで判定すると「まだ試せる」のまま terse へも移れない ── 症状が毎世代出ているのに
         # 手が 0 本、が上限のクラスで起きる(codex 指摘)。
-        _terse_treats = ("preamble" if task_type in preamble
-                         else "cut" if (task_type in cut and not budget_offered)
-                         else None)
+        # どちらの症状として名乗るかは**重い方**。terse の spec は 1 本で両方を治しうるのに、
+        # 席の順位は名乗った症状の件数で決まる。前置き 1 件・切断 100 件のクラスが「1 件」と
+        # して並ぶと、症状が増えたせいで他クラスの軽い症状より後ろへ回る(codex 指摘)。
+        # 同数なら切断側にする: そちらは枠の手を使い切っていて、他に試すものが無い。
+        _cut_n = cut.get(task_type, 0) if (task_type in cut and not budget_offered) else 0
+        _pre_n = preamble.get(task_type, 0)
+        _terse_treats = ("cut" if _cut_n >= _pre_n else "preamble") if (_cut_n or _pre_n) else None
         if _terse_treats:
             terse = _with_system(cur_spec)
             if terse is not None:
