@@ -264,6 +264,28 @@ def _checkpoint_row(gen: int, champion: dict, champ_search, champ_confirm,
             "served": served, "identity_blind": identity_blind}
 
 
+def _budget_still_worth_trying(champion: dict, task_type: str,
+                               cut_short: Optional[dict]) -> bool:
+    """そのクラスに枠 2 倍の処方をもう一度出してよいか。**登り続けさせない**のが要件。
+
+    切断が枠のせいでない場合(モデルが止まらない・終端が与えられていない)、「切れたら 2 倍」は
+    上限まで毎世代 1 本ずつ新しい用量を実測する暴走になる。同じ用量を出し直していた頃は
+    無駄でも有界だったので、下限を足すなら止まる条件も一緒に要る。
+
+    許すのは**2 段まで**(チャンピオンの枠の 4 倍)。4 倍の枠でもまだ切れる返答は、枠が一段
+    足りないのではなく枠で決まっていない。実測(run SS ``edge-int-digitsum``): 1536 で 1577
+    token、3072 で 3113 token —— 返答は与えた枠を埋めるまで伸びていて、次の 2 倍でも同じことが
+    起きる形をしている。逆に「3500 token あれば終わる」返答は 2 段目(6144)で治るので、1 段で
+    打ち切ると治せるものを取り逃がす。2 段はその両方を満たす最小の幅。
+
+    チャンピオンの枠を基準にするので、処方が昇格して枠が上がれば上限も一緒に上がる
+    (昇格は「この向きは効いた」という証拠で、その先をもう一度試す資格がある)。
+    """
+    tried = (cut_short or {}).get(task_type) or 0
+    limit = _lane_token_limit(champion, task_type) or 0
+    return not (limit and tried >= limit * 4)
+
+
 def _note_cut_short(seen: dict, spec: dict, cut_by_class: dict) -> dict:
     """「この枠でも切れた」を覚える。``seen`` はクラス → 足りないと実測した ``max_tokens``。
 
@@ -689,9 +711,9 @@ def propose(champion: dict, pool: dict[str, dict], classes: list[str],
                     f"terse:{task_type}({base})", "terse",
                     _with_lane(champion, task_type, name, _rooted(terse, base, pool)),
                     remedy=task_type, treats="preamble")))
-        if task_type in cut:                                # ②'' 返答の枠を 2 倍にする
-            # そのクラスで「この枠でも切れた」と実測済みの上限があれば、そこから上げる
-            # (無ければ従来どおりチャンピオンの枠の 2 倍)。
+        if task_type in cut and _budget_still_worth_trying(champion, task_type, cut_short):
+            # ②'' 返答の枠を 2 倍にする。そのクラスで「この枠でも切れた」と実測済みの上限が
+            # あれば、そこから上げる(無ければ従来どおりチャンピオンの枠の 2 倍)。
             bigger = _with_more_tokens(cur_spec, at_least=(cut_short or {}).get(task_type))
             if bigger is not None:
                 name = f"{cur}+tok"
@@ -2537,9 +2559,6 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
                 cut_symptoms[c] = cut_symptoms.get(c, 0) + n
             for c, n in (m.preamble_by_class or {}).items():
                 preamble_symptoms[c] = preamble_symptoms.get(c, 0) + n
-        # 「その枠でも切れた」を走行を通して覚える。処方は 2 倍しか上げないので、これが無いと
-        # 一度測って足りないと分かった用量を次の世代でもう一度出すことになる(run SS 実測)。
-        _note_cut_short(cut_short, champion, cut_symptoms)
         # 測定済み(archive)は幅の外で全部戻ってくる: search の点は設計に付くものでチャンピオンが
         # 替わっても動かないので、帯の内側に残った設計はコール 0 で毎世代挑戦者の候補になる。
         # 世代の初めに写しを取るのは、この世代に測った新顔と、前から archive に居た踏み石を
@@ -2589,8 +2608,12 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
                 # 台帳の行だけが痩せていればよく、決定に使うものは痩せさせない)。
                 archive[h] = {"label": c.label, "kind": c.kind, "search": _state(m)}
                 # 処方が「効いたが足りなかった」ことが分かるのはここだけ。次の世代の用量は
-                # この実測を下限にする。
-                _note_cut_short(cut_short, c.spec, m.cut_by_class)
+                # この実測を下限にする。**その処方自身の試験からしか記録しない**: どの候補の
+                # 切断でも記録すると、たまたま大きい枠を持つ別レーンへ振っただけの手
+                # (route:qa->big など)の切断が「クラス qa は 8192 でも足りない」に化け、
+                # 1536 の champion への処方が一段で上限へ飛ぶ。段を刻むのは要件の方。
+                if c.treats == "cut" and c.remedy:
+                    _note_cut_short(cut_short, c.spec, {c.remedy: m.cut_by_class.get(c.remedy, 0)})
                 measured += 1
                 emit({"event": "candidate", "gen": gen, "label": c.label, "kind": c.kind,
                       "hash": h, "search": _meas(m)})

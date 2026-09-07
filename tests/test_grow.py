@@ -536,10 +536,21 @@ class TestPropose(ScriptedCase):
         # 別のクラスの実測は効かない(処方はクラス単位)
         self.assertEqual(tokens(cut_by_class={"integration": 4}, cut_short={"qa": 3072}),
                          ["tokens:integration(a)x3072"])
-        # 上限は下限より強い
+        # 2 段(チャンピオンの枠の 4 倍)まで上げてなお切れるなら、枠はこの症状のレバーでは
+        # ない。処方をやめて枠を別の手に回す。ここを止めないと、切断が枠のせいでない
+        # クラスで毎世代 1 本ずつ新しい用量を実測する暴走になる。
         self.assertEqual(tokens(cut_by_class={"integration": 4},
-                                cut_short={"integration": MAX_TOKENS_CAP}),
-                         [f"tokens:integration(a)x{MAX_TOKENS_CAP}"])
+                                cut_short={"integration": 1536 * 4}), [])
+        self.assertEqual(tokens(cut_by_class={"integration": 4},
+                                cut_short={"integration": MAX_TOKENS_CAP}), [])
+        # 1 段目で打ち切らない: 「6144 あれば終わる」返答は 2 段目で治るので取り逃がす
+        self.assertEqual(tokens(cut_by_class={"integration": 4},
+                                cut_short={"integration": 1536 * 2}),
+                         ["tokens:integration(a)x6144"])
+        # 止まるのはそのクラスだけ(別のクラスの処方は出る)
+        self.assertEqual(tokens(cut_by_class={"integration": 4, "qa": 2},
+                                cut_short={"integration": 1536 * 4}),
+                         ["tokens:qa(a)x3072"])
 
         # an archived tokens prescription comes back outside the width, like every other kind
         made = propose(champ, pool, classes, width=30, cut_by_class={"integration": 4})
@@ -1820,6 +1831,41 @@ class TestGrowLoop(ScriptedCase):
         self.assertLess(_challenger_key(a, cand_big, scoped=2.0),
                         _challenger_key(b, cand, scoped=1.0))
 
+    def test_only_the_budget_remedy_itself_reports_that_a_budget_was_too_small(self):
+        # 「どの候補の切断でも記録する」にすると、たまたま大きい枠のレーンへ振っただけの手
+        # (route:qa->big)の切断が「クラス qa は 8192 でも足りない」に化け、1536 の champion への
+        # 処方が一段で上限へ飛ぶ。段を刻むのが要件なので、記録はその処方自身の試験からだけ。
+        class Cutter(ModelBackend):
+            name = "cutter"
+            available = True
+
+            def __init__(self, tag="a", max_tokens=1536):
+                self.tag, self.max_tokens = tag, max_tokens
+                self.last_usage = None
+                self.last_finish_reason = None
+
+            def complete(self, prompt, tier, **kw):
+                self.last_finish_reason = "length"
+                return "BAD"
+
+        backends_mod._BACKENDS["cutter"] = Cutter
+        try:
+            pool = {"a": {"backend": "cutter", "kwargs": {"tag": "a", "max_tokens": 1536}},
+                    "big": {"backend": "cutter", "kwargs": {"tag": "big", "max_tokens": 8192}}}
+            events = []
+            grow(pool, cases=_cases(4), generations=2, width=8, patience=9,
+                 min_margin=0.05, on_event=events.append)
+            listed = [(e["gen"], e["label"]) for e in events if e.get("event") == "candidate"]
+            # 大きい枠のレーンへ振る手も測られていて、それも切れている
+            self.assertIn((0, "route:qa->big"), listed)
+            cps = [e for e in events if e.get("event") == "checkpoint"]
+            # それでも覚えているのは処方自身が試した 3072 だけ(8192 ではない)
+            self.assertEqual([c["cut_short"] for c in cps if c["gen"] == 0], [{"qa": 3072}])
+            # 結果として次の用量は 6144。段が消えていない
+            self.assertIn((1, "tokens:qa(a)x6144"), listed)
+        finally:
+            backends_mod._BACKENDS.pop("cutter", None)
+
     def test_an_insufficient_budget_is_remembered_per_class_from_the_lane_it_ran_on(self):
         # 記録するのは「その測定が実際に使っていたレーンの枠」で、ラベルの数字ではない。
         # ラベルは「今回上がった枠」を書くもので、そのクラスが通る枠と一致するとは限らない。
@@ -1894,7 +1940,7 @@ class TestGrowLoop(ScriptedCase):
         try:
             lane = {"backend": "cutter", "kwargs": {"tag": "a", "max_tokens": 1536}}
             events = []
-            grow({"a": lane}, cases=_cases(4), generations=2, width=1, patience=5,
+            grow({"a": lane}, cases=_cases(4), generations=4, width=1, patience=9,
                  min_margin=0.05, on_event=events.append)
             listed = [(e["gen"], e["label"]) for e in events
                       if e.get("event") == "candidate" and e["label"].startswith("tokens:")]
@@ -1902,8 +1948,11 @@ class TestGrowLoop(ScriptedCase):
             # gen0 の 3072 が切断を止められなかったことを走行が覚えている
             self.assertIn((1, "tokens:qa(a)x6144"), listed)
             self.assertNotIn((1, "tokens:qa(a)x3072"), listed)
+            # そして 6144 でもまだ切れたので、gen2 以降は枠の処方を出さない。
+            # ここが無いと、切断が枠のせいでないクラスで上限まで毎世代 1 本ずつ実測する
+            # (この Cutter がまさにそのモデルで、枠をいくら上げても length を名乗る)。
+            self.assertEqual([g for g, lab in listed if g >= 2], [])
             cps = [e for e in events if e.get("event") == "checkpoint"]
-            # gen1 の 6144 でもまだ切れたので、記憶はそこまで上がっている
             self.assertEqual(cps[-1]["cut_short"], {"qa": 6144})
             self.assertEqual([c["cut_short"] for c in cps if c["gen"] == 0], [{"qa": 3072}])
         finally:
