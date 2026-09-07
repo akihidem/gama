@@ -1952,13 +1952,24 @@ def class_headroom(m: "Measurement", cases: list) -> dict:
     ここが 1 問未満のクラスは、**どんな変異を当てても昇格の床を越えられない**。床は
     「confirm 1 問ぶん」で、変異が触れるのはそのクラスの case だけだから、取りうる最大の
     伸びが 1 問に満たないなら証明として通らない。推定ではなく算術で言える。
+
+    **測れなかった case は数えない。** 掃引は例外を握って 0 点にするので、per_case には
+    「間違えた」と「測れなかった」が同じ 0 として並ぶ。この関数だけがその区別を読んで
+    いなかった(``scoped_cases`` も対応のある検定も ``error_cases`` を引いている)。引かないと、
+    レーンが壊れているクラスほど「伸びしろが大きい」に見え、幅の枠がそこへ優先的に向かう ──
+    測れない場所へ枠を回す、いちばん悪い向きになる。算術で言える主張を、起きなかった測定で
+    水増ししない。
+
+    その代わり、ここを引くと「全部の case が error だったクラス」は伸びしろ 0 になり、
+    飽和(=もう取れる余地が無い)と見分けが付かなくなる。呼ぶ側は測れなかった件数を別に
+    見て、測り切れていないクラスを飽和と呼ばないこと(``errors_in_scope``)。
     """
     if not m.per_case:
         return {}
     out: dict = {}
     for c in cases:
         got = m.per_case.get(c.case_id)
-        if got is None:
+        if got is None or c.case_id in m.error_cases:
             continue
         out[c.task_type] = out.get(c.task_type, 0.0) + (1.0 - got)
     return out
@@ -2596,8 +2607,13 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
         # 挑戦権が「厳密に上回ること」だった頃の算術。今の門 ①(search_gate)は同点を通すので、
         # 取り切ったクラスへの変異も confirm に伸びしろがある限り挑戦できる(run V では qa が
         # confirm に 1.25 問残しながら search 側の理由だけで 5 世代とも試されなかった)。
+        # 測り切れていないクラスは飽和と呼ばない。伸びしろは測れた case からしか数えないので、
+        # レーンが落ちていたクラスは「残り 0 問」に見える。そこを飽和として外すと、壊れて
+        # いたクラスがその走行の残り全部で候補から消える(証拠が無いことを「余地なし」に
+        # 丸めない、と同じ向き)。
         saturated = sorted(c for c in classes
-                           if c in headroom and headroom[c] < gate_by_class.get(c, gate_cases))
+                           if c in headroom and headroom[c] < gate_by_class.get(c, gate_cases)
+                           and not errors_in_scope(champ_confirm_now, splits["confirm"], c))
         if saturated:
             emit({"event": "saturated", "gen": gen,
                   "classes": {c: round(headroom.get(c, 0.0), 2) for c in saturated},

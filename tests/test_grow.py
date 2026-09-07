@@ -3687,6 +3687,57 @@ class TestSaturatedClasses(ScriptedCase):
         self.assertAlmostEqual(h["qa"], 0.0)          # 満点 = 伸びしろ無し
         self.assertAlmostEqual(h["research"], 2.0)    # 0.5 x 4 問
 
+    def test_a_case_that_could_not_be_measured_is_not_headroom(self):
+        # 掃引は例外を握って 0 点にするので、per_case には「間違えた」と「測れなかった」が
+        # 同じ 0 として並ぶ。引かないと、レーンが壊れているクラスほど伸びしろが大きく見え、
+        # 幅の枠が測れない場所へ優先的に向かう。他の判定(scoped_cases・対応のある検定)は
+        # 最初から error_cases を引いている。
+        cases = _cases(2, "qa", "qa") + _cases(2, "research", "re")
+        broken = Measurement(0.0, 0.0, 1.0, 4, 4, errors=2, error_rate=0.5,
+                             per_case={"qa1": 0.0, "qa2": 0.0, "re1": 0.0, "re2": 1.0},
+                             error_cases=frozenset({"qa1", "qa2"}))
+        h = class_headroom(broken, cases)
+        self.assertEqual(h.get("qa"), None)           # 2 問とも測れていない = 何も言えない
+        self.assertAlmostEqual(h["research"], 1.0)    # 測れた側だけ数える
+        # 同じ 0 点でも、測れた 0 点は伸びしろ
+        measured = Measurement(0.0, 0.0, 1.0, 4, 4,
+                               per_case={"qa1": 0.0, "qa2": 0.0, "re1": 0.0, "re2": 1.0})
+        self.assertAlmostEqual(class_headroom(measured, cases)["qa"], 2.0)
+
+    def test_a_class_that_could_not_be_measured_is_not_called_saturated(self):
+        # 伸びしろを測れた case からしか数えないので、レーンが落ちていたクラスは「残り 0 問」に
+        # 見える。そこを飽和として外すと、壊れていたクラスがその走行の残り全部で候補から消える。
+        class Flaky(ModelBackend):
+            """1 問だけ落ちるレーン。落ちるのは confirm の qa2 で、qa の残り 1 問(qa6)は
+            満点。測れた分だけ数えると qa は「残り 0 問」= 飽和に見える。"""
+            name = "flaky2"
+            available = True
+
+            def __init__(self, tag="a"):
+                self.tag = tag
+                self.last_usage = None
+
+            def complete(self, prompt, tier, **kw):
+                if "case=qa2 " in prompt or prompt.endswith("case=qa2"):
+                    raise RuntimeError("lane down")
+                return "GOOD"
+
+        backends_mod._BACKENDS["flaky2"] = Flaky
+        try:
+            events = []
+            grow({"a": {"backend": "flaky2", "kwargs": {"tag": "a"}}},
+                 cases=_cases(8, "qa", "qa") + _cases(24, "research", "re"),
+                 generations=1, width=4, patience=3, min_margin=0.05,
+                 on_event=events.append)
+            # 走行が止まっていない = 失敗率は門の下(壊れた測定として全体を捨てる話ではない)
+            self.assertTrue([e for e in events if e.get("event") == "generation"])
+            sat = [e for e in events if e.get("event") == "saturated"]
+            self.assertTrue(sat, "research は満点なので飽和が出る世代がある")
+            for e in sat:
+                self.assertNotIn("qa", e["classes"])
+        finally:
+            backends_mod._BACKENDS.pop("flaky2", None)
+
     def test_no_per_case_means_no_exclusion(self):
         # 飽和を**証明できない**ときは除外しない(古い checkpoint からの再開など)
         self.assertEqual(class_headroom(Measurement(0.9, 0.9, 1.0, 4, 4), _cases(4)), {})
