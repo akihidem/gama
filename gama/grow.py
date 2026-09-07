@@ -265,15 +265,19 @@ def _checkpoint_row(gen: int, champion: dict, champ_search, champ_confirm,
 
 
 def _lane_identity(spec: dict, task_type: str) -> Optional[str]:
-    """そのクラスが通るレーンの「用量を除いた同一性」。無ければ ``None``。
+    """そのクラスが通るレーンの同一性(**枠を含む**)。レーンが無ければ ``None``。
 
-    ``max_tokens`` と ``_grow_base`` を落としてから内容ハッシュを取る。前者は今まさに刻んで
-    いる段そのもの(1536 と 3072 は同じレーンの別の用量)、後者は処方が書き足す由来の印で、
-    どちらもレーンの中身の違いではない。
+    「何段上げても切れた」の記憶を紐づける鍵。段数は**どの枠から数えたか**とセットでしか
+    意味を持たないので、``max_tokens`` は同一性に入れる。落とすと 2 つ穴が開く(codex 指摘):
+    別モデルへ移った時に旧モデルの履歴が効き続けるのと、同じモデルの枠違いのレーンへ
+    ``route``/``default`` が替わった時に旧基準の段数が適用されるの 2 つ。1536 を基準に 2 段
+    試した記憶は、4096 のレーンへ移った後の 8192 を禁じる理由にならない。
 
-    これが要るのは、覚えている「この枠でも切れた」がクラス名だけの記憶だと、**別のモデルに
-    替わっても効き続ける**ため(codex 指摘)。モデル A で 6144 まで試した後に同じクラスが枠
-    1536 のモデル B へ移ると、B では一度も試していないのに処方が止まる。
+    ``_grow_base`` だけは落とす。処方が「剥がすと何に戻るか」を書き足す由来の印で、返答の
+    中身には効かない。
+
+    記録する時も引く時も**チャンピオンの**レーンで取る。段数は「このチャンピオンのこの枠から
+    N 段上げた」の記憶なので、候補側(既に上がった枠)で取ると引く時に永久に一致しない。
     """
     lane = _resolved_lane(spec, task_type)
     if not lane:
@@ -281,8 +285,7 @@ def _lane_identity(spec: dict, task_type: str) -> Optional[str]:
 
     def strip(node):
         if isinstance(node, dict):
-            return {k: strip(v) for k, v in node.items()
-                    if k not in ("max_tokens", "_grow_base")}
+            return {k: strip(v) for k, v in node.items() if k != "_grow_base"}
         if isinstance(node, list):
             return [strip(v) for v in node]
         return node
@@ -2664,17 +2667,19 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
                 # 残り全部で黙って効かなくなる(per_case を落として機能が死ぬのはこれで 4 例目。
                 # 台帳の行だけが痩せていればよく、決定に使うものは痩せさせない)。
                 archive[h] = {"label": c.label, "kind": c.kind, "search": _state(m)}
-                # 処方が「効いたが足りなかった」ことが分かるのはここだけ。次の世代の用量は
-                # この実測を下限にする。**その処方自身の試験からしか記録しない**: どの候補の
-                # 切断でも記録すると、たまたま大きい枠を持つ別レーンへ振っただけの手
-                # (route:qa->big など)の切断が「クラス qa は 8192 でも足りない」に化け、
-                # 1536 の champion への処方が一段で上限へ飛ぶ。段を刻むのは要件の方。
-                if c.treats == "cut" and c.remedy and c.dose_steps:
-                    _note_cut_short(cut_short, c.spec,
-                                    {c.remedy: m.cut_by_class.get(c.remedy, 0)}, c.dose_steps)
                 measured += 1
                 emit({"event": "candidate", "gen": gen, "label": c.label, "kind": c.kind,
                       "hash": h, "search": _meas(m)})
+            # 処方が「効いたが足りなかった」ことはここで分かる。**その処方自身の試験からしか
+            # 記録しない**: どの候補の切断でも記録すると、たまたま大きい枠を持つ別レーンへ
+            # 振っただけの手(route:qa->big など)の切断が「クラス qa は 8192 でも足りない」に
+            # 化け、1536 の champion への処方が一段で上限へ飛ぶ。段を刻むのは要件の方。
+            # archive から返ってきた測定でも記録する: 新規測定の枝だけに置くと、再開して
+            # 同じ設計がキャッシュで返る走行では段数が永久に増えず、同じ用量に留まる。
+            # 鍵は**チャンピオンの**レーン(段数はそこから数えた数)。
+            if c.treats == "cut" and c.remedy and c.dose_steps:
+                _note_cut_short(cut_short, champion,
+                                {c.remedy: m.cut_by_class.get(c.remedy, 0)}, c.dose_steps)
             scored.append((c, m))
 
 
@@ -2869,10 +2874,6 @@ def grow(pool: dict[str, dict], *, classes: Optional[list[str]] = None,
             champion, champ_search, champ_confirm = challenger.spec, chal_search, chal_confirm
             stale = 0
             settled = set()          # search の決着は旧チャンピオンの点に対するものだった
-            if challenger.treats == "cut" and challenger.remedy:
-                # 枠を上げる手が昇格した = この向きは効いた。段数は新しいチャンピオンの枠から
-                # 数え直す(残しておくと、既に上がった枠にさらに 2 段ぶんが乗って一気に飛ぶ)。
-                cut_short.pop(challenger.remedy, None)
             champ_scores, champ_promo = [], chal_confirm.score
         else:
             champ_confirm = champ_confirm_now       # 次世代の drift 基準は常に最新の実測

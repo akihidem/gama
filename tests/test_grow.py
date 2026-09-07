@@ -25,8 +25,8 @@ sys.path.insert(0, os.path.dirname(__file__))
 from gama.cli import main as cli_main
 from gama import backends as backends_mod
 from gama.grow import (Candidate, _challenger_key, _default_swap_viable, _lane_identity,
-                       _prescribed, _scope_room, _structure_size, class_headroom, propose,
-                       search_gate, spec_hash, split_cases)
+                       _lane_token_limit, _prescribed, _scope_room, _structure_size,
+                       class_headroom, propose, search_gate, spec_hash, split_cases)
 from gama.backends import ModelBackend
 from gama.benchmark import BenchCase
 from gama.cli import build_parser, main
@@ -1917,9 +1917,15 @@ class TestGrowLoop(ScriptedCase):
             # 先頭を取ると常に空で、何を消しても緑になる。
             cp0 = [e for e in events
                    if e.get("event") == "checkpoint" and e["gen"] == 0][0]
-            # 1 段目は切れたまま測られたので、昇格が無ければ記憶に 1 段が残る形。
-            # 昇格したのでその記憶は消えている(次の段は新しい枠から数え直す)。
-            self.assertEqual(cp0["cut_short"], {})
+            # 記憶は「1536 のレーンから 1 段上げても切れた」の形で残る。昇格でチャンピオンの
+            # 枠が 3072 になると同一性が変わるので、その記憶はもう当たらない = 次の段は
+            # 新しい枠から数え直す(残ったままだと、既に上がった枠にさらに乗って一気に飛ぶ)。
+            from gama.grow import _budget_still_worth_trying, _lane_identity
+            self.assertEqual(cp0["cut_short"]["qa"]["steps"], 1)
+            champ = cp0["champion"]
+            self.assertEqual(_lane_token_limit(champ, "qa"), 3072)
+            self.assertNotEqual(cp0["cut_short"]["qa"]["lane"], _lane_identity(champ, "qa"))
+            self.assertTrue(_budget_still_worth_trying(champ, "qa", cp0["cut_short"]))
         finally:
             backends_mod._BACKENDS.pop("cutter", None)
 
@@ -1936,17 +1942,25 @@ class TestGrowLoop(ScriptedCase):
         tried_on_a = {"qa": {"steps": 2, "lane": _lane_identity(a, "qa")}}
         self.assertFalse(_budget_still_worth_trying(a, "qa", tried_on_a))  # A では打ち切り
         self.assertTrue(_budget_still_worth_trying(b, "qa", tried_on_a))   # B では未検証
-        # 用量が違うだけの同じレーンは同じ同一性(1536 と 3072 は同じ梯子の別の段)
+        # 枠が違えば別の同一性。段数は「どの枠から数えたか」とセットでしか意味を持たないので、
+        # 1536 を基準に 2 段試した記憶は 4096 のレーンへ移った後の 8192 を禁じる理由にならない。
         a3072 = {"kwargs": {"backends": {"a": {"backend": "one",
                                                "kwargs": {"max_tokens": 3072},
                                                "_grow_base": "a"}},
                             "routing_table": {}, "default": "a"}}
-        self.assertEqual(_lane_identity(a, "qa"), _lane_identity(a3072, "qa"))
+        self.assertNotEqual(_lane_identity(a, "qa"), _lane_identity(a3072, "qa"))
+        self.assertTrue(_budget_still_worth_trying(a3072, "qa", tried_on_a))
+        # `_grow_base` は返答の中身に効かない印なので同一性に入れない
+        a_marked = {"kwargs": {"backends": {"a": {"backend": "one",
+                                                  "kwargs": {"max_tokens": 1536},
+                                                  "_grow_base": "z"}},
+                               "routing_table": {}, "default": "a"}}
+        self.assertEqual(_lane_identity(a, "qa"), _lane_identity(a_marked, "qa"))
 
     def test_an_insufficient_budget_is_remembered_per_class_from_the_lane_it_ran_on(self):
         # 記録するのは「その測定が実際に使っていたレーンの枠」で、ラベルの数字ではない。
         # ラベルは「今回上がった枠」を書くもので、そのクラスが通る枠と一致するとは限らない。
-        from gama.grow import _lane_token_limit, _note_cut_short
+        from gama.grow import _note_cut_short
         spec = {"kwargs": {
             "backends": {"small": {"kwargs": {"max_tokens": 1536}},
                          "big": {"kwargs": {"max_tokens": 3072}}},
@@ -2035,6 +2049,11 @@ class TestGrowLoop(ScriptedCase):
             listed = [(e["gen"], e["label"]) for e in events
                       if e.get("event") == "candidate" and e["label"].startswith("tokens:")]
             self.assertIn((0, "tokens:qa(a)x3072"), listed)
+            # archive から返ってきた測定でも段数は記録される。新規測定の枝だけに置くと、
+            # 同じ設計がキャッシュで返る走行では段数が永久に増えず同じ用量に留まる。
+            cached = [e for e in events if e.get("event") == "candidate"
+                      and e["label"] == "tokens:qa(a)x3072" and e["gen"] > 0]
+            self.assertEqual(cached, [], "3072 は 1 度しか出ない(次は 6144)")
             # gen0 の 3072 が切断を止められなかったことを走行が覚えている
             self.assertIn((1, "tokens:qa(a)x6144"), listed)
             self.assertNotIn((1, "tokens:qa(a)x3072"), listed)
