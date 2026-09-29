@@ -21,3 +21,4 @@ jobs:
           pip install -e .
           gama --version
           gama bench --backends echo --limit-per-class 1 >/dev/null
+          python examples/rsi_demo.py >/dev/null

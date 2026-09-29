@@ -1,0 +1,59 @@
+{
+  "goal": "Improve gama/_json.py::_extract_json with general JSON parsing behavior, without fixture-specific branches. Preserve complete JSON values and extraction of the first object or array in prose or Markdown fences. Correctly handle escaped quotes, backslashes, delimiters inside strings, and mixed nesting. Preserve the LLMDecompositionError exception class and raise it for missing JSON or a malformed first container. Use only the Python standard library. This is a fixed local task with public fixtures; its scores demonstrate parser changes and do not measure hidden-task generalization.",
+  "allowed_paths": ["gama/_json.py"],
+  "agents": [
+    {
+      "name": "coder-7b",
+      "backend": {
+        "backend": "ollama",
+        "kwargs": {
+          "host": "http://localhost:11434",
+          "model_by_tier": {"large": "qwen2.5-coder:7b"},
+          "timeout": 600
+        }
+      }
+    },
+    {
+      "name": "coder-3b",
+      "backend": {
+        "backend": "ollama",
+        "kwargs": {
+          "host": "http://localhost:11434",
+          "model_by_tier": {"large": "qwen2.5-coder:3b"},
+          "timeout": 600
+        }
+      }
+    }
+  ],
+  "checks": [
+    ["python3", "-B", "-m", "unittest", "discover", "-s", "tests", "-q"]
+  ],
+  "search_command": ["python3", "-B", "examples/rsi_json_score.py", "search"],
+  "confirm_command": ["python3", "-B", "examples/rsi_json_score.py", "confirm"],
+  "sealed_command": ["python3", "-B", "examples/rsi_json_score.py", "sealed"],
+  "workers": 2,
+  "batch_size": 2,
+  "timeout": 600,
+  "evaluation_timeout": 300,
+  "search_repeats": 1,
+  "confirm_repeats": 3,
+  "min_gain": 0.0,
+  "seed": 0,
+  "papers": [
+    {
+      "title": "Darwin Gödel Machine: Open-Ended Evolution of Self-Improving Agents",
+      "url": "https://arxiv.org/abs/2505.22954",
+      "notes": "DGM retains an archive of coding agents, samples parents, and empirically evaluates code changes. This demo applies archive sampling to proposals for one parser file."
+    },
+    {
+      "title": "AlphaEvolve: A coding agent for scientific and algorithmic discovery",
+      "url": "https://arxiv.org/abs/2506.13131",
+      "notes": "AlphaEvolve iteratively improves code using feedback from evaluators. Here a deterministic executable score measures correctness on public JSON extraction fixtures."
+    },
+    {
+      "title": "Automated Design of Agentic Systems",
+      "url": "https://arxiv.org/abs/2408.08435",
+      "notes": "Meta Agent Search programs new agents using feedback and an archive of prior discoveries. This small demo uses existing code model backends to propose source changes; the paper motivates searching implementations represented as code."
+    }
+  ]
+}

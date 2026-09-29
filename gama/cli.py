@@ -1036,6 +1036,8 @@ def build_parser() -> argparse.ArgumentParser:
     pg.add_argument("--hardware", default="(fill in: box, RAM, GPU)",
                     help="hardware line for the emitted recipe.md")
     pg.set_defaults(func=cmd_grow)
+    from .rsi_cli import add_parser as add_rsi_parser
+    add_rsi_parser(sub)
     return p
 
 

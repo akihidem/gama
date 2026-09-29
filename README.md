@@ -220,8 +220,33 @@ organisation is sound before you run it**:
   Given only (p, ρ) it says `analytic` — a model prediction, never "it fired": the analytic
   `ignites()` is `mesh_gain > 1e-9`, i.e. **True for any ρ < 1**, and pairwise ρ cannot see β.
 
-Same round-trip both ways: every config in `examples/` and `recipes/` loads into the canvas and
+Same round-trip both ways: every backend config in `examples/` and `recipes/` loads into the canvas and
 writes back byte-identical (that's yoriai's L0-1).
+
+### Improve source in parallel — `gama rsi`
+
+`gama rsi` adds a persistent source-code improvement loop. Parallel agents propose
+patches in detached Git worktrees, fixed tests and external evaluations measure
+them, and an archive retains viable candidates as parents for later rounds.
+Champion promotion requires a separate repeated confirmation; the reserved final
+evaluation closes the run to further search. Results are reviewable Git refs and
+a cumulative patch.
+
+The implementation draws on DGM's archive and parent sampling, AlphaEvolve's
+parallel source proposals and evaluation stages, and ADAS's measured feedback.
+Backend agents load the selected parent's gama implementation when generating the
+next patch. The controller, allowed files, evaluation contract, and completed
+rounds are recorded for resume.
+
+```bash
+python3 examples/rsi_demo.py    # actual Git/source/evaluation flow; no model calls
+gama rsi --config examples/rsi.example.json --repo . \
+  --state-dir ../gama-rsi-runs/json-parser --rounds 2
+```
+
+See [the RSI guide](docs/rsi.md) for setup, model configuration, resume/finalize,
+the research mapping, and execution boundaries. The demo uses programmed patch
+emitters; no local-LLM improvement is claimed from that demonstration.
 
 ### Let it grow itself — `gama grow`
 `bench` measures a combination *you* wrote. **`grow` writes the combinations.** It mutates the
