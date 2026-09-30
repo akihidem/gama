@@ -3,6 +3,12 @@
 The checkout is `/home/akhd/work/gama-rsi` on `codex/gama-parallel-rsi`.
 Use its Python 3.12 interpreter at `/home/akhd/work/gama-rsi/.venv/bin/python` for every mission command, test and scorer.
 
+The [first real model cycle](rsi_first_live.md) completed on 2026-09-30 with two
+proposals and a verified JSON parser improvement. The user timer is enabled for
+09:00 and 21:00 Asia/Tokyo. This mission has reached both score ceilings and is
+`saturated`: later ticks check its completed state without further model calls.
+A different improvement goal uses a new mission with separate state and evidence.
+
 The mission is `examples/rsi_aws_mission.json`; metadata lives in `/home/akhd/work/gama-rsi-runs/json-extraction`.
 Its core checkpoint is exclusively under `json-extraction/rsi/`. Do not prepopulate that directory or delete `owner.lock` to bypass ownership.
 Proposal evidence lives beneath `/home/akhd/work/gama-rsi-runs/json-extraction-models`, with separate builder and reviewer records.
@@ -64,6 +70,12 @@ The timer uses exactly 09:00 and 21:00 Asia/Tokyo. `Persistent=false` skips miss
 The user manager must remain available for unattended operation. Builders and acceptance checks do not install units or call live models.
 The oneshot has a ten-hour wall limit, a ten-second stop limit and `KillMode=control-group`; individual core workers also have guarded execution deadlines.
 Use the mission `stop` command to cancel active work. `systemctl --user stop gama-rsi.timer` only prevents future timer activations.
+
+Interrupted worktree creation carries a unique marker in both its durable receipt
+and Git's lock reason. Recovery validates that ownership before releasing the
+lock, including when checkout has already written its index. Locks on completed
+worktrees remain protected. Seed checks can resume before a champion exists, and
+the bridge's deadline includes waiting for input to finish.
 
 Exit codes: 0 success, 2 invalid input/runtime failure, 3 overlapping owner, 4 stopped/blocked ordinary tick, 5 changed frozen inputs.
 Source adoption and GitHub publishing remain separate explicit operator actions; the mission never switches branches, adopts a patch or pushes.

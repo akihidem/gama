@@ -248,6 +248,12 @@ See [the RSI guide](docs/rsi.md) for setup, model configuration, resume/finalize
 the research mapping, and execution boundaries. The demo uses programmed patch
 emitters; no local-LLM improvement is claimed from that demonstration.
 
+The optional [AWS mission runner](docs/rsi_operations.md) runs two Astra proposers
+with an independent Claude review of each patch, durable proposal limits, crash
+recovery, and a twice-daily user timer. Its [first real model run](docs/rsi_first_live.md)
+improved JSON extraction from 16/20 to 20/20 on each public evaluation split and
+from 186/288 to 288/288 on separately prepared generated cases.
+
 ### Let it grow itself — `gama grow`
 `bench` measures a combination *you* wrote. **`grow` writes the combinations.** It mutates the
 config one move at a time (route a class to another model, wrap a lane in `tool`, ensemble it

@@ -9,6 +9,11 @@ for evolving model configurations.
 The controller uses only Python's standard library and Git. Run locking requires
 Linux (including WSL) or macOS. Gama's CI Python versions are 3.10–3.12.
 
+For the optional Linux service using Astra proposals, independent Claude review,
+and a bounded twice-daily schedule, see [AWS operations](rsi_operations.md).
+The [first measured run](rsi_first_live.md) records the actual parser improvement
+and its validation.
+
 ## Try it without a model
 
 From the source checkout:
