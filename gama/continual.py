@@ -499,7 +499,7 @@ def _finalization(record):
     _must(verdict in ("improved", "regressed", "not_separable")
           and isinstance(core.get("sealed_base"), dict)
           and isinstance(core.get("sealed_champion"), dict), "invalid sealed core verdict")
-    path = directory / "result.json"
+    path = _abs(str(directory / "result.json"))
     if not path.exists():
         return phase, None
     result = _json(path)
@@ -507,11 +507,55 @@ def _finalization(record):
           and result.get("base") == record["base"] and result.get("state_dir") == str(directory),
           "core result base or directory differs")
     if result["phase"] != "finalized":
+        # Only a ready report for the same champion is safe to replace.
+        reported = result.get("champion")
+        _must(result["phase"] == "ready" and isinstance(reported, dict)
+              and all(reported.get(k) == champion[0][k] for k in ("id", "commit")),
+              "stale core result disagrees with checkpoint")
         return phase, None
     _must(result.get("sealed_verdict") == verdict and result.get("champion") == champion[0]
           and result.get("sealed") == {"base": core["sealed_base"], "champion": core["sealed_champion"]},
           "finalized core result disagrees with checkpoint")
     return phase, verdict
+
+
+def _recover_finalized_report(root, config, record, cancel):
+    """Restore the report that the mission CLI skips for a finalized core."""
+    loaded = _mission_inputs(record)
+    mission_root = _abs(loaded["mission"]["state_dir"])
+    directory = _abs(str(mission_root / "rsi"))
+
+    def check_stop(_event=None):
+        _must(not cancel.is_set() and not _stopped(root) and not _stopped(mission_root),
+              "STOP requested")
+
+    check_stop()
+    with rsi_mission._owner(mission_root):
+        # This probe releases run.lock; the exporter must acquire it itself.
+        rsi_mission._wait_core(mission_root)
+        check_stop()
+        loaded = _mission_inputs(record)
+        _must(Path(loaded["mission"]["repo"]) == Path(config["repo"]),
+              "report recovery repository differs from campaign", 5)
+        _checkout(config, record["base"])
+        phase, verdict = _finalization(record)
+        _must(phase == "finalized", "report recovery lacks a finalized core checkpoint")
+        if verdict is None:
+            checkpoint = tasks._read(directory / "state.json")
+            from .rsi import run_rsi
+            run_rsi(loaded["rsi_config"], repo=loaded["mission"]["repo"], state_dir=directory,
+                    rounds=1, resume=True, finalize=True, on_event=check_stop)
+            _must(tasks._read(directory / "state.json") == checkpoint,
+                  "core checkpoint changed during report recovery")
+            _must(_finalization(record)[1] is not None,
+                  "core exporter did not restore an agreed finalized result")
+        check_stop()
+    # Release the mission owner before the CLI acquires it within the same action guard.
+    check_stop()
+    return subprocess.run([sys.executable, "-B", "-m", "gama.rsi_mission",
+                           "resume", "--mission", record["mission"]],
+                          cwd=config["repo"], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                          encoding="utf-8", errors="replace")
 
 
 def _freeze(root, state, config, key):
@@ -539,9 +583,12 @@ def _dispatch(root, state, config, kind, cancel, action=None):
         _checkout(config, state["expected_head"])
     if kind in ("source", "probe"):
         _mission_inputs(g)
+    mission_cli = kind in ("source", "probe", "finalize")
     if kind == "finalize":
-        _must(_finalization(g)[0] in ("finalizing", "finalized"),
+        phase, _ = _finalization(g)
+        _must(phase in ("finalizing", "finalized"),
               "finalization recovery lacks a terminal core checkpoint")
+        mission_cli = phase == "finalizing"
     slot = state["ledger"][-1]
     flight = dict(id=uuid.uuid4().hex, kind=kind, goal=key, action=action,
                   owner=_json(root / "owner.json"), slot=slot["slot"])
@@ -564,7 +611,7 @@ def _dispatch(root, state, config, kind, cancel, action=None):
     timeout = 12 * (bridge["timeout"] + config["evaluation_timeout"] *
                     (len(config["checks"]) + len(state["history"]) + 16)) + 60
     _must(math.isfinite(timeout), "derived deadline is not finite", 5)
-    if kind in ("source", "probe", "finalize"):
+    if mission_cli:
         command = [sys.executable, "-B", "-m", "gama.rsi_mission", action, "--mission", g["mission"]]
     else:
         command = [sys.executable, "-I", "-B", str(Path(__file__).absolute()),
@@ -573,7 +620,7 @@ def _dispatch(root, state, config, kind, cancel, action=None):
         result = run_guarded(command, cwd=Path(config["repo"]),
                              timeout=60 if kind == "probe" else timeout,
                              artifact_dir=directory / "guard", cancel=cancel)
-        if kind in ("source", "probe", "finalize"):
+        if mission_cli:
             _put(directory / "output.json", {"stdout": result.stdout, "stderr": result.stderr})
             value = tasks._loads(result.stdout.encode("utf-8"))
             _put(directory / "result.json", {"ok": True, "returncode": result.returncode,
@@ -595,7 +642,7 @@ def _worker(root_text, token):
     state = _load(root)
     _must(state is not None and state["inflight"] is not None, "no authorized action")
     flight = state["inflight"]
-    _must(flight["id"] == token and flight["kind"] in ("discovery", "publish")
+    _must(flight["id"] == token and flight["kind"] in ("discovery", "publish", "finalize")
           and _busy(root) and _json(root / "owner.json") == flight["owner"]
           and rsi_mission._identity(flight["owner"]["pid"]) == flight["owner"]
           and not _stopped(root), "inactive action authorization")
@@ -614,6 +661,12 @@ def _worker(root_text, token):
                 value = continual_discover.discover(config, directory=directory / "discovery",
                     seen=[_descriptor(g) for g in state["goals"].values()],
                     cursor=state["cursor"], cancel=cancel)
+            elif flight["kind"] == "finalize":
+                completed = _recover_finalized_report(root, config,
+                    state["goals"][flight["goal"]], cancel)
+                _put(directory / "output.json",
+                     {"stdout": completed.stdout, "stderr": completed.stderr})
+                value = tasks._loads(completed.stdout.encode("utf-8"))
             else:
                 key = flight["goal"]
                 g = state["goals"][key]
@@ -621,7 +674,10 @@ def _worker(root_text, token):
                     mission_path=Path(g["mission"]), journal=_journal(root, key, g),
                     save=lambda snapshot: _put(_goal_dir(root, key) / "publication.json", snapshot),
                     cancel=cancel)
-        _put(directory / "result.json", {"ok": True, "value": value, "intent": flight})
+        result = {"ok": True, "value": value, "intent": flight}
+        if flight["kind"] == "finalize":
+            result["returncode"] = completed.returncode
+        _put(directory / "result.json", result)
     except Exception as exc:
         rsi_mission._write(directory / "error.txt", traceback.format_exc())
         _put(directory / "result.json", {"ok": False, "code": getattr(exc, "code", 2), "intent": flight,
