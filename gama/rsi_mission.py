@@ -109,6 +109,12 @@ def _count(core: dict | None, key: str) -> int:
 def _entry(core: dict | None, identity=None) -> dict | None:
     if core is None:
         return None
+    if core.get("phase") == "initializing" and "champion" not in core:
+        # The core checkpoints before seed checks or measurements have run.
+        if (core.get("archive") != [] or core.get("pending") is not None
+                or _count(core, "reserved_proposals") != 0 or _count(core, "next_round") != 0):
+            raise ValueError("invalid unmeasured seed checkpoint")
+        return None
     identity = core["champion"] if identity is None else identity
     archive = core["archive"]
     row = (archive.get(identity) if isinstance(archive, dict) else
@@ -162,7 +168,7 @@ def _step(state: dict, core: dict | None, mission: dict) -> str | None:
             return "finalize"
     if not state["cycle_open"]:
         return None
-    if core is None:
+    if core is None or core.get("phase") == "initializing":
         return "seed"
     if (state["cycle_reservations"] + 2 > 4
             or core["next_round"] - state["round_baseline"] >= mission["rounds_per_cycle"]):
@@ -321,7 +327,7 @@ def _worker() -> int:
                 try:
                     result = run_rsi(
                         inputs["rsi_config"], repo=mission["repo"], state_dir=root / "rsi",
-                        rounds=1, resume=kind != "seed", finalize=kind == "finalize",
+                        rounds=1, resume=core is not None, finalize=kind == "finalize",
                         on_event=on_event,
                     )
                 except _SeedReady:
@@ -376,6 +382,9 @@ def _settle(root: Path, state: dict, core: dict | None) -> bool:
             state["last_outcome"] = ("viable" if grew or "viable" in statuses else
                                      "duplicate" if "duplicate" in statuses else "unchanged")
     elif kind == "seed":
+        # Unchanged counters also describe a failed, unmeasured initialization.
+        if core.get("phase") != "ready" or _entry(core) is None:
+            return False
         if core["reserved_proposals"] != job["reserved"] or core["next_round"] != job["round"]:
             return False
     elif kind == "finalize":
