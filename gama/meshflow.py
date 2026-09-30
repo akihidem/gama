@@ -17,6 +17,7 @@ case checker を ``verify`` として渡すため、エスカレーションは 
 """
 from __future__ import annotations
 
+import math
 import re
 import subprocess
 import sys
@@ -28,13 +29,21 @@ NEEDS_HUMAN = "<<NEEDS_HUMAN>>"
 
 
 def _normalize_score(r) -> float:
-    """checker の戻り値 -> [0,1] の float(gama ``score_output`` と同じ規約; 例外/不正は 0.0)."""
+    """checker の戻り値 -> [0,1] の float(変換失敗/非有限値は 0.0)."""
+    return _normalize_score_with_validity(r)[0]
+
+
+def _normalize_score_with_validity(r) -> tuple[float, bool]:
+    """Keep invalid results distinct from legitimate zero scores for gating."""
     if isinstance(r, bool):
-        return 1.0 if r else 0.0
+        return (1.0 if r else 0.0), True
     try:
-        return max(0.0, min(1.0, float(r)))
-    except (TypeError, ValueError):
-        return 0.0
+        score = float(r)
+    except Exception:
+        return 0.0, False
+    if not math.isfinite(score):
+        return 0.0, False
+    return max(0.0, min(1.0, score)), True
 
 
 # --------------------------------------------------------------------------- #
@@ -159,12 +168,15 @@ class MeshflowBackend(ModelBackend):
         self.last_failures: list = []   # 落ちた段の例外(部分的な劣化を下流から見えるように)
 
     def _score(self, verify, artifact) -> float:
+        return self._score_with_validity(verify, artifact)[0]
+
+    def _score_with_validity(self, verify, artifact) -> tuple[float, bool]:
         if verify is None:
-            return 0.0
+            return 0.0, False
         try:
-            return _normalize_score(verify(artifact))
+            return _normalize_score_with_validity(verify(artifact))
         except Exception:
-            return 0.0
+            return 0.0, False
 
     def complete(self, prompt: str, tier: ModelTier, **kwargs) -> str:
         # A `verify` passed via kwargs wins (lets `gama bench` thread the case checker =
@@ -186,10 +198,10 @@ class MeshflowBackend(ModelBackend):
                 # 空にするのは読む側と同じ walker(``clear_finish_reason``)の仕事。
                 self.last_failures = list(self.last_failures or []) + [e]
             cost += self.costs[i] if i < len(self.costs) else 1.0
-            score = self._score(verify, art)
+            score, valid = self._score_with_validity(verify, art)
             attempts.append({"tier": label, "score": round(score, 3)})
             drafts.append(art)
-            if score >= self.pass_score:                    # external verify satisfied -> stop
+            if (verify is None or valid) and score >= self.pass_score:
                 return self._finish(art, label, cost, attempts, be, human=False)
 
         # 全段が落ちて草案が 1 つも無いなら、これは**測定の失敗**であって「答えが空」ではない。
@@ -217,9 +229,9 @@ class MeshflowBackend(ModelBackend):
             else:                                           # "union" (deterministic)
                 merged, usage_src = _mesh_union(drafts), None
             cost += _MESH_COST
-            ms = self._score(verify, merged)
+            ms, valid = self._score_with_validity(verify, merged)
             attempts.append({"tier": "mesh", "score": round(ms, 3)})
-            if ms >= self.pass_score:
+            if (verify is None or valid) and ms >= self.pass_score:
                 return self._finish(merged, "mesh", cost, attempts, usage_src, human=False)
 
         # ③ membrane: still unresolved. high stakes -> human gate; else best-effort (flagged).
