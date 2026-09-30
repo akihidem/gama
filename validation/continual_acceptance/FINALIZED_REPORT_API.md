@@ -1,12 +1,20 @@
 # Existing core reporting and ownership APIs
 
-These are exact source excerpts. Existing controller files remain immutable.
-The public run_rsi(..., resume=True, finalize=True) never executes source rounds;
-a finalized checkpoint skips scoring and regenerates its report. The mission
-CLI short-circuits finalized core states and does not regenerate that report.
-Keep the original effective config, interpreter spelling, mission path, owner
-locks, STOP, frozen inputs and enclosing guardian receipt. Never synthesize a
-report or reset accounting; use the existing core implementation.
+Exact source excerpts, not new APIs. Existing controller files remain immutable.
+`rsi_runtime.load_inputs(Path(original_mission))` returns `mission`, normalized
+`rsi_config`, `bridge_config`, and frozen-input `digest`. Use the effective
+`rsi_config`, including its fixed bridge agents; raw rsi.json has placeholders.
+`mission` includes absolute `repo`, `state_dir`, `rsi_config`, `bridge_config`.
+The core lives at `Path(mission["state_dir"])/"rsi"`.
+
+The mission CLI maps finalized core state to saturated, then exports the mission
+patch; it dispatches no core worker and does not regenerate core/result.json.
+The public run_rsi(..., resume=True, finalize=True) below never executes source
+rounds; a finalized checkpoint skips scoring and regenerates its actual report.
+Keep original config, interpreter spelling, mission path, owner locks, STOP,
+frozen inputs and enclosing guardian receipt. Do not synthesize a report or
+reset accounting. Coordinate with the mission owner lock and let run_rsi take
+its own core lock; pre-holding that same flock would deadlock.
 
 ## gama/rsi.py:337 _run_lock
 
@@ -156,146 +164,4 @@ def _wait_core(root: Path) -> None:
                 if time.monotonic() >= deadline:
                     raise RuntimeError("previous core worker has not released its lock")
                 time.sleep(0.05)
-```
-
-## gama/rsi_mission.py:255 _cancellation
-
-```python
-@contextlib.contextmanager
-def _cancellation(root: Path):
-    cancel, done = threading.Event(), threading.Event()
-
-    def watch():
-        while not done.is_set():
-            if (root / "STOP").exists():
-                cancel.set()
-                return
-            done.wait(0.05)
-
-    thread = threading.Thread(target=watch, daemon=True)
-    thread.start()
-    try:
-        yield cancel
-    finally:
-        done.set()
-        thread.join(timeout=0.2)
-```
-
-## gama/rsi_mission.py:447 _drive
-
-```python
-def _drive(root: Path, path: Path, state: dict, inputs: dict, action: str) -> int:
-    if action == "resume":
-        _control(root, False)
-    if (root / "STOP").exists():
-        raise _Stopped("STOP requested")
-    if action == "run" and state["phase"] == "blocked":
-        return 4
-    _wait_core(root)
-    core = _core(root)
-    _reconcile(state, core)
-    _settle(root, state, core)
-    if action == "resume":
-        state["phase"], state["error"] = "waiting", None
-    elif state["phase"] == "blocked":
-        _put(root / "state.json", state)
-        return 4
-    mission = inputs["mission"]
-    terminal = core is not None and core.get("phase") in ("finalizing", "finalized")
-    if not state["cycle_open"] and action == "run" and not terminal:
-        state.update(cycle_open=True, reserved_baseline=_count(core, "reserved_proposals"),
-                     cycle_reservations=0, round_baseline=_count(core, "next_round"),
-                     round_limit=mission["rounds_per_cycle"], cycle_healthy=False, inflight=None,
-                     cycle_champion=state["champion"]["commit"] if state["champion"] else None,
-                     last_outcome=None, error=None)
-        state["counts"]["cycles"] += 1
-    state["phase"] = "active" if state["cycle_open"] or terminal else "waiting"
-    _put(root / "state.json", state)
-    with _cancellation(root) as cancel:
-        while True:
-            inputs = _inputs(path, state["digest"])
-            core = _core(root)
-            _reconcile(state, core)
-            if cancel.is_set() or (root / "STOP").exists():
-                raise _Stopped("STOP requested")
-            if state["phase"] == "blocked":
-                _put(root / "state.json", state)
-                return 0
-            if core is not None and core.get("phase") == "finalized":
-                state.update(phase="saturated", cycle_open=False, last_outcome="saturated", inflight=None)
-                kind = None
-            else:
-                kind = _step(state, core, mission)
-            if kind is None:
-                if state["phase"] != "saturated":
-                    state["last_outcome"] = state["last_outcome"] or ("exhausted" if state["cycle_open"] else None)
-                    state.update(phase="waiting", cycle_open=False, inflight=None)
-                _export(root, state, mission)
-                _put(root / "state.json", state)
-                return 0
-            failure = _dispatch(root, path, state, inputs, kind, cancel)
-            core = _core(root)
-            _reconcile(state, core)
-            completed = _settle(root, state, core)
-            _put(root / "state.json", state)
-            if cancel.is_set() or (root / "STOP").exists():
-                raise _Stopped("STOP requested")
-            _inputs(path, state["digest"])
-            # A committed checkpoint wins even if worker stdout/export failed.
-            if not completed:
-                raise RuntimeError(failure or "core worker returned without checkpoint progress")
-```
-
-## gama/rsi_mission.py:553 _view
-
-```python
-def _view(root: Path) -> dict:
-    state = _state(root)
-    _reconcile(state, _core(root))
-    result = {key: state[key] for key in _PUBLIC}
-    result["ownership"] = _ownership(root)
-    if (root / "STOP").exists():
-        result["phase"] = "stopped"
-    return result
-```
-
-## gama/rsi_mission.py:563 main
-
-```python
-def main(argv=None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("run", "status", "stop", "resume"))
-    parser.add_argument("--mission", type=Path, required=True)
-    args = parser.parse_args(argv)
-    root, error, code = None, None, 0
-    try:
-        path = args.mission.resolve()
-        root = _root(path)
-        if args.action != "status":
-            root.mkdir(mode=0o700, parents=True, exist_ok=True)
-        if args.action == "stop":
-            _control(root, True)
-        elif args.action != "status":
-            code = _execute(root, path, args.action)
-    except _Overlap as exc:
-        code, error = 3, str(exc)
-    except _Changed as exc:
-        code, error = 5, str(exc)
-    except (Exception, KeyboardInterrupt) as exc:
-        code, error = 2, f"{type(exc).__name__}: {exc}"
-    result = {key: _empty()[key] for key in _PUBLIC}
-    result["ownership"] = "none"
-    if root is not None:
-        try:
-            result = _view(root)
-        except Exception as exc:
-            error = error or f"{type(exc).__name__}: {exc}"
-            if code == 0 and args.action != "stop":
-                code = 2
-            if (root / "STOP").exists():
-                result["phase"] = "stopped"
-    if error:
-        result["error"] = error
-    print(json.dumps(result, ensure_ascii=False, allow_nan=False))
-    return code
 ```
