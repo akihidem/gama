@@ -254,6 +254,12 @@ recovery, and a twice-daily user timer. Its [first real model run](docs/rsi_firs
 improved JSON extraction from 16/20 to 20/20 on each public evaluation split and
 from 186/288 to 288/288 on separately prepared generated cases.
 
+The [continual supervisor](docs/continual.md) advances to the next goal after a
+mission finishes and discovers new goals when the queue is empty. Its AWS setup
+runs at 09:00 and 21:00 Japan time with two workers and a shared limit of four
+proposal/scout reservations per run window, publishing verified source changes
+together with their regression tests.
+
 ### Let it grow itself — `gama grow`
 `bench` measures a combination *you* wrote. **`grow` writes the combinations.** It mutates the
 config one move at a time (route a class to another model, wrap a lane in `tool`, ensemble it
