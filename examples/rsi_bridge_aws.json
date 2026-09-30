@@ -1,0 +1,15 @@
+{
+  "astra_loop_root": "/home/akhd/astra-loop",
+  "artifact_root": "/home/akhd/work/gama-rsi-runs/json-extraction-models",
+  "timeout": 510,
+  "backend": {
+    "backend_python": "/usr/bin/python3",
+    "timeout_seconds": 240,
+    "bedrock_max_tokens": 8192,
+    "bedrock_effort": "low",
+    "max_context_bytes": 110000,
+    "dotclaude_scripts": "/home/akhd/dotclaude/scripts",
+    "bedrock_script": "/home/akhd/aws-local-llm/scripts/bedrock.py",
+    "codex_transport": "local"
+  }
+}
