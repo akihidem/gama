@@ -1,0 +1,12 @@
+[Unit]
+Description=Gama RSI at 09:00 and 21:00 Asia/Tokyo
+
+[Timer]
+OnCalendar=*-*-* 09:00:00 Asia/Tokyo
+OnCalendar=*-*-* 21:00:00 Asia/Tokyo
+Persistent=false
+Unit=gama-rsi.service
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target

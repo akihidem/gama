@@ -1,0 +1,12 @@
+{
+  "mission_id": "json-extraction",
+  "repo": "/home/akhd/work/gama-rsi",
+  "state_dir": "/home/akhd/work/gama-rsi-runs/json-extraction",
+  "rsi_config": "/home/akhd/work/gama-rsi/examples/rsi_aws.json",
+  "bridge_config": "/home/akhd/work/gama-rsi/examples/rsi_bridge_aws.json",
+  "search_ceiling": 1.0,
+  "confirm_ceiling": 1.0,
+  "rounds_per_cycle": 2,
+  "batch_size": 2,
+  "max_reservations_per_cycle": 4
+}

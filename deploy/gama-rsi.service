@@ -1,0 +1,14 @@
+[Unit]
+Description=Bounded Gama source RSI mission
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/akhd/work/gama-rsi
+ExecStart=/home/akhd/work/gama-rsi/.venv/bin/python -B -m gama.rsi_mission run --mission /home/akhd/work/gama-rsi/examples/rsi_aws_mission.json
+KillMode=control-group
+TimeoutStartSec=10h
+TimeoutStopSec=10s
+Restart=no
+SuccessExitStatus=3 4
+UMask=0077
+Environment=PYTHONDONTWRITEBYTECODE=1
