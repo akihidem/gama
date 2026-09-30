@@ -309,6 +309,23 @@ def _seen_summary(goals):
     return rows
 
 
+def _history(seen, *, deadline, cancel):
+    tasks = _sibling("continual_tasks")
+    goals, ids, fingerprints = [], set(), set()
+    for raw in seen:
+        _cancelled(cancel)
+        if time.monotonic() >= deadline:
+            raise RuntimeError("discovery deadline exhausted")
+        # Historical targets may be retired or oversized; validate only schema/AST.
+        goal = tasks._goal(raw)
+        goals.append(goal)
+        ids.add(goal["id"])
+        fingerprints.add(_fingerprint(goal))
+    # Keep all deduplication keys even when the prompt summary is truncated.
+    return {"ids": sorted(ids), "fingerprints": sorted(fingerprints),
+            "summary": _seen_summary(goals)}
+
+
 def _scout(backend, bridge, tasks, repo, directory, head, files, seen):
     stage = "builder"
     try:
@@ -405,10 +422,10 @@ def _worker(request):
         raise RuntimeError("discovery is not on the configured feature branch")
     _put(root / "baseline-head.json", state)
     tasks, bridge = _sibling("continual_tasks"), _sibling("rsi_bridge")
-    seen = [tasks.validate_goal(goal, repo) for goal in request["seen"]]
-    ids = {goal["id"] for goal in seen}
-    fingerprints = {_fingerprint(goal) for goal in seen}
-    summary = _seen_summary(seen)
+    history = request["seen"]
+    ids = set(history["ids"])
+    fingerprints = set(history["fingerprints"])
+    summary = history["summary"]
     contexts, cursor = _contexts(repo, root, deadline, state["head"], request["cursor"])
     goals, rejected, scouts = [], [], []
     if not contexts:
@@ -480,21 +497,23 @@ def discover(config: dict, *, directory: Path, seen: list, cursor: int, cancel) 
     root.mkdir(mode=0o700)
     scratch = root / "worker"
     scratch.mkdir(mode=0o700)
+    deadline = time.monotonic() + timeout
     request = {
         "repo": str(repo), "branch": config["branch"],
         "bridge_config": str(bridge_path),
         "bridge_sha256": hashlib.sha256(bridge_data).hexdigest(),
         "timeout": timeout, "evaluation_timeout": evaluation_timeout,
-        "directory": str(root), "seen": seen, "cursor": cursor,
+        "directory": str(root), "cursor": cursor,
     }
     try:
+        request["seen"] = _history(seen, deadline=deadline, cancel=cancel)
         input_text = _json(request)
         if len(input_text.encode("utf-8")) > _INPUT_LIMIT:
             raise ValueError("discovery worker input exceeds 16 MiB")
         _text(root / "input.json", input_text + "\n")
         result = _run(
             [sys.executable, "-I", "-B", str(_HERE), "--worker"],
-            cwd=scratch, root=root, deadline=time.monotonic() + timeout,
+            cwd=scratch, root=root, deadline=deadline,
             timeout=timeout, cancel=cancel, input_text=input_text)
         if result.returncode:
             raise RuntimeError("guarded discovery worker failed: " + result.stderr[-2048:])
