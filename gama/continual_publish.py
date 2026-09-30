@@ -14,9 +14,15 @@ import json
 import math
 import os
 from pathlib import Path
+import queue
 import re
+import selectors
+import signal
 import stat
+import subprocess
 import sys
+import threading
+import time
 import types
 import uuid
 from collections import Counter
@@ -140,31 +146,109 @@ def _git_environment():
     os.environ["GIT_OPTIONAL_LOCKS"] = "0"
 
 
-_EXEC = ("import os,runpy,sys\n"
-         "runpy.run_path(sys.argv[1])['_git_environment']()\n"
-         "os.execvp(sys.argv[2],sys.argv[2:])\n")
-
-
 class _Runner:
     def __init__(self, repo, root, timeout, cancel):
         self.repo, self.root, self.timeout, self.cancel = repo, root, timeout, cancel
         self.logs = _path(root / "commands")
-        self.logs.mkdir(parents=True, exist_ok=True)
+
+    def __enter__(self):
+        lease = os.open(self.root / "drain.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+        try:
+            deadline = time.monotonic() + 8
+            while True:
+                _stop(self.cancel)
+                try:
+                    fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    _need(time.monotonic() < deadline, "previous publication guardians have not drained")
+                    time.sleep(0.02)
+            marker = self.root / "drain.json"
+            if marker.exists():
+                _need(_object(marker).get("drained") is True, "previous publication containment is unproven")
+            else:
+                _need(not self.logs.exists() or not any(self.logs.iterdir()),
+                      "prior commands have no drainage lease; preserve their evidence")
+            self.logs.mkdir(parents=True, exist_ok=True)
+            # The inherited lease outlives SIGKILL; keep the venv executable spelling.
+            _put(marker, {"drained": False})
+            with (self.root / ("driver-" + uuid.uuid4().hex + ".log")).open("xb") as log:
+                self.process = subprocess.Popen(
+                    [sys.executable, "-I", "-B", str(Path(__file__).resolve()),
+                     "_guard", str(self.root), str(lease)],
+                    cwd=self.repo, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                    stderr=log, pass_fds=(lease,), start_new_session=True)
+            return self
+        finally:
+            os.close(lease)
+
+    def __exit__(self, exc_type, exc, tb):
+        try:
+            self.process.stdin.close()
+        except BrokenPipeError:
+            pass
+        try:
+            self.process.wait(timeout=8)
+            if exc_type is None:
+                _need(self.process.returncode == 0, "publication guardian driver failed")
+        except subprocess.TimeoutExpired:
+            if exc_type is None:
+                raise PublicationError("publication guardians are still draining; retain the journal")
+        finally:
+            self.process.stdout.close()
 
     def run(self, command, *, cwd=None, timeout=None, accepted=(0,), input_text=""):
         _stop(self.cancel)
         command = _argv(command)
         artifact = self.logs / uuid.uuid4().hex
-        # Preserve the venv spelling of sys.executable, including its symlink.
-        wrapped = [sys.executable, "-I", "-B", "-c", _EXEC, str(Path(__file__).resolve()), *command]
-        result = _sibling("rsi_guard").run_guarded(
-            wrapped, cwd=cwd or self.repo, timeout=timeout or self.timeout,
-            artifact_dir=artifact, input_text=input_text, cancel=self.cancel)
-        _need(result.returncode in accepted,
+        duration = timeout or self.timeout
+        request = {"command": command, "cwd": str(cwd or self.repo), "timeout": duration,
+                   "artifact_dir": str(artifact), "input_text": input_text}
+        deadline = time.monotonic() + duration + 10
+        pending = memoryview((_dump(request) + "\n").encode("utf-8"))
+        fd = self.process.stdin.fileno()
+        blocking = os.get_blocking(fd)
+        try:
+            # Raw writes leave no buffered data for __exit__ to flush after STOP.
+            os.set_blocking(fd, False)
+            with selectors.DefaultSelector() as selector:
+                selector.register(fd, selectors.EVENT_WRITE)
+                while pending:
+                    _stop(self.cancel)
+                    remaining = deadline - time.monotonic()
+                    _need(remaining > 0, "publication guardian response deadline exceeded")
+                    if not selector.select(min(0.05, remaining)):
+                        continue
+                    _stop(self.cancel)
+                    _need(time.monotonic() < deadline, "publication guardian response deadline exceeded")
+                    try:
+                        sent = os.write(fd, pending[:65536])
+                    except BlockingIOError:
+                        continue
+                    _need(sent > 0, "publication guardian request write made no progress")
+                    pending = pending[sent:]
+        finally:
+            os.set_blocking(fd, blocking)
+        data = bytearray()
+        with selectors.DefaultSelector() as selector:
+            selector.register(self.process.stdout, selectors.EVENT_READ)
+            while b"\n" not in data:
+                _stop(self.cancel)
+                _need(time.monotonic() < deadline, "publication guardian response deadline exceeded")
+                if not selector.select(0.05):
+                    continue
+                chunk = os.read(self.process.stdout.fileno(), 65536)
+                _need(chunk, "publication guardian exited without a drainage receipt")
+                data.extend(chunk)
+                _need(len(data) <= 16 * 1024 * 1024, "oversize publication guardian response")
+        result = _json(bytes(data))
+        _need(isinstance(result, dict), "invalid publication guardian response")
+        _need(not result.get("error"), "publication command failed: " + str(result.get("error")))
+        _need(result["returncode"] in accepted,
               "publication command failed (%s): %s; %s" %
-              (result.returncode, command[0], result.stderr[-2000:]))
-        return {"command": command, "returncode": result.returncode,
-                "stdout": result.stdout, "stderr": result.stderr,
+              (result["returncode"], command[0], result["stderr"][-2000:]))
+        return {"command": command, "returncode": result["returncode"],
+                "stdout": result["stdout"], "stderr": result["stderr"],
                 "artifact_dir": str(artifact)}
 
     def git(self, *args, cwd=None, accepted=(0,)):
@@ -192,13 +276,14 @@ def _lock(root):
         os.close(fd)
 
 
-def _checkout(runner, branch, allowed):
+def _checkout(runner, branch, allowed, *, clean=True):
     _need(runner.git("symbolic-ref", "--quiet", "HEAD").strip() == "refs/heads/" + branch,
           "caller is not on the configured feature branch")
     head = _oid(runner.git("rev-parse", "--verify", "HEAD").strip())
     _need(head in allowed, "unexpected caller HEAD: " + head)
-    _need(not runner.git("status", "--porcelain=v1", "--untracked-files=all"),
-          "caller has tracked, staged, or untracked changes; preserve them before publication")
+    if clean:
+        _need(not runner.git("status", "--porcelain=v1", "--untracked-files=all"),
+              "caller has tracked, staged, or untracked changes; preserve them before publication")
     return head
 
 
@@ -290,6 +375,8 @@ def _accepted(config, goal, mission_path, base, runner):
     contract = state.get("contract")
     _need(isinstance(contract, dict) and type(contract.get("schema")) is int and contract["schema"] == 1,
           "missing frozen core contract")
+    _need(state.get("contract_hash") == _hash(_dump(contract).encode("utf-8")),
+          "recorded core contract hash does not authenticate its controls")
     _need(_path(contract.get("repo")) == runner.repo, "core contract belongs to another repository")
     _need(contract.get("python") == [sys.version_info.major, sys.version_info.minor],
           "publication interpreter differs from the accepted core interpreter")
@@ -357,6 +444,40 @@ def _accepted(config, goal, mission_path, base, runner):
     scorer = str(Path(__file__).resolve().with_name("continual_tasks.py"))
     for name in (str(mission_path), str(Path(__file__).resolve()), scorer):
         _need(name in files, "publication control was not frozen by the core: " + name)
+    rsi_path = str(_path(mission.get("rsi_config")))
+    _need(rsi_path in payloads, "original RSI controls were not frozen by the core")
+    frozen = _json(payloads[rsi_path])
+    _need(isinstance(frozen, dict), "invalid original frozen RSI controls")
+    defaults = {"sealed_command": None, "workers": 2, "batch_size": 2, "timeout": 600,
+                "evaluation_timeout": 180, "search_repeats": 1, "confirm_repeats": 3,
+                "min_gain": 0, "seed": 0, "papers": [], "evaluation_files": []}
+    # Apply runtime normalization, then authenticate the inputs the loader rereads.
+    try:
+        normalized = _sibling("rsi_runtime").load_inputs(mission_path)["rsi_config"]
+    except ValueError as exc:
+        raise PublicationError("invalid frozen mission inputs: " + str(exc)) from exc
+    _unchanged(files)
+    expected = {**defaults, **normalized}
+    agents = controls.get("agents")
+    _need(isinstance(agents, list) and len(agents) == 2
+          and all(isinstance(agent, dict) for agent in agents),
+          "invalid frozen bridge agents")
+    command = _argv(agents[0].get("command"))
+    trusted_bridge = expected["agents"][0]["command"][3]
+    # Another core checkout may supply the bridge only if its frozen bytes match.
+    _need(len(command) == 6 and Path(command[3]).name == "rsi_bridge.py"
+          and trusted_bridge in payloads and command[3] in payloads
+          and payloads[command[3]] == payloads[trusted_bridge],
+          "frozen agent bridge differs from the trusted controller")
+    for agent in expected["agents"]:
+        agent["command"][3] = command[3]
+    _need(controls == expected,
+          "core execution controls differ from the original frozen RSI input")
+    _need(_json(payloads[str(mission_path)]) == mission, "original frozen mission binding changed")
+    originals = expected["evaluation_files"]
+    _need(isinstance(originals, list)
+          and all(isinstance(name, str) and name in files for name in originals),
+          "original evaluator inputs are absent from the core contract")
     descriptors = []
     for name, data in payloads.items():
         if Path(name).suffix == ".json":
@@ -544,14 +665,15 @@ def _publish(config, goal, mission_path, journal, save, cancel):
     root = _path(state_dir / "publications" / _hash(str(mission_path).encode("utf-8")))
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
     runner = _Runner(repo, root, timeout, cancel)
-    with _lock(root):
+    with _lock(root), runner:
         _need(runner.git("rev-parse", "--show-toplevel").strip() == str(repo),
               "configured repo is not its Git worktree root")
         runner.git("check-ref-format", "refs/heads/" + branch)
         allowed_heads = {selected} if old and old["stage"] == "complete" else {base}
         if selected:
             allowed_heads.add(selected)
-        _checkout(runner, branch, allowed_heads)
+        _checkout(runner, branch, allowed_heads,
+                  clean=not (old and old["stage"] == "selected"))
         accepted = _accepted(config, goal, mission_path, base, runner)
         context = {"version": 1, "base_commit": base, "source_commit": accepted["source"],
                    "repo": str(repo), "branch": branch, "remote": remote,
@@ -588,12 +710,11 @@ def _publish(config, goal, mission_path, journal, save, cancel):
         _stop(cancel)
         remote_head = _remote_head(runner, remote, branch)
         _need(remote_head in (record["remote_before"], selected), "remote changed before adoption")
-        head = _checkout(runner, branch, {selected} if record["stage"] == "complete" else {base, selected})
-        if head == base:
+        if record["stage"] != "complete":
             _stop(cancel)
-            # Git's ff-only merge preserves the index/worktree; ignored collisions also refuse.
-            runner.git("-c", "core.hooksPath=/dev/null", "merge", "--ff-only", "--no-squash", "--commit",
-                       "--no-edit", "--no-autostash", "--no-overwrite-ignore", selected)
+            adopted = runner.worker({"action": "adopt", "repo": str(repo), "root": str(root),
+                                     "branch": branch, "base": base, "selected": selected})
+            _need(adopted.get("head") == selected, "caller did not adopt the selected release")
         _checkout(runner, branch, {selected})
         _stop(cancel)
         _unchanged(accepted["files"])
@@ -613,6 +734,9 @@ def _publish(config, goal, mission_path, journal, save, cancel):
         if record["stage"] != "complete":
             record.update(stage="complete", remote_commit=verified)
             _checkpoint(journal, record, save)
+        runner.worker({"action": "remove", "repo": str(repo), "root": str(workspace_root),
+                       "source": accepted["source"],
+                       "worktree": record["validation"]["worktree"]})
         return {"phase": "published", "commit": selected, "release_commit": selected,
                 "source_commit": accepted["source"], "remote_commit": verified,
                 "branch": branch, "remote": remote, "ref": ref,
@@ -626,6 +750,95 @@ def publish(config: dict, *, goal: dict, mission_path: Path, journal: dict, save
         return _publish(config, goal, mission_path, journal, save, cancel)
     except (OSError, UnicodeError) as exc:
         raise PublicationError("publication could not complete: " + str(exc)) from exc
+
+
+def _write(path, data):
+    """Atomically persist publisher-owned state (also used while index.lock is held)."""
+    path = _path(path)
+    temporary = path.with_name("." + path.name + "-" + uuid.uuid4().hex)
+    try:
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _put(path, value):
+    _write(path, (_dump(value) + "\n").encode("utf-8"))
+
+
+def _drained():
+    # As a subreaper, ECHILD proves that even orphaned/setsid descendants are gone.
+    deadline = time.monotonic() + 6
+    while time.monotonic() < deadline:
+        try:
+            pid, _ = os.waitpid(-1, os.WNOHANG)
+        except ChildProcessError:
+            return True
+        if pid == 0:
+            time.sleep(0.02)
+    return False
+
+
+def _guard_worker():
+    import ctypes
+
+    _need(len(sys.argv) == 4 and sys.argv[1] == "_guard", "internal guardian arguments required")
+    root, lease = _path(sys.argv[2]), int(sys.argv[3])
+    held, named = os.fstat(lease), (root / "drain.lock").stat()
+    _need((held.st_dev, held.st_ino) == (named.st_dev, named.st_ino), "guardian lease changed")
+    _need(ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0) == 0,
+          "publication requires Linux child subreaping")
+    _git_environment()
+    marker, cancellation, requests = root / "drain.json", threading.Event(), queue.Queue()
+
+    def receive():
+        try:
+            while True:
+                raw = sys.stdin.buffer.readline(16 * 1024 * 1024 + 1)
+                if not raw:
+                    break
+                _need(len(raw) <= 16 * 1024 * 1024 and raw.endswith(b"\n"),
+                      "invalid guardian request framing")
+                requests.put(_json(raw))
+        finally:
+            cancellation.set()
+            requests.put(None)
+
+    threading.Thread(target=receive, daemon=True).start()
+    _put(marker, {"drained": True})
+    try:
+        while True:
+            request = requests.get()
+            if request is None or cancellation.is_set():
+                break
+            # A killed driver leaves this latch closed even if its lease FD disappears.
+            _put(marker, {"drained": False})
+            try:
+                with contextlib.redirect_stdout(sys.stderr):
+                    result = _sibling("rsi_guard").run_guarded(
+                        _argv(request["command"]), cwd=_path(request["cwd"]),
+                        timeout=request["timeout"], artifact_dir=_path(request["artifact_dir"]),
+                        input_text=request["input_text"], cancel=cancellation)
+                response = {"returncode": result.returncode, "stdout": result.stdout,
+                            "stderr": result.stderr}
+            except Exception as exc:
+                response = {"error": str(exc)}
+            _need(_drained(), "publication guardian descendants remain; containment is unproven")
+            _put(marker, {"drained": True})
+            if not cancellation.is_set():
+                print(_dump(response), flush=True)
+    finally:
+        os.close(lease)
 
 
 def _addition_patch(files):
@@ -644,6 +857,124 @@ def _addition_patch(files):
     return "".join(chunks)
 
 
+def _local_git(repo, *args, env=None):
+    # Only called in a workspace worker already bounded by the publication guardian.
+    result = subprocess.run(
+        ["git", "--no-replace-objects", "-c", "core.fsmonitor=false",
+         "-c", "submodule.recurse=false", *args],
+        cwd=repo, env=env, stdin=subprocess.DEVNULL, capture_output=True,
+        text=True, encoding="utf-8", timeout=60)
+    _need(result.returncode == 0, "publication Git transition failed: " + result.stderr[-2000:])
+    return result.stdout
+
+
+def _owns_index_lock(path, owner):
+    if not isinstance(owner, dict) or not isinstance(owner.get("token"), str) or not path.exists():
+        return False
+    info = path.lstat()
+    return (stat.S_ISREG(info.st_mode) and owner.get("identity") == [info.st_dev, info.st_ino]
+            and _bytes(path, 256) == owner["token"].encode("ascii"))
+
+
+def _adopt(repo, root, branch, base, selected):
+    def interrupted(signum, frame):
+        raise PublicationError("publication transition interrupted; resume the selected SHA")
+
+    signal.signal(signal.SIGTERM, interrupted)
+    identity = {"repo": str(repo), "branch": branch, "base": base, "selected": selected}
+    ledger = root / "adoption.json"
+    previous = _object(ledger) if ledger.exists() else {}
+    _need(not previous or all(previous.get(key) == value for key, value in identity.items()),
+          "caller transition belongs to different publication inputs")
+    recovering = previous.get("phase") == "installing"
+    index = _path(_local_git(repo, "rev-parse", "--path-format=absolute", "--git-path", "index").strip())
+    lock = _path(Path(str(index) + ".lock"))
+    if lock.exists():
+        _need(_owns_index_lock(lock, previous.get("lock")), "caller has an unowned index lock")
+        lock.unlink()
+    fd = os.open(lock, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    info = os.fstat(fd)
+    owner = {"identity": [info.st_dev, info.st_ino], "token": uuid.uuid4().hex}
+    transaction, temporary = None, root / ("index-" + uuid.uuid4().hex)
+    try:
+        os.write(fd, owner["token"].encode("ascii"))
+        os.fsync(fd)
+        receipt = {**identity, "phase": previous.get("phase", "locked"), "lock": owner}
+        _put(ledger, receipt)
+        # index.lock stops checkouts before they can touch files; prepare pins HEAD and the ref.
+        head = _oid(_local_git(repo, "rev-parse", "--verify", "HEAD").strip())
+        _need(head in (base, selected), "unexpected caller HEAD during adoption")
+        ref = "refs/heads/" + branch
+        transaction = subprocess.Popen(
+            ["git", "--no-replace-objects", "-c", "core.hooksPath=/dev/null",
+             "update-ref", "--stdin"],
+            cwd=repo, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, encoding="utf-8")
+
+        def step(command, expected):
+            transaction.stdin.write(command + "\n")
+            transaction.stdin.flush()
+            _need(transaction.stdout.readline().strip() == expected,
+                  "caller branch/ref transaction refused; preserve the checkout")
+
+        step("start", "start: ok")
+        transaction.stdin.write(("verify HEAD " + selected if head == selected else
+                                 "update HEAD " + selected + " " + base) + "\n")
+        step("prepare", "prepare: ok")
+        # A prepared dereferencing HEAD operation locks HEAD and its referent.
+        # Bind the branch under those locks before writing the index or worktree.
+        _need(_local_git(repo, "symbolic-ref", "--quiet", "--no-recurse", "HEAD").strip() == ref,
+              "caller is not on the configured feature branch")
+        status = _local_git(repo, "status", "--porcelain=v1", "--untracked-files=all")
+        if head == base or status:
+            _write(temporary, _bytes(index))
+            environment = dict(os.environ, GIT_INDEX_FILE=str(temporary))
+            selected_tree = _local_git(repo, "rev-parse", selected + "^{tree}").strip()
+            if status:
+                _need(recovering, "caller has operator changes; preserve them before publication")
+                index_tree = _local_git(repo, "write-tree", env=environment).strip()
+                base_tree = _local_git(repo, "rev-parse", base + "^{tree}").strip()
+                _need(index_tree in (base_tree, selected_tree), "interrupted adoption index is ambiguous")
+                # Only a complete selected tree is recoverable; partial writes/operator edits block.
+                _local_git(repo, "read-tree", selected, env=environment)
+                _local_git(repo, "update-index", "--refresh", env=environment)
+            else:
+                receipt["phase"] = "installing"
+                _put(ledger, receipt)
+                # Keep the real lock while read-tree uses a private index and refuses collisions.
+                _local_git(repo, "read-tree", "-m", "-u", base, selected, env=environment)
+            _need(_local_git(repo, "write-tree", env=environment).strip() == selected_tree,
+                  "caller transition did not produce the selected index")
+            _local_git(repo, "diff-files", "--quiet", "--no-ext-diff", "--no-textconv", "--", env=environment)
+            _need(not _local_git(repo, "ls-files", "--others", "--exclude-standard", "-z", env=environment),
+                  "caller has untracked operator work")
+            # Install atomically without consuming index.lock; both locks still cover the transition.
+            _write(index, _bytes(temporary))
+        step("commit", "commit: ok")
+        transaction.stdin.close()
+        _need(transaction.wait(timeout=10) == 0, "caller ref transaction failed")
+        receipt["phase"] = "complete"
+        _put(ledger, receipt)
+        return {"head": selected}
+    finally:
+        if transaction is not None and transaction.poll() is None:
+            try:
+                if transaction.stdin.closed:
+                    transaction.wait(timeout=5)
+                else:
+                    transaction.communicate("abort\n", timeout=5)
+            except (OSError, subprocess.TimeoutExpired):
+                transaction.terminate()
+                try:
+                    transaction.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    pass
+        os.close(fd)
+        if (transaction is None or transaction.poll() is not None) and _owns_index_lock(lock, owner):
+            lock.unlink()
+        temporary.unlink(missing_ok=True)
+
+
 def _worker():
     _need(sys.argv[1:] == ["_workspace"], "internal publication worker arguments required")
     raw = sys.stdin.buffer.read(1024 * 1024 + 1)
@@ -659,6 +990,11 @@ def _worker():
     with contextlib.redirect_stdout(sys.stderr):
         if request.get("action") == "validate":
             value = {"goal": _sibling("continual_tasks").validate_goal(request.get("goal"), repo)}
+        elif request.get("action") == "adopt":
+            root = _path(request.get("root"))
+            _disjoint(repo, root)
+            value = _adopt(repo, root, request.get("branch"),
+                           _oid(request.get("base")), _oid(request.get("selected")))
         else:
             root, source = _path(request.get("root")), _oid(request.get("source"))
             _disjoint(repo, root)
@@ -680,6 +1016,17 @@ def _worker():
                 _need(path.parent == root, "commit worktree is outside the owned release root")
                 commit = workspaces.commit(path, source, request.get("message"))
                 value = {"commit": commit, "ref": workspaces.keep(commit, request.get("name"))}
+            elif request.get("action") == "remove":
+                path = _path(request.get("worktree"))
+                _need(path.parent == root, "cleanup worktree is outside the owned release root")
+                entry = "worktree " + str(path)
+                listing = _local_git(repo, "worktree", "list", "--porcelain").splitlines()
+                if path.exists() or entry in listing:
+                    workspaces.remove(path)
+                _need(not path.exists()
+                      and entry not in _local_git(repo, "worktree", "list", "--porcelain").splitlines(),
+                      "owned release worktree cleanup is incomplete")
+                value = {"removed": str(path)}
             else:
                 raise PublicationError("unknown publication workspace action")
     print(_dump(value))
@@ -687,7 +1034,10 @@ def _worker():
 
 if __name__ == "__main__":
     try:
-        _worker()
+        if sys.argv[1:2] == ["_guard"]:
+            _guard_worker()
+        else:
+            _worker()
     except Exception as exc:
         print("publication worker failed: " + str(exc), file=sys.stderr)
         raise SystemExit(2)
