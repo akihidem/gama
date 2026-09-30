@@ -256,15 +256,21 @@ class Workspaces:
         except OSError as exc:
             raise WorkspaceError(f"Workspace path already exists or cannot be created: {path}") from exc
         try:
-            # Publish ownership before Git can register a worktree. A killed
-            # coordinator leaves either an empty reservation or a recoverable tree.
-            self._save_receipt(path, {
+            # Publish creation provenance before Git can register the worktree.
+            # Keep the completed receipt in its original format.
+            creation = {
                 "version": 1, "name": name, "repo": str(self._common),
                 "parent": base, "tree": base_tree, "paths": [],
-                "commit": base, "stage": "created",
-            })
+                "commit": base, "stage": "creating",
+            }
+            self._save_receipt(path, creation)
             self._git(self.repo, "worktree", "add", "--detach", "--", str(path), base)
-            return self._managed(path)
+            worktree = self._managed(path)
+            if self._resolve("HEAD", worktree) != base:
+                raise WorkspaceError("Created worktree has a different parent")
+            creation["stage"] = "created"
+            self._save_receipt(worktree, creation)
+            return worktree
         except WorkspaceError:
             # Only remove our empty reservation. Git handles its own failed checkout;
             # never recursively delete a path that might now contain somebody's files.
@@ -412,6 +418,13 @@ class Workspaces:
                 stream.flush()
                 os.fsync(stream.fileno())
             os.replace(temporary, target)
+            # Persist the rename as well as the receipt's contents.
+            if os.name == "posix":
+                directory = os.open(self.root, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+                try:
+                    os.fsync(directory)
+                finally:
+                    os.close(directory)
         except OSError as exc:
             raise WorkspaceError(f"Cannot save approved patch receipt: {exc}") from exc
         finally:
@@ -442,14 +455,14 @@ class Workspaces:
                     or type(receipt["version"]) is not int or receipt["version"] != 1
                     or receipt["name"] != path.name
                     or receipt["repo"] != str(self._common)
-                    or receipt["stage"] not in {"created", "approved"}):
+                    or receipt["stage"] not in {"creating", "created", "approved"}):
                 raise ValueError("receipt ownership or schema does not match")
             for key in ("parent", "tree"):
                 if not isinstance(receipt[key], str) or not _OID.fullmatch(receipt[key]):
                     raise ValueError(f"invalid {key} object ID")
             if self._resolve(receipt["parent"]) != receipt["parent"]:
                 raise ValueError("invalid parent commit")
-            if receipt["stage"] == "created":
+            if receipt["stage"] in {"creating", "created"}:
                 if (receipt["paths"] != [] or receipt.get("commit") != receipt["parent"]
                         or "message" in receipt or self.tree(receipt["parent"]) != receipt["tree"]):
                     raise ValueError("invalid creation receipt")
@@ -475,9 +488,43 @@ class Workspaces:
         except (ValueError, TypeError, KeyError, RecursionError) as exc:
             raise WorkspaceError(f"Invalid recovery receipt for {path.name}: {exc}") from exc
 
+    def _check_creation_lock(self, path: Path, receipt: dict, record: dict[str, str]) -> None:
+        """Require explicit creation provenance and matching unfinished Git metadata."""
+        if (receipt["stage"] != "creating" or record.get("locked") != "initializing"
+                or record.get("worktree") != str(path) or record.get("HEAD") != receipt["parent"]
+                or record.get("detached") != "" or "branch" in record or "bare" in record):
+            raise WorkspaceError(f"Cannot recover a locked worktree: {path}")
+        admin = _absolute(os.fsdecode(
+            self._git(path, "rev-parse", "--absolute-git-dir")
+        ).strip())
+        if admin.parent != self._common / "worktrees" or not admin.is_dir():
+            raise WorkspaceError("Interrupted worktree has unexpected Git metadata")
+
+        def points_to(link: Path, target: Path, prefix: bytes = b"") -> bool:
+            return _regular_bytes(link, _MAX_RECEIPT_BYTES) in {
+                prefix + os.fsencode(target) + b"\n",
+                prefix + os.fsencode(os.path.relpath(target, link.parent)) + b"\n",
+            }
+
+        expected_head = (receipt["parent"] + "\n").encode("ascii")
+        if (not points_to(path / ".git", admin, b"gitdir: ")
+                or not points_to(admin / "gitdir", path / ".git")
+                or not points_to(admin / "commondir", self._common)
+                or _regular_bytes(admin / "HEAD", _MAX_RECEIPT_BYTES) != expected_head
+                or _regular_bytes(admin / "locked", _MAX_RECEIPT_BYTES) != b"initializing\n"):
+            raise WorkspaceError("Interrupted worktree metadata does not match its receipt")
+        # Git can finish before its completion receipt is saved. A completed index
+        # makes any later lock ambiguous, even if the receipt still says creating.
+        index_lock = _absolute(admin / "index.lock")
+        if (os.path.lexists(admin / "index")
+                or not stat.S_ISREG(index_lock.lstat().st_mode)):
+            raise WorkspaceError("Locked worktree is not an unfinished checkout")
+
     def recover(self) -> list[Path]:
         """Clean receipted orphans; call only under the coordinator's run lock.
 
+        Owned creator processes must be drained first. Only positively identified
+        interrupted creation permits clearing Git's internal worktree lock.
         Registered detached worktrees are removed through ``remove``. Empty
         unregistered reservations and receipts for missing paths can be cleared.
         Unregistered nonempty directories and worktrees without receipts are kept.
@@ -490,18 +537,26 @@ class Workspaces:
             for receipt_path in sorted(self.root.glob(".*.applied.json")):
                 name = _name(receipt_path.name[1:-len(".applied.json")])
                 path = _absolute(self.root / name)
-                self._recovery_receipt(path)
+                receipt = self._recovery_receipt(path)
+                interrupted = False
                 if path in registered:
                     self._managed(path, missing=True)
                     if "locked" in registered[path]:
-                        raise WorkspaceError(f"Cannot recover a locked worktree: {path}")
+                        self._check_creation_lock(path, receipt, registered[path])
+                        interrupted = True
                 elif path.exists():
                     if not path.is_dir() or next(path.iterdir(), None) is not None:
                         raise WorkspaceError(f"Refusing unregistered nonempty reservation: {path}")
-                plan.append((path, path in registered))
+                plan.append((path, path in registered, interrupted))
             recovered = []
-            for path, is_registered in plan:
+            for path, is_registered, interrupted in plan:
                 if is_registered:
+                    if interrupted:
+                        # Revalidate immediately before clearing this one internal lock.
+                        self._check_creation_lock(
+                            path, self._recovery_receipt(path), self._registered().get(path, {})
+                        )
+                        self._git(self.repo, "worktree", "unlock", "--", str(path))
                     self.remove(path)
                 else:
                     # rmdir is intentionally non-recursive and fails if anything
@@ -562,7 +617,7 @@ class Workspaces:
             if (receipt["version"] != 1 or receipt["repo"] != str(self._common)
                     or receipt["parent"] != base or not _OID.fullmatch(receipt["tree"])):
                 raise WorkspaceError("Approved patch does not match this repository and parent")
-            if receipt.get("stage") == "created":
+            if receipt.get("stage") in {"creating", "created"}:
                 raise WorkspaceError("A nonempty approved patch is required before commit")
             allowed = _allowed(receipt["paths"])
         except (ValueError, KeyError, TypeError) as exc:
