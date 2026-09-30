@@ -1,0 +1,24 @@
+{
+  "campaign_id": "gama-continual-aws",
+  "repo": "/home/akhd/work/gama-rsi",
+  "state_dir": "/home/akhd/work/gama-rsi-runs/continuous",
+  "branch": "codex/gama-parallel-rsi",
+  "remote": "origin",
+  "bridge_config": "/home/akhd/work/gama-rsi/examples/rsi_bridge_aws.json",
+  "goals": [
+    "/home/akhd/work/gama-rsi/examples/continual_goals/meshflow-finite-scores.json",
+    "/home/akhd/work/gama-rsi/examples/continual_goals/abmcts-failure-signal.json",
+    "/home/akhd/work/gama-rsi/examples/continual_goals/tool-exit-status.json"
+  ],
+  "checks": [
+    ["/home/akhd/work/gama-rsi/.venv/bin/python", "-B", "-m", "unittest", "discover", "-s", "tests", "-t", ".", "-q"],
+    ["/home/akhd/work/gama-rsi/.venv/bin/python", "-B", "validation/json_extraction.py"]
+  ],
+  "evaluation_timeout": 180,
+  "max_goal_cycles": 3,
+  "bootstrap_history": [],
+  "workers": 2,
+  "max_proposals_per_tick": 4,
+  "schedule_hours": [9, 21],
+  "timezone": "Asia/Tokyo"
+}

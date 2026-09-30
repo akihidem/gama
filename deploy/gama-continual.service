@@ -1,0 +1,20 @@
+# Install this example as ~/.config/systemd/user/gama-rsi.service.
+# Keep gama-rsi.timer unchanged (09:00 and 21:00 Asia/Tokyo).
+[Unit]
+Description=Gama continual RSI with a durable four-reservation cadence
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+UMask=0077
+WorkingDirectory=/home/akhd/work/gama-rsi
+ExecStart=/home/akhd/work/gama-rsi/.venv/bin/python -B -m gama.continual run --config /home/akhd/work/gama-rsi/examples/continual_aws.json
+Environment=PYTHONDONTWRITEBYTECODE=1
+TimeoutStartSec=infinity
+TimeoutStopSec=20s
+KillMode=control-group
+Restart=no
+SuccessExitStatus=3 4
+
+# Use the continual stop/resume CLI for persistent operator control.
