@@ -12,7 +12,7 @@
   ],
   "checks": [
     ["/home/akhd/work/gama-rsi/.venv/bin/python", "-B", "-m", "unittest", "discover", "-s", "tests", "-t", ".", "-q"],
-    ["/home/akhd/work/gama-rsi/.venv/bin/python", "-B", "validation/json_extraction.py"]
+    ["/home/akhd/work/gama-rsi/.venv/bin/python", "-B", "validation/json_extraction.py", "--source", "gama/_json.py"]
   ],
   "evaluation_timeout": 180,
   "max_goal_cycles": 3,

@@ -65,11 +65,23 @@ AWS example starts it empty. Each goal freezes once on the initial HEAD or lates
 verified release HEAD, retaining its original mission path, descriptor identity,
 base and prior accepted regressions. Recovery reuses these artifacts.
 
-Mandatory production checks are the full existing unittest suite
-(`-m unittest discover -s tests -t . -q`) and `validation/json_extraction.py`,
-both through the configured venv Python with `-B`. Previously published goal
-descriptors become mandatory regressions in later missions. Unmet new goal tests
-measure the objective and are not added to the seed's mandatory passing checks.
+Mandatory production checks run the unchanged full unittest suite (636 tests)
+and all 288 unchanged JSON regression cases against `gama/_json.py`. From
+`/home/akhd/work/gama-rsi`, run the exact commands in `examples/continual_aws.json`:
+
+```sh
+/home/akhd/work/gama-rsi/.venv/bin/python -B -m unittest discover -s tests -t . -q
+/home/akhd/work/gama-rsi/.venv/bin/python -B validation/json_extraction.py --source gama/_json.py
+```
+
+`--source` is required: the prior invocation without it failed in argparse
+before any JSON cases ran and remains a failure in its original record. Retain
+the fresh output from both commands; confirm `Ran 636 tests`, JSON
+`passed == total == 288` and `source_unchanged: true`, and zero exit codes.
+
+Previously published goal descriptors become mandatory regressions in later
+missions. Unmet new goal tests measure the objective and are not added to the
+seed's mandatory passing checks.
 
 A finalized, sealed improvement proceeds to verified publication, then history
 records `published` and the next goal can start within the remaining slot budget.
