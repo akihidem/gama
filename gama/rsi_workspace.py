@@ -17,6 +17,7 @@ import signal
 import stat
 import subprocess
 import tempfile
+import uuid
 
 
 GIT_TIMEOUT = 30
@@ -25,6 +26,7 @@ _MAX_BLOB_BYTES = 8_000_000
 _MAX_RECEIPT_BYTES = 128_000
 _NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,95}\Z")
 _OID = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
+_CREATION_LOCK = re.compile(r"gama-rsi-creation-[0-9a-f]{32}\Z")
 _FILE_MODES = {"100644", "100755"}
 _GIT_OPTIONS = (
     "--no-pager", "--no-replace-objects", "--literal-pathspecs",
@@ -262,13 +264,23 @@ class Workspaces:
                 "version": 1, "name": name, "repo": str(self._common),
                 "parent": base, "tree": base_tree, "paths": [],
                 "commit": base, "stage": "creating",
+                "creation_lock": "gama-rsi-creation-" + uuid.uuid4().hex,
             }
             self._save_receipt(path, creation)
-            self._git(self.repo, "worktree", "add", "--detach", "--", str(path), base)
+            # --lock keeps the unique reason through checkout and completion.
+            self._git(
+                self.repo, "worktree", "add", "--detach", "--lock",
+                "--reason", creation["creation_lock"], "--", str(path), base,
+            )
             worktree = self._managed(path)
             if self._resolve("HEAD", worktree) != base:
                 raise WorkspaceError("Created worktree has a different parent")
+            if self._recovery_receipt(worktree) != creation:
+                raise WorkspaceError("Creation receipt changed during checkout")
+            self._check_creation_lock(worktree, creation, self._registered().get(worktree, {}))
+            self._git(self.repo, "worktree", "unlock", "--", str(worktree))
             creation["stage"] = "created"
+            del creation["creation_lock"]
             self._save_receipt(worktree, creation)
             return worktree
         except WorkspaceError:
@@ -451,12 +463,18 @@ class Workspaces:
             )
             required = {"version", "name", "repo", "parent", "tree", "paths", "stage"}
             if (not isinstance(receipt, dict) or not required <= receipt.keys()
-                    or receipt.keys() - required - {"commit", "message"}
+                    or receipt.keys() - required - {"commit", "message", "creation_lock"}
                     or type(receipt["version"]) is not int or receipt["version"] != 1
                     or receipt["name"] != path.name
                     or receipt["repo"] != str(self._common)
                     or receipt["stage"] not in {"creating", "created", "approved"}):
                 raise ValueError("receipt ownership or schema does not match")
+            marker = receipt.get("creation_lock")
+            if receipt["stage"] == "creating":
+                if not isinstance(marker, str) or not _CREATION_LOCK.fullmatch(marker):
+                    raise ValueError("invalid creation lock ownership marker")
+            elif "creation_lock" in receipt:
+                raise ValueError("unexpected creation lock ownership marker")
             for key in ("parent", "tree"):
                 if not isinstance(receipt[key], str) or not _OID.fullmatch(receipt[key]):
                     raise ValueError(f"invalid {key} object ID")
@@ -489,8 +507,10 @@ class Workspaces:
             raise WorkspaceError(f"Invalid recovery receipt for {path.name}: {exc}") from exc
 
     def _check_creation_lock(self, path: Path, receipt: dict, record: dict[str, str]) -> None:
-        """Require explicit creation provenance and matching unfinished Git metadata."""
-        if (receipt["stage"] != "creating" or record.get("locked") != "initializing"
+        """Require the unique creation lock and matching Git ownership metadata."""
+        marker = receipt.get("creation_lock")
+        if (receipt["stage"] != "creating" or not isinstance(marker, str)
+                or not _CREATION_LOCK.fullmatch(marker) or record.get("locked") != marker
                 or record.get("worktree") != str(path) or record.get("HEAD") != receipt["parent"]
                 or record.get("detached") != "" or "branch" in record or "bare" in record):
             raise WorkspaceError(f"Cannot recover a locked worktree: {path}")
@@ -507,24 +527,19 @@ class Workspaces:
             }
 
         expected_head = (receipt["parent"] + "\n").encode("ascii")
+        expected_lock = (marker + "\n").encode("ascii")
         if (not points_to(path / ".git", admin, b"gitdir: ")
                 or not points_to(admin / "gitdir", path / ".git")
                 or not points_to(admin / "commondir", self._common)
                 or _regular_bytes(admin / "HEAD", _MAX_RECEIPT_BYTES) != expected_head
-                or _regular_bytes(admin / "locked", _MAX_RECEIPT_BYTES) != b"initializing\n"):
+                or _regular_bytes(admin / "locked", _MAX_RECEIPT_BYTES) != expected_lock):
             raise WorkspaceError("Interrupted worktree metadata does not match its receipt")
-        # Git can finish before its completion receipt is saved. A completed index
-        # makes any later lock ambiguous, even if the receipt still says creating.
-        index_lock = _absolute(admin / "index.lock")
-        if (os.path.lexists(admin / "index")
-                or not stat.S_ISREG(index_lock.lstat().st_mode)):
-            raise WorkspaceError("Locked worktree is not an unfinished checkout")
 
     def recover(self) -> list[Path]:
         """Clean receipted orphans; call only under the coordinator's run lock.
 
         Owned creator processes must be drained first. Only positively identified
-        interrupted creation permits clearing Git's internal worktree lock.
+        interrupted creation permits clearing its owned Git worktree lock.
         Registered detached worktrees are removed through ``remove``. Empty
         unregistered reservations and receipts for missing paths can be cleared.
         Unregistered nonempty directories and worktrees without receipts are kept.
@@ -552,7 +567,7 @@ class Workspaces:
             for path, is_registered, interrupted in plan:
                 if is_registered:
                     if interrupted:
-                        # Revalidate immediately before clearing this one internal lock.
+                        # Revalidate immediately before clearing this one owned lock.
                         self._check_creation_lock(
                             path, self._recovery_receipt(path), self._registered().get(path, {})
                         )
