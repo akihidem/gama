@@ -43,7 +43,7 @@ from __future__ import annotations
 
 import random
 
-from .backends import ModelBackend
+from .backends import MeasurementUnavailable, ModelBackend
 # Reuse gama's single source of truth for the reward signal (same normalization + verifier
 # resolution MeshflowBackend uses), so a config's `"verify": "code_runs"` and a bench's
 # threaded case-checker behave identically here and there — no second, drifting copy.
@@ -214,7 +214,7 @@ class ABMCTSBackend(ModelBackend):
         self.last_resolved_by = None    # label of the model that produced the winning artifact
         self.last_cost = None           # summed cost of every generation made (price proxy)
         self.last_best_score = None     # the winning verify score
-        self.last_tree_size = None      # number of candidates generated (<= budget; < on early stop)
+        self.last_tree_size = None      # number of successfully generated candidates (<= budget)
 
     # ------------------------------------------------------------------ #
     def _reward(self, verify, artifact) -> float:
@@ -266,7 +266,8 @@ class ABMCTSBackend(ModelBackend):
         Then, for every ANCESTOR the descent passed through, the score updates that ancestor's CONT
         posterior (how good *continuing* this line is) and that specific child-line's posterior."""
         prob[expansion_node.idx].gen.tell(score)          # a fresh attempt at the expansion node
-        prob[expansion_node.idx].register_child(child.idx, score)
+        if child is not None:  # failed generations update the path without adding an answer
+            prob[expansion_node.idx].register_child(child.idx, score)
         cur = expansion_node                              # walk expansion node -> root
         while cur.parent is not None:                     # every ancestor we DESCENDED through
             pstate = prob[cur.parent.idx]
@@ -276,6 +277,7 @@ class ABMCTSBackend(ModelBackend):
 
     # ------------------------------------------------------------------ #
     def complete(self, prompt: str, tier: ModelTier, **kwargs) -> str:
+        self.last_resolved_by = None
         # `verify`/`stakes` are control kwargs threaded in by `gama bench`; a kwargs `verify`
         # wins (gate the search on the case checker), and neither is forwarded to children.
         kw_verify = kwargs.get("verify", None)
@@ -293,6 +295,8 @@ class ABMCTSBackend(ModelBackend):
         usage_total = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
         saw_usage = False
         best: _Node | None = None
+        best_nonempty: _Node | None = None
+        generation_error: Exception | None = None
         next_idx = 0
 
         for it in range(self.budget):
@@ -313,11 +317,14 @@ class ABMCTSBackend(ModelBackend):
                 gen_prompt, mode = prompt, "sample"
             else:                              # a child of an answer = a refinement (depth)
                 gen_prompt, mode = self._refine_prompt(prompt, node.answer, node.score), "refine"
+            failed = False
             try:
                 artifact = be.complete(gen_prompt, tier, **sub)
-            except Exception:
-                artifact = ""                  # a failing model -> empty draft, never abort the search
-            score = self._reward(verify, artifact)
+            except Exception as exc:
+                artifact = None
+                generation_error = exc
+                failed = True
+            score = 0.0 if failed else self._reward(verify, artifact)
             # Guard a short `costs` list the same way meshflow (meshflow.py:179) and trinity
             # (trinity.py:129) do: a config may supply fewer costs than workers, and an
             # unguarded index would raise mid-search (uncaught here — the try/except above wraps
@@ -331,20 +338,32 @@ class ABMCTSBackend(ModelBackend):
                     usage_total[k] += u.get(k, 0) or 0
 
             # --- register the new child + AB-MCTS-A asymmetric back-propagation ---
-            child = _Node(answer=artifact, score=score, action=action, parent=node, idx=next_idx)
-            next_idx += 1
-            node.children.append(child)
-            node_by_idx[child.idx] = child
-            prob[child.idx] = _NodeProbState(rng, self.prior)
+            child = None
+            if not failed:
+                child = _Node(answer=artifact, score=score, action=action, parent=node, idx=next_idx)
+                next_idx += 1
+                node.children.append(child)
+                node_by_idx[child.idx] = child
+                prob[child.idx] = _NodeProbState(rng, self.prior)
             all_rewards[action].append(score)
             self._backprop(prob, node, child, score)
 
             trace.append({"iter": it, "model": action, "depth": child_depth,
                           "mode": mode, "score": round(score, 3)})
+            if child is None:
+                continue
             if best is None or score > best.score:
                 best = child
-            if best.score >= self.pass_score:           # verifier fully satisfied -> stop early
+            if artifact and artifact.strip():
+                if best_nonempty is None or score > best_nonempty.score:
+                    best_nonempty = child
+            # After a generation error, an empty answer cannot end the search.
+            winner = best if generation_error is None else best_nonempty
+            if winner is not None and winner.score >= self.pass_score:
                 break
+
+        if generation_error is not None:
+            best = best_nonempty
 
         self.last_trace = trace
         self.last_resolved_by = best.action if best is not None else None
@@ -352,4 +371,8 @@ class ABMCTSBackend(ModelBackend):
         self.last_best_score = round(best.score, 4) if best is not None else None
         self.last_tree_size = next_idx
         self.last_usage = usage_total if saw_usage else None
+        if generation_error is not None and best is None:
+            raise MeasurementUnavailable(
+                "abmcts: no nonempty answer after generation failures"
+            ) from generation_error
         return best.answer if best is not None else ""
