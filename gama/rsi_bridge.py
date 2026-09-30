@@ -14,6 +14,7 @@ import math
 import os
 from pathlib import Path
 import re
+import select
 import time
 from types import ModuleType
 import uuid
@@ -303,9 +304,35 @@ def _finish(evidence: Path, error: str | None, returncode, elapsed: float) -> No
     })
 
 
+def _read_request(evidence: Path, deadline: float) -> bytes:
+    request = bytearray()
+    fd = sys.stdin.buffer.fileno()
+    blocking = os.get_blocking(fd)
+    try:
+        os.set_blocking(fd, False)
+        while len(request) <= _OUTPUT_LIMIT:
+            remaining = deadline - time.monotonic()
+            # select supports regular files; buffered reads can block past readiness.
+            if remaining <= 0 or not select.select([fd], [], [], remaining)[0]:
+                raise TimeoutError("bridge deadline elapsed while reading stdin")
+            try:
+                chunk = os.read(fd, min(65536, _OUTPUT_LIMIT + 1 - len(request)))
+            except BlockingIOError:
+                continue
+            if not chunk:
+                break  # Only EOF completes a request, even when JSON looks complete.
+            request.extend(chunk)
+        return bytes(request)
+    finally:
+        os.set_blocking(fd, blocking)
+        # Preserve the received prefix as evidence even when EOF never arrives.
+        _write(evidence / "request.json", bytes(request))
+
+
 def _invoke(config_path: Path) -> str:
     started = time.monotonic()
     config = _sibling("rsi_runtime").load_bridge_config(config_path)
+    deadline = started + config["timeout"]
     cwd = Path.cwd().resolve()
     evidence = _proposal(Path(config["artifact_root"]), cwd)
     error, patch, returncode = None, None, None
@@ -313,12 +340,11 @@ def _invoke(config_path: Path) -> str:
         _write_json(evidence / "invocation.json", {
             "config": str(config_path.resolve()), "cwd": str(cwd), "started_at": time.time(),
         })
-        request = sys.stdin.buffer.read(_OUTPUT_LIMIT + 1)
-        _write(evidence / "request.json", request)
+        request = _read_request(evidence, deadline)
         if len(request) > _OUTPUT_LIMIT:
             raise ValueError("request exceeds the input limit")
         guarded = _sibling("rsi_guard").run_guarded
-        remaining = config["timeout"] - (time.monotonic() - started)
+        remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise TimeoutError("bridge deadline elapsed before worker launch")
         process = guarded(
