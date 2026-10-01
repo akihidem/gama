@@ -578,7 +578,8 @@ def synthesize(aggregator, prompt: str, tier: ModelTier, candidates: list,
     """Aggregate candidate answers into one final answer via an aggregator backend
     (the classic Mixture-of-Agents synthesize step). Shared by ``EnsembleBackend`` and
     ``MeshflowBackend``'s edge-mesh so the logic lives in one place. Falls back to the
-    first candidate if the aggregator errors. The caller reads ``aggregator.last_usage``."""
+    first candidate containing non-whitespace text, unchanged, if the aggregator errors,
+    or ``""`` if none qualify. The caller reads ``aggregator.last_usage``."""
     listing = "\n".join(f"--- candidate {i + 1} ---\n{c[:1500]}"
                         for i, c in enumerate(candidates))
     instruction = instruction or (
@@ -589,7 +590,7 @@ def synthesize(aggregator, prompt: str, tier: ModelTier, candidates: list,
     try:
         return aggregator.complete(agg_prompt, tier, **kwargs)
     except Exception:
-        return candidates[0] if candidates else ""
+        return next((c for c in candidates if c.strip()), "")
 
 
 class MeasurementUnavailable(RuntimeError):
