@@ -935,7 +935,7 @@ class ToolBackend(ModelBackend):
                 proc = subprocess.run([sys.executable, "-c", code], capture_output=True,
                                       text=True, timeout=self.timeout, cwd=sandbox)
             out = proc.stdout.strip()
-            if out:
+            if proc.returncode == 0 and out:
                 note_tool(ran=True, had_code=had_code)
                 return out
         except Exception:
