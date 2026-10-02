@@ -57,7 +57,9 @@ def load_config(source: Optional[Any]) -> dict[str, Any]:
         cfg["trinity"] = raw["trinity"]
     if isinstance(raw.get("abmcts"), dict):
         cfg["abmcts"] = raw["abmcts"]
-    return cfg
+    # Copy the filtered config in one pass, preserving internal aliases while
+    # isolating all nested containers from the source and other loads.
+    return copy.deepcopy(cfg)
 
 
 def gama_from_config(source: Optional[Any], backend_names: Optional[list[str]] = None):
