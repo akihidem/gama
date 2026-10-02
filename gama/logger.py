@@ -45,7 +45,8 @@ class ExecutionLogger:
         if not self.path.exists():
             return []
         out = []
-        for line in self.path.read_text(encoding="utf-8").splitlines():
+        # splitlines() would split Unicode separators inside JSON strings.
+        for line in self.path.read_text(encoding="utf-8").split("\n"):
             line = line.strip()
             if line:
                 out.append(json.loads(line))
